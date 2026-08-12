@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1 - 2026-08-13
+
+- Added an explicit, default-off compatibility mode for trusted local proxies that use the `198.18.0.0/15` Fake-IP range.
+- Fixed pinned-address lookup behavior on Node.js versions that request all DNS results.
+- Verified the full public webpage → Markdown → DeepSeek classification path.
+
 ## 1.2.0 - 2026-08-13
 
 - Added safe WeChat article and generic webpage adapters with pinned upstream references.
