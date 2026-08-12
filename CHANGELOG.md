@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2 - 2026-08-13
+
+- Kept environment-provided model keys as runtime-only secrets instead of copying them into the encrypted database when settings are saved.
+
 ## 1.2.1 - 2026-08-13
 
 - Added an explicit, default-off compatibility mode for trusted local proxies that use the `198.18.0.0/15` Fake-IP range.

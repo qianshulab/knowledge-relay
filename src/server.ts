@@ -251,7 +251,12 @@ export function createServer(
     const settings = {
       enabled: booleanBody(request.body?.enabled),
       baseUrl: config.nanobot.baseUrl,
-      apiKey: apiKey && apiKey !== "••••••••" ? apiKey : current.apiKey,
+      apiKey:
+        apiKey && apiKey !== "••••••••"
+          ? apiKey
+          : current.apiKey && current.apiKey !== config.nanobot.apiKey
+            ? current.apiKey
+            : undefined,
       model: stringBody(request.body?.model, 120) || config.nanobot.model,
       instructions: stringBody(request.body?.instructions, 10_000),
       autoReply: booleanBody(request.body?.autoReply),
