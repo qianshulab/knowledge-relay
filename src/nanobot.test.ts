@@ -19,6 +19,7 @@ const config: AppConfig = {
   },
   webhook: { timeoutMs: 30_000 },
   nanobot: { baseUrl: "http://127.0.0.1:8900/v1/", model: "", timeoutMs: 30_000 },
+  webFetch: { allowBenchmarkNetwork: false },
   sync: { batchSize: 100 },
   autoAck: false,
   autoAckText: "ok",

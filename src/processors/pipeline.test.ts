@@ -24,6 +24,7 @@ const config: AppConfig = {
     model: "",
     timeoutMs: 120_000,
   },
+  webFetch: { allowBenchmarkNetwork: false },
   sync: { batchSize: 100 },
   autoAck: false,
   autoAckText: "已收到并保存。",

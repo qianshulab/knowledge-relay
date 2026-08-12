@@ -242,7 +242,7 @@ export class BotManager {
             : enabled.has("fetch-skill");
           if (!supported) continue;
           try {
-            documents.push(await extractWebContent(url));
+            documents.push(await extractWebContent(url, this.config.webFetch));
           } catch (error) {
             logger.warn("网页解析失败，继续按原消息处理", { messageId: id, url, ...errorDetails(error) });
           }

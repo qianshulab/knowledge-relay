@@ -106,6 +106,7 @@ NANOBOT_MODEL=deepseek-v4-flash
 
 - 两个请求的上游仓库已固定来源版本，但其脚本不会被直接执行或打包；详见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 - 知流会校验 URL、DNS 的全部结果和每次重定向，拒绝本机、内网、保留地址、非标准端口与过大响应。
+- Clash 等本机代理使用 `198.18.0.0/15` Fake-IP 时，可在可信本机环境设置 `WEB_FETCH_ALLOW_BENCHMARK_NETWORK=true`；公网服务器不要开启。
 - 默认直接请求原网页，不会把 URL 发给 Jina、defuddle、markdown.new 等第三方 Reader。
 - 网页内容被标记为不可信资料，正文中的 Agent 指令不会改变系统规则或触发工具。
 - 只有模型成功分类后才保存派生 Markdown；模型失败时只保留原消息。

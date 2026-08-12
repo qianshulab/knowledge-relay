@@ -35,26 +35,34 @@ function safeYaml(value: string): string {
   return JSON.stringify(value.replace(/[\u0000-\u001f]/g, " "));
 }
 
-function isPublicIp(address: string): boolean {
+function isBenchmarkNetwork(address: string): boolean {
+  const match = address.match(/^198\.(18|19)\.(\d{1,3})\.(\d{1,3})$/);
+  return Boolean(match && Number(match[2]) <= 255 && Number(match[3]) <= 255);
+}
+
+export function isAllowedWebAddress(address: string, allowBenchmarkNetwork = false): boolean {
   try {
     let parsed = ipaddr.parse(address);
     if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
       parsed = (parsed as ipaddr.IPv6).toIPv4Address();
     }
-    return parsed.range() === "unicast";
+    return parsed.range() === "unicast" || (allowBenchmarkNetwork && isBenchmarkNetwork(address));
   } catch {
     return false;
   }
 }
 
-export async function resolvePublicUrl(value: string): Promise<{ url: URL; address: string; family: 4 | 6 }> {
+export async function resolvePublicUrl(
+  value: string,
+  options: { allowBenchmarkNetwork?: boolean } = {},
+): Promise<{ url: URL; address: string; family: 4 | 6 }> {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("只允许抓取 HTTP/HTTPS 网页");
   if (url.username || url.password) throw new Error("网页地址不能包含用户名或密码");
   if (url.port && !["80", "443"].includes(url.port)) throw new Error("网页地址只允许标准 HTTP/HTTPS 端口");
   if (!url.hostname || url.hostname.length > 253) throw new Error("网页域名无效");
   const addresses = await dns.lookup(url.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((item) => !isPublicIp(item.address))) {
+  if (!addresses.length || addresses.some((item) => !isAllowedWebAddress(item.address, options.allowBenchmarkNetwork === true))) {
     throw new Error("网页地址解析到了本机、内网或保留地址，已拒绝访问");
   }
   const selected = addresses[0]!;
@@ -79,8 +87,14 @@ async function requestOnce(
           "Accept-Encoding": "identity",
           "User-Agent": "KnowledgeRelay/1.1 (+safe-reader)",
         },
-        lookup: (_hostname, _options, callback) => {
-          callback(null, resolved.address, resolved.family);
+        lookup: (_hostname, options, callback) => {
+          if (typeof options === "object" && options.all) {
+            (callback as unknown as (error: null, addresses: Array<{ address: string; family: number }>) => void)(null, [
+              { address: resolved.address, family: resolved.family },
+            ]);
+          } else {
+            callback(null, resolved.address, resolved.family);
+          }
         },
         servername: resolved.url.hostname,
       },
@@ -118,13 +132,13 @@ async function requestOnce(
 
 export async function fetchPublicPage(
   value: string,
-  options: { timeoutMs?: number; maximumBytes?: number } = {},
+  options: { timeoutMs?: number; maximumBytes?: number; allowBenchmarkNetwork?: boolean } = {},
 ): Promise<FetchedPage> {
   const timeoutMs = options.timeoutMs || 15_000;
   const maximumBytes = options.maximumBytes || 5 * 1024 * 1024;
   let current = value;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    const resolved = await resolvePublicUrl(current);
+    const resolved = await resolvePublicUrl(current, options);
     const response = await requestOnce(resolved, timeoutMs, maximumBytes);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.location;
@@ -141,10 +155,10 @@ export async function fetchPublicPage(
   throw new Error("网页重定向次数过多");
 }
 
-function normalizeLinks(root: cheerio.Cheerio<AnyNode>, baseUrl: URL): void {
+function normalizeLinks($: cheerio.CheerioAPI, root: cheerio.Cheerio<AnyNode>, baseUrl: URL): void {
   root.find("script,style,noscript,iframe,object,embed,form,button,nav,footer").remove();
   root.find("*").each((_index, element) => {
-    const node = root.find(element);
+    const node = $(element);
     for (const attribute of Object.keys(element.attribs || {})) {
       if (attribute.toLowerCase().startsWith("on") || ["style", "srcset"].includes(attribute.toLowerCase())) {
         node.removeAttr(attribute);
@@ -153,7 +167,7 @@ function normalizeLinks(root: cheerio.Cheerio<AnyNode>, baseUrl: URL): void {
   });
   for (const attribute of ["href", "src"] as const) {
     root.find(`[${attribute}]`).each((_index, element) => {
-      const node = root.find(element);
+      const node = $(element);
       const raw = node.attr(attribute)?.trim();
       if (!raw) return;
       try {
@@ -180,7 +194,7 @@ function parseWechat(html: string, sourceUrl: URL): Omit<ExtractedWebContent, "m
   const publishedAt = cleanText($("#publish_time").first().text()) || cleanText($("meta[property='article:published_time']").attr("content")) || undefined;
   const root = $("#js_content").first();
   if (!root.length) throw new Error("未找到微信公众号正文，页面可能需要验证或已经失效");
-  normalizeLinks(root, sourceUrl);
+  normalizeLinks($, root, sourceUrl);
   return { url: sourceUrl.toString(), title, author, publishedAt, sourceType: "wechat", contentHtml: root.html() || "" };
 }
 
@@ -193,13 +207,17 @@ function parseGeneric(html: string, sourceUrl: URL): Omit<ExtractedWebContent, "
   const publishedAt = cleanText($("meta[property='article:published_time']").attr("content")) || cleanText($("time").first().attr("datetime")) || undefined;
   const fallback = $("article").first().length ? $("article").first() : $("main").first().length ? $("main").first() : $("body").first();
   const contentHtml = readable?.content || fallback.html() || "";
-  const contentRoot = cheerio.load(`<main>${contentHtml}</main>`)("main");
-  normalizeLinks(contentRoot, sourceUrl);
+  const contentDocument = cheerio.load(`<main>${contentHtml}</main>`);
+  const contentRoot = contentDocument("main");
+  normalizeLinks(contentDocument, contentRoot, sourceUrl);
   return { url: sourceUrl.toString(), title, author, publishedAt, sourceType: "web", contentHtml: contentRoot.html() || "" };
 }
 
-export async function extractWebContent(value: string): Promise<ExtractedWebContent> {
-  const page = await fetchPublicPage(value);
+export async function extractWebContent(
+  value: string,
+  options: { allowBenchmarkNetwork?: boolean } = {},
+): Promise<ExtractedWebContent> {
+  const page = await fetchPublicPage(value, options);
   if (page.contentType === "text/plain") {
     return {
       url: page.finalUrl.toString(),

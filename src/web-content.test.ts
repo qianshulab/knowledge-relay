@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { extractUrls, resolvePublicUrl } from "./web-content.js";
+import { extractUrls, isAllowedWebAddress, resolvePublicUrl } from "./web-content.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -22,5 +22,12 @@ describe("safe web content adapter", () => {
     for (const url of ["http://127.0.0.1/", "http://10.0.0.1/", "http://169.254.169.254/"]) {
       await expect(resolvePublicUrl(url)).rejects.toThrow("内网或保留地址");
     }
+  });
+
+  it("只有显式开启时才允许代理的 198.18/15 Fake-IP", async () => {
+    expect(isAllowedWebAddress("198.18.3.136")).toBe(false);
+    expect(isAllowedWebAddress("198.18.3.136", true)).toBe(true);
+    expect(isAllowedWebAddress("198.19.255.255", true)).toBe(true);
+    expect(isAllowedWebAddress("10.0.0.1", true)).toBe(false);
   });
 });
