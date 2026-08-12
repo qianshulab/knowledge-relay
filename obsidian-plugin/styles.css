@@ -1,0 +1,9 @@
+.wechat-inbox-sync-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.wechat-inbox-sync-token textarea {
+  min-height: 90px;
+  font-family: var(--font-monospace);
+}

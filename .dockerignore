@@ -1,0 +1,14 @@
+node_modules
+dist
+data
+.env
+.git
+.github
+coverage
+external-skills
+nanobot-workspace
+.nanobot-venv
+release/*.zip
+releases
+*.log
+.DS_Store
