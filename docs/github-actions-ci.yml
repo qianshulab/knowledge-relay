@@ -1,3 +1,4 @@
+# Copy this file to .github/workflows/ci.yml when the publishing token has the workflow scope.
 name: CI
 
 on:
