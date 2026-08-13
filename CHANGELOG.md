@@ -6,6 +6,7 @@
 - Added automatic Nanobot Runtime reload after provider configuration changes.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
+- Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.
 - Added Docker build-time checks for the Python fetch tool, Node.js WeChat extractor, and Nanobot document/API runtime.
 
 ## 1.3.0 - 2026-08-13

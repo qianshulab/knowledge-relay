@@ -28,4 +28,11 @@ describe("adminPage", () => {
     expect(adminPage).toContain(".skill-card{position:relative");
     expect(adminPage).not.toContain("核对上游原始 SKILL.md");
   });
+
+  it("滚动路径不使用高开销固定模糊层或悬停位移", () => {
+    expect(adminPage).toContain("scrollbar-gutter:stable");
+    expect(adminPage).not.toContain("backdrop-filter");
+    expect(adminPage).not.toContain("animation:drift");
+    expect(adminPage).not.toContain("transform:translateY(-1px)");
+  });
 });
