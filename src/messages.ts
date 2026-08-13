@@ -1,3 +1,5 @@
+import type { CaptureInput } from "./capture.js";
+
 export type AttachmentKind = "image" | "voice" | "file" | "video" | "derived";
 
 export type InboundAttachment = {
@@ -24,7 +26,12 @@ export type InboundMessage = {
 
 export type PublicInboundMessage = Omit<InboundMessage, "contextToken">;
 
+/** @deprecated New channel adapters should emit CaptureInput. */
+export type LegacyPublicInboundMessage = PublicInboundMessage;
+
 export function publicMessage(message: InboundMessage): PublicInboundMessage {
   const { contextToken: _contextToken, ...safe } = message;
   return safe;
 }
+
+export type ProcessableMessage = CaptureInput | PublicInboundMessage;

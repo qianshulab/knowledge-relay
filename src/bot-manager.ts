@@ -1,14 +1,11 @@
 import type { AppConfig } from "./config.js";
+import { inferCaptureType, wechatCaptureSource, type CaptureInput } from "./capture.js";
+import { IngestionService } from "./ingestion-service.js";
 import { IlinkApiError, IlinkClient } from "./ilink/client.js";
 import { MessageItemType, MessageType, type WeixinMessage } from "./ilink/types.js";
 import { errorDetails, logger } from "./logger.js";
 import { downloadAttachments } from "./media.js";
-import type { InboundMessage } from "./messages.js";
-import { publicMessage } from "./messages.js";
-import { NanobotClient } from "./nanobot.js";
-import { defaultNote } from "./notes.js";
-import type { AgentSettings, AppDatabase, StoredBotAccount } from "./storage/database.js";
-import { persistExtractedMarkdown } from "./web-content.js";
+import type { AppDatabase, StoredBotAccount } from "./storage/database.js";
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -45,69 +42,23 @@ function chunks(text: string, maximum = 2_000): string[] {
 export class BotManager {
   private readonly controllers = new Map<string, AbortController>();
   private readonly monitors = new Map<string, Promise<void>>();
-  private readonly nanobot: NanobotClient;
+  private readonly ingestion: IngestionService;
   private readonly agentFailureAlerts = new Map<string, { fingerprint: string; sentAt: number }>();
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: AppDatabase,
   ) {
-    this.nanobot = new NanobotClient(config);
+    this.ingestion = new IngestionService(config, database);
   }
 
   async startAll(): Promise<void> {
-    await this.recoverPendingAgentMessages();
+    await this.ingestion.recoverPending();
     for (const account of this.database.getBotAccounts()) await this.start(account.id);
   }
 
   async recoverPendingAgentMessages(): Promise<number> {
-    const pending = this.database.listPendingAgentMessages();
-    if (!pending.length) return 0;
-    logger.warn("发现服务中断时未完成的 AI 任务，正在自动恢复", { count: pending.length });
-    const settings = this.database.getAgentSettings(this.config.nanobot);
-    let next = 0;
-    const worker = async () => {
-      while (next < pending.length) {
-        const current = pending[next++];
-        if (!current) return;
-        const fallback = defaultNote(current.message);
-        try {
-          if (settings.enabled) {
-            await this.completeWithAgent(current.message, settings);
-          } else {
-            this.database.updateProcessedNote(current.message.id, fallback, "fallback");
-          }
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          this.database.updateProcessedNote(current.message.id, fallback, "fallback", detail);
-          logger.warn("中断的 AI 任务恢复失败，已保存原始内容", {
-            messageId: current.message.id,
-            error: detail,
-          });
-        }
-        this.database.publishMessage(current.message.id);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(2, pending.length) }, worker));
-    logger.info("服务中断时遗留的 AI 任务已恢复", { count: pending.length });
-    return pending.length;
-  }
-
-  private async completeWithAgent(
-    message: ReturnType<typeof publicMessage>,
-    settings: AgentSettings,
-  ): Promise<string | undefined> {
-    const processed = await this.nanobot.process(
-      message,
-      settings,
-      this.database.getEnabledSkills(),
-    );
-    const derivedAttachments = [];
-    for (const document of processed.derivedDocuments) {
-      derivedAttachments.push(await persistExtractedMarkdown(this.config, message.id, document));
-    }
-    this.database.completeProcessedMessage(message.id, processed.note, derivedAttachments);
-    return processed.reply;
+    return this.ingestion.recoverPending();
   }
 
   async start(accountId: string): Promise<void> {
@@ -265,45 +216,33 @@ export class BotManager {
       senderId,
       this.config,
     );
-    const message: InboundMessage = {
+    const text = extractText(raw);
+    const capture: CaptureInput = {
       id,
-      senderId,
-      botId: account.botId,
+      source: wechatCaptureSource(sourceId, account.id, text),
+      captureType: inferCaptureType(text, attachments),
+      actorId: senderId,
       ...(raw.session_id ? { sessionId: raw.session_id } : {}),
       receivedAt: new Date().toISOString(),
       ...(raw.create_time_ms ? { sentAt: new Date(raw.create_time_ms).toISOString() } : {}),
-      text: extractText(raw),
+      text,
       attachments,
-      contextToken: raw.context_token || "",
     };
-    const safe = publicMessage(message);
-    const fallback = defaultNote(safe);
-    if (!this.database.saveMessage(account.id, sourceId, safe, fallback)) return;
-    // Publish the authoritative raw capture immediately. Nanobot enrichment is a
-    // later revision, so a slow or unavailable Agent can never block Obsidian.
-    this.database.publishMessage(id);
-    let reply: string | undefined;
-    const settings = this.database.getAgentSettings(this.config.nanobot);
-    if (settings.enabled) {
-      try {
-        reply = await this.completeWithAgent(safe, settings);
-        this.agentFailureAlerts.delete(account.id);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        this.database.updateProcessedNote(id, fallback, "fallback", detail);
-        logger.warn("Nanobot 处理失败，已使用内置规则", { messageId: id, error: detail });
-        if (settings.notifyOnFailure && message.contextToken) {
-          const alert = this.agentFailureMessage(error);
-          if (this.shouldSendAgentFailure(account.id, alert.fingerprint)) reply = alert.message;
-        }
+    const result = await this.ingestion.ingest(capture);
+    if (!result.accepted) return;
+    let reply = result.reply;
+    const contextToken = raw.context_token || "";
+    if (result.agentError) {
+      if (result.notifyOnFailure && contextToken) {
+        const alert = this.agentFailureMessage(result.agentError);
+        if (this.shouldSendAgentFailure(account.id, alert.fingerprint)) reply = alert.message;
       }
     } else {
-      this.database.updateProcessedNote(id, fallback, "fallback");
+      this.agentFailureAlerts.delete(account.id);
     }
-    this.database.publishMessage(id);
     if (!reply && this.config.autoAck) reply = this.config.autoAckText;
-    if (reply && message.contextToken) {
-      for (const part of chunks(reply)) await client.sendText(senderId, message.contextToken, part);
+    if (reply && contextToken) {
+      for (const part of chunks(reply)) await client.sendText(senderId, contextToken, part);
     }
     this.database.updateBotStatus(account.id, { lastMessageAt: new Date().toISOString() });
     logger.info("微信消息处理完成", { messageId: id });

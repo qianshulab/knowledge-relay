@@ -88,7 +88,7 @@ describe("BotManager interrupted work recovery", () => {
       derivedDocuments: [],
     });
     const manager = new BotManager(config, database);
-    Reflect.set(manager, "nanobot", { process });
+    Reflect.set(Reflect.get(manager, "ingestion") as object, "nanobot", { process });
 
     await expect(manager.recoverPendingAgentMessages()).resolves.toBe(1);
     expect(process).toHaveBeenCalledOnce();

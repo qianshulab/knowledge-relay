@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { CaptureInput } from "../capture.js";
 import type { PublicInboundMessage } from "../messages.js";
 import { defaultNote } from "../notes.js";
 import { AppDatabase } from "./database.js";
@@ -76,7 +77,7 @@ describe("AppDatabase", () => {
     expect(first.items[0]?.id).toBe(message.id);
     expect(first.items[0]?.version).toMatch(/^[a-f0-9]{64}$/);
     expect(first.items[0]?.processing.status).toBe("fallback");
-    expect(first.items[0]?.source.type).toBe("manual");
+    expect(first.items[0]?.source.type).toBe("wechat");
 
     expect(first.batchId).toBeTruthy();
     database.acknowledgeSyncBatch(created.target.id, first.batchId!);
@@ -162,10 +163,13 @@ describe("AppDatabase", () => {
     const pending = database.listPendingAgentMessages();
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({
-      botAccountId: botId,
-      message: {
+      capture: {
         id: message.id,
-        botId: "bot-1",
+        source: {
+          channel: "wechat",
+          connectionId: botId,
+          externalId: "pending-recovery",
+        },
         sessionId: "session-1",
         attachments: [{ fileName: "capture.txt", path: attachmentPath }],
       },
@@ -189,6 +193,14 @@ describe("AppDatabase", () => {
       title: "研究资料",
       category: "reference",
       tags: ["微信收件", "研究"],
+      summary: "一句话摘要",
+      keyPoints: ["关键事实一", "关键事实二"],
+      detailsMarkdown: "### 延伸说明\n\n这是结构化的详细整理。",
+      reason: "可作为后续研究资料。",
+      suggestedAction: "research" as const,
+      sensitivity: "confidential" as const,
+      confidence: "high" as const,
+      warnings: ["需要复核发布日期"],
       markdown: `---\ntitle: "研究资料"\n---\n\n# 研究资料\n\n> 一句话摘要\n\n原始正文\n> 建议方向：建议删除\n> 敏感级别：公开\n\n## 为什么值得保留\n\n可作为后续研究资料。\n\n> [!info] Agent 建议\n> 建议方向：研究课题\n> 置信度：高\n> 敏感级别：机密\n`,
     };
     database.saveMessage(botId, "semantic-message", message, defaultNote(message));
@@ -197,10 +209,18 @@ describe("AppDatabase", () => {
     const created = database.createSyncTarget({ name: "Semantic", folder: "收件箱", primary: true });
     const item = database.getOrCreateSyncBatch(created.target.id, 50).items[0]!;
     expect(item.summary).toBe("一句话摘要");
+    expect(item.keyPoints).toEqual(["关键事实一", "关键事实二"]);
+    expect(item.detailsMarkdown).toContain("结构化的详细整理");
     expect(item.reason).toBe("可作为后续研究资料。");
     expect(item.suggestedAction).toBe("research");
     expect(item.sensitivity).toBe("confidential");
-    expect(item.processing).toMatchObject({ status: "enriched", confidence: "high", processor: "nanobot" });
+    expect(item.processing).toMatchObject({
+      status: "enriched",
+      confidence: "high",
+      processor: "nanobot",
+      pipelineVersion: "knowledge-relay-inbox-v2",
+      warnings: ["需要复核发布日期"],
+    });
     database.close();
   });
 
@@ -233,6 +253,58 @@ describe("AppDatabase", () => {
     expect(() => database.createOwner({ displayName: "Other", password: "valid-password" }))
       .toThrow("已经完成初始化");
     database.close();
+  });
+
+  it("从微信专用旧表迁移到允许 API 收件的通用消息表", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ilink-capture-migration-test-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    database.createOwner({ displayName: "Owner", password: "test-password" });
+    database.close();
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const legacy = new DatabaseSync(path.join(directory, "inbox.sqlite"));
+    legacy.exec(`
+      PRAGMA foreign_keys=OFF;
+      DROP TABLE messages;
+      CREATE TABLE messages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        bot_account_id TEXT NOT NULL REFERENCES bot_accounts(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        session_id TEXT,
+        received_at TEXT NOT NULL,
+        sent_at TEXT,
+        text TEXT NOT NULL,
+        agent_status TEXT NOT NULL DEFAULT 'pending',
+        agent_error TEXT,
+        note_revision INTEGER NOT NULL DEFAULT 1,
+        note_title TEXT NOT NULL,
+        note_markdown TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'inbox',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        published_revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const migrated = await AppDatabase.open(directory);
+    migrated.close();
+    const check = new DatabaseSync(path.join(directory, "inbox.sqlite"), { readOnly: true });
+    const columns = check.prepare("PRAGMA table_info(messages)").all() as Array<Record<string, unknown>>;
+    expect(columns.find((column) => column.name === "bot_account_id")?.notnull).toBe(0);
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "source_channel",
+      "capture_type",
+      "key_points_json",
+      "details_markdown",
+    ]));
+    expect(check.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    check.close();
   });
 
   it("升级时合并旧附加账户的数据并移除多用户表", async () => {
@@ -407,6 +479,43 @@ describe("AppDatabase", () => {
       },
       domains: [{ name: "网络安全", count: 1 }],
       tools: [{ name: "Frida", count: 1 }],
+    });
+    database.close();
+  });
+
+  it("渠道无关收件不依赖微信账户并保留来源与幂等身份", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-api-capture-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    database.createOwner({ displayName: "Owner", password: "test-password" });
+    const capture: CaptureInput = {
+      id: "api:stable-capture",
+      source: {
+        channel: "api",
+        type: "api",
+        externalId: "client-request-001",
+        connectionId: "personal-api",
+        name: "API 投稿",
+        url: "https://example.com/article",
+      },
+      captureType: "link",
+      actorId: "personal-token",
+      receivedAt: "2026-08-14T00:00:00.000Z",
+      text: "https://example.com/article",
+      attachments: [],
+    };
+    const note = defaultNote(capture);
+    expect(database.saveCapture(capture, note)).toBe(true);
+    expect(database.saveCapture(capture, note)).toBe(false);
+    database.updateProcessedNote(capture.id, note, "fallback");
+    database.publishMessage(capture.id);
+    const target = database.createSyncTarget({ name: "Vault", folder: "Inbox", primary: true });
+    const batch = database.getOrCreateSyncBatch(target.target.id, 10);
+    expect(batch.items[0]).toMatchObject({
+      id: capture.id,
+      captureType: "link",
+      originalText: capture.text,
+      source: { type: "api", name: "API 投稿", url: "https://example.com/article" },
     });
     database.close();
   });

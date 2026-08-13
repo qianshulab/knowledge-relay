@@ -1,4 +1,4 @@
-# 知流同步协议 1.1
+# 知流同步协议 1.2
 
 协议面向一个已经绑定 Obsidian 连接的设备令牌。服务端保存权威事件流、批次和游标；插件保存远程 ID 到本地笔记的索引。这个设计比让客户端自行提交任意 collectionId/cursor 更适合个人版，也避免伪造其他集合位置。
 
@@ -6,6 +6,8 @@
 
 ```http
 Authorization: Bearer obsidian_xxx
+X-Knowledge-Relay-Plugin: 1.4.0
+X-Knowledge-Relay-Schema: 1.2
 ```
 
 管理页面使用 HttpOnly 登录会话，不使用 Obsidian 设备令牌。与收件浏览和检索相关的接口如下。
@@ -50,7 +52,7 @@ GET /api/sync/pull?limit=50
 
 ```json
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "collectionId": "token-bound-target-id",
   "syncId": "batch-uuid",
   "batchId": "batch-uuid",
@@ -64,8 +66,12 @@ GET /api/sync/pull?limit=50
     "version": "sha256-of-materialized-content",
     "revision": 2,
     "title": "笔记标题",
+    "captureType": "link",
+    "originalText": "https://...",
     "summary": "一句话说明",
-    "contentMarkdown": "原始内容",
+    "keyPoints": ["关键事实一", "关键事实二"],
+    "detailsMarkdown": "进一步整理的 Markdown",
+    "contentMarkdown": "兼容旧插件的正文",
     "reason": "保留价值",
     "suggestedAction": "research",
     "source": { "type": "web", "name": "mp.weixin.qq.com", "url": "https://..." },
@@ -75,7 +81,7 @@ GET /api/sync/pull?limit=50
     "processing": {
       "processor": "nanobot",
       "status": "enriched",
-      "pipelineVersion": "knowledge-relay-inbox-v1",
+      "pipelineVersion": "knowledge-relay-inbox-v2",
       "processedAt": "2026-08-13T06:00:00.000Z",
       "confidence": "medium",
       "warnings": []
@@ -110,7 +116,7 @@ POST /api/sync/ack
 Content-Type: application/json
 
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "syncId": "batch-uuid",
   "batchId": "batch-uuid",
   "results": [{
@@ -130,13 +136,13 @@ Content-Type: application/json
 POST /api/sync/reset
 Content-Type: application/json
 
-{"schemaVersion":"1.1"}
+{"schemaVersion":"1.2"}
 ```
 
 仅重置当前令牌绑定连接的服务端游标，并删除未确认批次。插件保留本地远程 ID 索引，因此历史重放不会创建副本。插件 UI 对此操作要求两次确认。
 
 ## 兼容性
 
-- 插件 1.3 接受协议 1.0 和 1.1，并能读取旧字段 `messageId`、`markdown`、`receivedAt`。
-- 服务端继续返回旧字段，便于旧插件过渡。
+- 插件 1.4 优先请求协议 1.2，同时接受 1.0 和 1.1，并能读取旧字段 `messageId`、`markdown`、`receivedAt`。
+- 未发送 `X-Knowledge-Relay-Schema: 1.2` 的旧插件继续收到 1.1 版本标识；服务端仍保留旧字段供过渡。
 - 旧笔记可通过 `知流消息ID` 重新索引；没有托管标记的笔记不会被自动覆盖。

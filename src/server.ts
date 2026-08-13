@@ -46,6 +46,11 @@ function booleanBody(value: unknown): boolean {
   return value === true;
 }
 
+function syncSchema(request: FastifyRequest): "1.1" | "1.2" {
+  const requested = request.headers["x-knowledge-relay-schema"];
+  return requested === "1.2" ? "1.2" : "1.1";
+}
+
 function inboxDateRange(question: string): { receivedAfter?: string; receivedBefore?: string } {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -564,8 +569,10 @@ export function createServer(
       target.id,
       Math.min(requestedLimit, config.sync.batchSize),
     );
+    const schemaVersion = syncSchema(request);
+    reply.header("X-Knowledge-Relay-Schema", schemaVersion);
     return {
-      schemaVersion: "1.1",
+      schemaVersion,
       collectionId: target.id,
       syncId: batch.batchId || "",
       serverTime: new Date().toISOString(),
@@ -580,8 +587,10 @@ export function createServer(
     if (!target) return reply.code(401).send({ error: "Obsidian 同步令牌无效" });
     const batchId = stringBody(request.body?.batchId, 100);
     if (!batchId) return reply.code(400).send({ error: "缺少 batchId" });
+    const schemaVersion = syncSchema(request);
+    reply.header("X-Knowledge-Relay-Schema", schemaVersion);
     return {
-      schemaVersion: "1.1",
+      schemaVersion,
       ok: true,
       syncId: batchId,
       ...database.acknowledgeSyncBatch(target.id, batchId),
@@ -592,7 +601,9 @@ export function createServer(
     const token = bearer(request);
     const target = token ? database.syncTargetForToken(token) : undefined;
     if (!target) return reply.code(401).send({ error: "Obsidian 同步令牌无效" });
-    return { schemaVersion: "1.1", ok: true, ...database.resetSyncTargetCursor(target.id) };
+    const schemaVersion = syncSchema(request);
+    reply.header("X-Knowledge-Relay-Schema", schemaVersion);
+    return { schemaVersion, ok: true, ...database.resetSyncTargetCursor(target.id) };
   });
 
   app.get<{ Params: { id: string } }>("/api/sync/attachments/:id", async (request, reply) => {

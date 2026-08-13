@@ -2,7 +2,7 @@
 
 知流是一个可自托管的个人知识收件台：接收发送给微信 iLink Bot 的文字、网页与附件，由官方 Nanobot Runtime 完成解析和智能整理，再可靠同步到指定的 Obsidian 收件箱。
 
-> 当前版本：1.7.1 · 个人单用户版 · Node.js 22.13+ · Nanobot 0.3.0
+> 当前版本：1.8.0 · 个人单用户版 · Node.js 22.13+ · Nanobot 0.3.0
 
 ## 产品能力
 
@@ -33,6 +33,8 @@ Nanobot 选择 Skill、解析内容、调用模型
 ```
 
 知流不会持续训练模型，也不会在查询时把整个收件箱交给模型。AI 在入库阶段完成语义整理；检索时独立的无工具 Nanobot Runtime 只把用户问题转换为关键词、同义词、分类、领域、工具和时间范围，真正的数据匹配由 SQLite 本地索引完成。这种“理解、规划、本地检索”的分层方式更容易控制隐私、延迟和成本，也不依赖平台可选的 SQLite 扩展。
+
+微信目前只是第一个接入通道。业务核心已使用统一捕获模型，后续增加 API、RSS 或邮件接入时仍复用同一条持久化、Nanobot 整理、检索与 Obsidian 同步流水线。个人版与未来多用户版的隔离和演进方案见 [架构边界](./docs/ARCHITECTURE.md)。
 
 ## Docker 一键部署（推荐）
 
@@ -130,7 +132,7 @@ Docker 镜像已经准备它们所需的 Python、Node.js、npm 依赖和 Nanobo
 
 插件源码与发布位于独立仓库：[qianshulab/knowledge-relay-obsidian](https://github.com/qianshulab/knowledge-relay-obsidian)。主仓库只固定引用验证过的插件版本，并在构建时生成可下载 ZIP。
 
-插件默认优先使用 Vault 中的 `90-系统/模板/T-快速捕获.md`。同步特性包括：
+新安装默认使用 Vault 中独立的 `90-系统/模板/T-知流收件.md`；已有自定义模板路径保持不变。同步特性包括：
 
 - 单文件 `main.js`，无运行时相对模块依赖；
 - 稳定批次、断点重试和 ACK；

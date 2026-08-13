@@ -1,5 +1,29 @@
+import type { CaptureInput } from "./capture.js";
 import type { PublicInboundMessage } from "./messages.js";
 import type { ProcessedNote } from "./storage/database.js";
+
+type NoteInput = CaptureInput | PublicInboundMessage;
+
+function isCaptureInput(message: NoteInput): message is CaptureInput {
+  return "source" in message && "captureType" in message;
+}
+
+function sourceMetadata(message: NoteInput): {
+  sourceType: string;
+  sourceName: string;
+  sourceUrl?: string;
+  actorId: string;
+} {
+  if (isCaptureInput(message)) {
+    return {
+      sourceType: message.source.type,
+      sourceName: message.source.name,
+      sourceUrl: message.source.url,
+      actorId: message.actorId,
+    };
+  }
+  return { sourceType: "wechat", sourceName: "微信 iLink", actorId: message.senderId };
+}
 
 function yaml(value: string): string {
   return JSON.stringify(value);
@@ -36,7 +60,7 @@ function yamlList(name: string, values: string[]): string[] {
   return values.length ? [`${name}:`, ...values.map((value) => `  - ${yaml(value)}`)] : [`${name}: []`];
 }
 
-export function defaultNote(message: PublicInboundMessage): ProcessedNote {
+export function defaultNote(message: NoteInput): ProcessedNote {
   const firstLine = firstUsefulLine(message.text);
   const hasUrl = /https?:\/\/\S+/i.test(message.text);
   const hasFile = message.attachments.some((item) => item.kind === "file");
@@ -53,8 +77,10 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
           : /^\s*(todo|待办|任务|提醒)[:：\s]/i.test(message.text)
             ? "task"
             : "inbox";
-  const title = cleanTitle(firstLine) || (message.attachments.length ? "微信附件" : "微信收件");
-  const tags = ["微信收件", category].filter((item, index, values) => values.indexOf(item) === index);
+  const source = sourceMetadata(message);
+  const title = cleanTitle(firstLine) || (message.attachments.length ? "收件附件" : "知识收件");
+  const sourceTag = source.sourceType.startsWith("wechat") ? "微信收件" : `${source.sourceName}收件`;
+  const tags = [sourceTag, category].filter((item, index, values) => values.indexOf(item) === index);
   const attachments = message.attachments.map((item) => ({
     fileName: item.fileName,
     kind: item.kind,
@@ -71,15 +97,24 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
     category,
     tags,
     summary,
+    keyPoints: [],
     knowledgePoints: [],
     domains: [],
     tools: [],
+    detailsMarkdown: "",
+    reason: "",
+    suggestedAction: "none",
+    sensitivity: "internal",
+    confidence: "low",
+    warnings: [],
     markdown: [
       "---",
       `title: ${yaml(title)}`,
-      'source: "wechat-ilink"',
+      `source: ${yaml(source.sourceType)}`,
+      `source_name: ${yaml(source.sourceName)}`,
+      ...(source.sourceUrl ? [`source_url: ${yaml(source.sourceUrl)}`] : []),
       `message_id: ${yaml(message.id)}`,
-      `sender_id: ${yaml(message.senderId)}`,
+      `sender_id: ${yaml(source.actorId)}`,
       `received_at: ${yaml(message.receivedAt)}`,
       ...(message.sentAt ? [`sent_at: ${yaml(message.sentAt)}`] : []),
       `category: ${yaml(category)}`,
@@ -101,7 +136,7 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
 
 export function normalizeAgentNote(
   value: unknown,
-  message: PublicInboundMessage,
+  message: NoteInput,
 ): ProcessedNote {
   if (!value || typeof value !== "object") throw new Error("Nanobot 返回值不是 JSON 对象");
   const object = value as Record<string, unknown>;
@@ -110,6 +145,7 @@ export function normalizeAgentNote(
     "category",
     "tags",
     "summary",
+    "key_points",
     "knowledge_points",
     "domains",
     "tools",
@@ -118,12 +154,15 @@ export function normalizeAgentNote(
     "sensitivity",
     "confidence",
     "warnings",
+    "details_markdown",
     "reply",
     "derived_files",
   ]);
   const unexpected = Object.keys(object).filter((key) => !allowedFields.has(key));
   if (unexpected.length) throw new Error(`Nanobot 返回了不允许的字段：${unexpected.slice(0, 3).join("、")}`);
   const fallback = defaultNote(message);
+  const source = sourceMetadata(message);
+  const sourceTag = source.sourceType.startsWith("wechat") ? "微信收件" : `${source.sourceName}收件`;
   const title =
     typeof object.title === "string" && object.title.trim()
       ? cleanTitle(object.title)
@@ -146,14 +185,15 @@ export function normalizeAgentNote(
     typeof object.summary === "string" && object.summary.trim()
       ? object.summary.replace(/[\r\n]+/g, " ").trim().slice(0, 500)
       : undefined;
+  const keyPoints = cleanList(object.key_points, 8);
   const knowledgePoints = cleanList(object.knowledge_points, 8);
   const domains = cleanList(object.domains, 4);
   const tools = cleanList(object.tools, 8);
   const reason =
     typeof object.reason === "string" ? object.reason.replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
   const actions = new Set(["none", "knowledge", "research", "project", "resource", "practice", "delete"]);
-  const suggestedAction = typeof object.suggestedAction === "string" && actions.has(object.suggestedAction)
-    ? object.suggestedAction
+  const suggestedAction: NonNullable<ProcessedNote["suggestedAction"]> = typeof object.suggestedAction === "string" && actions.has(object.suggestedAction)
+    ? object.suggestedAction as NonNullable<ProcessedNote["suggestedAction"]>
     : "none";
   const actionLabel: Record<string, string> = {
     none: "暂无建议",
@@ -165,8 +205,8 @@ export function normalizeAgentNote(
     delete: "建议删除",
   };
   const sensitivityValues = new Set(["public", "internal", "confidential", "restricted"]);
-  const sensitivity = typeof object.sensitivity === "string" && sensitivityValues.has(object.sensitivity)
-    ? object.sensitivity
+  const sensitivity: NonNullable<ProcessedNote["sensitivity"]> = typeof object.sensitivity === "string" && sensitivityValues.has(object.sensitivity)
+    ? object.sensitivity as NonNullable<ProcessedNote["sensitivity"]>
     : "internal";
   const sensitivityLabel: Record<string, string> = {
     public: "公开",
@@ -175,8 +215,8 @@ export function normalizeAgentNote(
     restricted: "严格受限",
   };
   const confidenceValues = new Set(["high", "medium", "low"]);
-  const confidence = typeof object.confidence === "string" && confidenceValues.has(object.confidence)
-    ? object.confidence
+  const confidence: NonNullable<ProcessedNote["confidence"]> = typeof object.confidence === "string" && confidenceValues.has(object.confidence)
+    ? object.confidence as NonNullable<ProcessedNote["confidence"]>
     : "low";
   const confidenceLabel: Record<string, string> = { high: "高", medium: "中", low: "低" };
   const warnings = Array.isArray(object.warnings)
@@ -186,6 +226,9 @@ export function normalizeAgentNote(
         .filter(Boolean)
         .slice(0, 10)
     : [];
+  const detailsMarkdown = typeof object.details_markdown === "string"
+    ? object.details_markdown.replace(/\r\n?/g, "\n").trim().slice(0, 100_000)
+    : "";
   const attachmentBlock = message.attachments.flatMap((attachment) => [
     `- ${attachment.fileName}`,
     ...(attachment.transcript ? [`  - 转写：${attachment.transcript}`] : []),
@@ -193,22 +236,31 @@ export function normalizeAgentNote(
   return {
     title,
     category,
-    tags: Array.from(new Set(["微信收件", ...tags])),
+    tags: Array.from(new Set([sourceTag, ...tags])),
     summary: summary || fallback.summary || "",
+    keyPoints,
     knowledgePoints,
     domains,
     tools,
+    detailsMarkdown,
+    reason,
+    suggestedAction,
+    sensitivity,
+    confidence,
+    warnings,
     markdown: [
       "---",
       `title: ${yaml(title)}`,
-      'source: "wechat-ilink"',
+      `source: ${yaml(source.sourceType)}`,
+      `source_name: ${yaml(source.sourceName)}`,
+      ...(source.sourceUrl ? [`source_url: ${yaml(source.sourceUrl)}`] : []),
       `message_id: ${yaml(message.id)}`,
-      `sender_id: ${yaml(message.senderId)}`,
+      `sender_id: ${yaml(source.actorId)}`,
       `received_at: ${yaml(message.receivedAt)}`,
       ...(message.sentAt ? [`sent_at: ${yaml(message.sentAt)}`] : []),
       `category: ${yaml(category)}`,
       "tags:",
-      ...Array.from(new Set(["微信收件", ...tags])).map((tag) => `  - ${yaml(tag)}`),
+      ...Array.from(new Set([sourceTag, ...tags])).map((tag) => `  - ${yaml(tag)}`),
       ...yamlList("knowledge_points", knowledgePoints),
       ...yamlList("domains", domains),
       ...yamlList("tools", tools),
@@ -218,6 +270,8 @@ export function normalizeAgentNote(
       ...(summary ? ["", `> ${summary.replace(/\n/g, " ")}`] : []),
       "",
       content,
+      ...(keyPoints.length ? ["", "## 关键要点", "", ...keyPoints.map((point) => `- ${point}`)] : []),
+      ...(detailsMarkdown ? ["", "## 详细整理", "", detailsMarkdown] : []),
       ...(reason ? ["", "## 为什么值得保留", "", reason] : []),
       "",
       "> [!info] Agent 建议",

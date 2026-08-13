@@ -1,4 +1,4 @@
-export const adminUiVersion = "1.7.1";
+export const adminUiVersion = "1.8.0";
 
 export const adminPage = `<!doctype html>
 <html lang="zh-CN">

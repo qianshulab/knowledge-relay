@@ -11,6 +11,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
+import {
+  firstHttpUrl,
+  inferCaptureType,
+  wechatCaptureSource,
+  type CaptureInput,
+  type CaptureSourceType,
+  type CaptureType,
+} from "../capture.js";
 import type { IlinkAccount } from "../ilink/types.js";
 import type { PublicInboundMessage } from "../messages.js";
 import {
@@ -71,9 +79,16 @@ export type ProcessedNote = {
   category: string;
   tags: string[];
   summary?: string;
+  keyPoints?: string[];
   knowledgePoints?: string[];
   domains?: string[];
   tools?: string[];
+  detailsMarkdown?: string;
+  reason?: string;
+  suggestedAction?: "none" | "knowledge" | "research" | "project" | "resource" | "practice" | "delete";
+  sensitivity?: "public" | "internal" | "confidential" | "restricted";
+  confidence?: "high" | "medium" | "low";
+  warnings?: string[];
 };
 
 export type MessageListItem = {
@@ -128,8 +143,7 @@ export type InboxSearchOptions = {
 };
 
 export type PendingAgentMessage = {
-  botAccountId: string;
-  message: PublicInboundMessage;
+  capture: CaptureInput;
 };
 
 export type SyncTarget = {
@@ -171,20 +185,24 @@ export type SyncItem = {
   createdAt: string;
   updatedAt: string;
   summary: string;
+  keyPoints: string[];
+  detailsMarkdown: string;
   reason: string;
   suggestedAction: "none" | "knowledge" | "research" | "project" | "resource" | "practice" | "delete";
   source: {
-    type: "web" | "manual";
+    type: CaptureSourceType;
     name: string;
     url: string;
   };
+  captureType: CaptureType;
+  originalText: string;
   tags: string[];
   sensitivity: "public" | "internal" | "confidential" | "restricted";
   deleted: false;
   processing: {
     processor: "nanobot" | "deterministic";
     status: "pending" | "enriched" | "fallback" | "failed";
-    pipelineVersion: "knowledge-relay-inbox-v1";
+    pipelineVersion: "knowledge-relay-inbox-v1" | "knowledge-relay-inbox-v2";
     processedAt: string;
     confidence: "high" | "medium" | "low";
     warnings: string[];
@@ -489,8 +507,15 @@ export class AppDatabase {
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         id TEXT NOT NULL UNIQUE,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        bot_account_id TEXT NOT NULL REFERENCES bot_accounts(id) ON DELETE CASCADE,
+        bot_account_id TEXT REFERENCES bot_accounts(id) ON DELETE SET NULL,
         source_id TEXT NOT NULL,
+        source_channel TEXT NOT NULL DEFAULT 'wechat',
+        source_type TEXT NOT NULL DEFAULT 'wechat',
+        source_external_id TEXT NOT NULL DEFAULT '',
+        source_connection_id TEXT NOT NULL DEFAULT '',
+        source_name TEXT NOT NULL DEFAULT '微信 iLink',
+        source_url TEXT NOT NULL DEFAULT '',
+        capture_type TEXT NOT NULL DEFAULT 'text',
         sender_id TEXT NOT NULL,
         session_id TEXT,
         received_at TEXT NOT NULL,
@@ -504,9 +529,16 @@ export class AppDatabase {
         category TEXT NOT NULL DEFAULT 'inbox',
         tags_json TEXT NOT NULL DEFAULT '[]',
         summary TEXT NOT NULL DEFAULT '',
+        key_points_json TEXT NOT NULL DEFAULT '[]',
         knowledge_points_json TEXT NOT NULL DEFAULT '[]',
         domains_json TEXT NOT NULL DEFAULT '[]',
         tools_json TEXT NOT NULL DEFAULT '[]',
+        details_markdown TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        suggested_action TEXT NOT NULL DEFAULT 'none',
+        sensitivity TEXT NOT NULL DEFAULT 'internal',
+        confidence TEXT NOT NULL DEFAULT 'low',
+        warnings_json TEXT NOT NULL DEFAULT '[]',
         published_revision INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -618,15 +650,56 @@ export class AppDatabase {
     }
     for (const statement of [
       "ALTER TABLE messages ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN key_points_json TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN knowledge_points_json TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN domains_json TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN tools_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE messages ADD COLUMN details_markdown TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN suggested_action TEXT NOT NULL DEFAULT 'none'",
+      "ALTER TABLE messages ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'internal'",
+      "ALTER TABLE messages ADD COLUMN confidence TEXT NOT NULL DEFAULT 'low'",
+      "ALTER TABLE messages ADD COLUMN warnings_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE messages ADD COLUMN source_channel TEXT NOT NULL DEFAULT 'wechat'",
+      "ALTER TABLE messages ADD COLUMN source_type TEXT NOT NULL DEFAULT 'wechat'",
+      "ALTER TABLE messages ADD COLUMN source_external_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN source_connection_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN source_name TEXT NOT NULL DEFAULT '微信 iLink'",
+      "ALTER TABLE messages ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN capture_type TEXT NOT NULL DEFAULT 'text'",
     ]) {
       try {
         this.database.exec(statement);
       } catch (error) {
         if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
       }
+    }
+    this.migrateCaptureColumns();
+    this.database.exec(`
+      UPDATE messages SET
+        source_external_id=CASE WHEN source_external_id='' THEN source_id ELSE source_external_id END,
+        source_connection_id=CASE WHEN source_connection_id='' THEN COALESCE(bot_account_id,'owner') ELSE source_connection_id END;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_identity
+        ON messages(tenant_id,source_channel,source_connection_id,source_external_id);
+    `);
+    for (const row of this.all("SELECT id,text,source_type,source_url,capture_type FROM messages")) {
+      const text = rowString(row, "text");
+      const sourceUrl = rowString(row, "source_url") || firstHttpUrl(text) || "";
+      const sourceType = rowString(row, "source_type") === "wechat" && sourceUrl
+        ? (new URL(sourceUrl).hostname.toLowerCase() === "mp.weixin.qq.com" ? "wechat_article" : "web")
+        : rowString(row, "source_type");
+      const storedCaptureType = rowString(row, "capture_type");
+      const captureType = storedCaptureType === "text" && sourceUrl
+        ? "link"
+        : storedCaptureType || inferCaptureType(text, []);
+      this.run(
+        "UPDATE messages SET source_type=?,source_url=?,source_name=?,capture_type=? WHERE id=?",
+        sourceType,
+        sourceUrl,
+        sourceType === "wechat_article" ? "微信公众号" : sourceUrl ? new URL(sourceUrl).hostname : "微信 iLink",
+        captureType,
+        rowString(row, "id"),
+      );
     }
     const existingSearch = this.maybeOne(
       "SELECT sql FROM sqlite_master WHERE name='message_search' AND type='table'",
@@ -653,6 +726,86 @@ export class AppDatabase {
     // Older releases stored a model-provider key and model choice here. The official
     // Nanobot Runtime owns both now, so purge those legacy values during migration.
     this.database.exec("UPDATE tenant_settings SET nanobot_api_key_enc=NULL,nanobot_model=''");
+  }
+
+  private migrateCaptureColumns(): void {
+    const botColumn = this.all("PRAGMA table_info(messages)")
+      .find((column) => rowString(column, "name") === "bot_account_id");
+    if (!botColumn || rowNumber(botColumn, "notnull") === 0) return;
+    this.database.exec("PRAGMA foreign_keys=OFF");
+    try {
+      this.database.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE messages_capture_migration (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          bot_account_id TEXT REFERENCES bot_accounts(id) ON DELETE SET NULL,
+          source_id TEXT NOT NULL,
+          source_channel TEXT NOT NULL DEFAULT 'wechat',
+          source_type TEXT NOT NULL DEFAULT 'wechat',
+          source_external_id TEXT NOT NULL DEFAULT '',
+          source_connection_id TEXT NOT NULL DEFAULT '',
+          source_name TEXT NOT NULL DEFAULT '微信 iLink',
+          source_url TEXT NOT NULL DEFAULT '',
+          capture_type TEXT NOT NULL DEFAULT 'text',
+          sender_id TEXT NOT NULL,
+          session_id TEXT,
+          received_at TEXT NOT NULL,
+          sent_at TEXT,
+          text TEXT NOT NULL,
+          agent_status TEXT NOT NULL DEFAULT 'pending',
+          agent_error TEXT,
+          note_revision INTEGER NOT NULL DEFAULT 1,
+          note_title TEXT NOT NULL,
+          note_markdown TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT 'inbox',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          summary TEXT NOT NULL DEFAULT '',
+          key_points_json TEXT NOT NULL DEFAULT '[]',
+          knowledge_points_json TEXT NOT NULL DEFAULT '[]',
+          domains_json TEXT NOT NULL DEFAULT '[]',
+          tools_json TEXT NOT NULL DEFAULT '[]',
+          details_markdown TEXT NOT NULL DEFAULT '',
+          reason TEXT NOT NULL DEFAULT '',
+          suggested_action TEXT NOT NULL DEFAULT 'none',
+          sensitivity TEXT NOT NULL DEFAULT 'internal',
+          confidence TEXT NOT NULL DEFAULT 'low',
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          published_revision INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO messages_capture_migration(
+          seq,id,tenant_id,bot_account_id,source_id,source_external_id,source_connection_id,
+          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,note_revision,
+          note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,
+          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
+          published_revision,created_at,updated_at
+        ) SELECT
+          seq,id,tenant_id,bot_account_id,source_id,source_id,bot_account_id,
+          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,note_revision,
+          note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,
+          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
+          published_revision,created_at,updated_at
+        FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_capture_migration RENAME TO messages;
+        CREATE INDEX idx_messages_tenant_seq ON messages(tenant_id, seq DESC);
+        CREATE UNIQUE INDEX idx_messages_source_identity
+          ON messages(tenant_id,source_channel,source_connection_id,source_external_id);
+        COMMIT;
+      `);
+    } catch (error) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // Ignore rollback when SQLite already aborted the migration.
+      }
+      throw error;
+    } finally {
+      this.database.exec("PRAGMA foreign_keys=ON");
+    }
   }
 
   hasOwner(): boolean {
@@ -926,36 +1079,67 @@ export class AppDatabase {
     message: PublicInboundMessage,
     note: ProcessedNote,
   ): boolean {
-    if (this.hasMessage(message.id)) return false;
+    const source = wechatCaptureSource(sourceId, botAccountId, message.text);
+    return this.saveCapture({
+      id: message.id,
+      source,
+      captureType: inferCaptureType(message.text, message.attachments),
+      actorId: message.senderId,
+      ...(message.sessionId ? { sessionId: message.sessionId } : {}),
+      receivedAt: message.receivedAt,
+      ...(message.sentAt ? { sentAt: message.sentAt } : {}),
+      text: message.text,
+      attachments: message.attachments,
+    }, note);
+  }
+
+  saveCapture(capture: CaptureInput, note: ProcessedNote): boolean {
+    if (this.hasMessage(capture.id)) return false;
     const createdAt = now();
     this.transaction(() => {
       this.run(
         `INSERT INTO messages(
-          id,tenant_id,bot_account_id,source_id,sender_id,session_id,received_at,sent_at,text,
-          note_title,note_markdown,category,tags_json,summary,knowledge_points_json,domains_json,tools_json,
+          id,tenant_id,bot_account_id,source_id,source_channel,source_type,source_external_id,
+          source_connection_id,source_name,source_url,capture_type,sender_id,session_id,received_at,sent_at,text,
+          note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,tools_json,
+          details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
           created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        message.id,
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        capture.id,
         this.requireOwnerId(),
-        botAccountId,
-        sourceId,
-        message.senderId,
-        message.sessionId || null,
-        message.receivedAt,
-        message.sentAt || null,
-        message.text,
+        capture.source.channel === "wechat" ? capture.source.connectionId || null : null,
+        capture.source.externalId,
+        capture.source.channel,
+        capture.source.type,
+        capture.source.externalId,
+        capture.source.connectionId || "owner",
+        capture.source.name,
+        capture.source.url || "",
+        capture.captureType,
+        capture.actorId,
+        capture.sessionId || null,
+        capture.receivedAt,
+        capture.sentAt || null,
+        capture.text,
         note.title,
         note.markdown,
         note.category,
         JSON.stringify(note.tags),
         note.summary || "",
+        JSON.stringify(note.keyPoints || []),
         JSON.stringify(note.knowledgePoints || []),
         JSON.stringify(note.domains || []),
         JSON.stringify(note.tools || []),
+        note.detailsMarkdown || "",
+        note.reason || "",
+        note.suggestedAction || "none",
+        note.sensitivity || "internal",
+        note.confidence || "low",
+        JSON.stringify(note.warnings || []),
         createdAt,
         createdAt,
       );
-      for (const attachment of message.attachments) {
+      for (const attachment of capture.attachments) {
         const sha256 = crypto
           .createHash("sha256")
           .update(requireFileBuffer(attachment.path))
@@ -964,7 +1148,7 @@ export class AppDatabase {
           `INSERT INTO attachments(id,message_id,kind,file_name,storage_path,size,mime_type,transcript,sha256)
            VALUES(?,?,?,?,?,?,?,?,?)`,
           crypto.randomUUID(),
-          message.id,
+          capture.id,
           attachment.kind,
           attachment.fileName,
           attachment.path,
@@ -974,7 +1158,7 @@ export class AppDatabase {
           sha256,
         );
       }
-      this.upsertSearchIndex(message.id);
+      this.upsertSearchIndex(capture.id);
     });
     return true;
   }
@@ -1026,9 +1210,15 @@ export class AppDatabase {
     status: "completed" | "fallback" | "failed",
     error?: string,
   ): void {
+    const normalizedReason = note.reason ?? noteReason(note.markdown);
+    const normalizedAction = note.suggestedAction ?? noteAction(note.markdown, note.category);
+    const normalizedSensitivity = note.sensitivity ?? noteSensitivity(note.markdown);
+    const normalizedConfidence = note.confidence ?? noteConfidence(note.markdown);
+    const normalizedWarnings = note.warnings ?? noteWarnings(note.markdown, processingStatus(status));
     const row = this.maybeOne(
-      `SELECT note_title,note_markdown,category,tags_json,summary,knowledge_points_json,domains_json,
-       tools_json,note_revision,agent_status FROM messages WHERE id=? AND tenant_id=?`,
+      `SELECT note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,
+       tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
+       note_revision,agent_status FROM messages WHERE id=? AND tenant_id=?`,
       messageId,
       this.requireOwnerId(),
     );
@@ -1039,21 +1229,36 @@ export class AppDatabase {
       rowString(row, "category") !== note.category ||
       rowString(row, "tags_json") !== JSON.stringify(note.tags) ||
       rowString(row, "summary") !== (note.summary || "") ||
+      rowString(row, "key_points_json") !== JSON.stringify(note.keyPoints || []) ||
       rowString(row, "knowledge_points_json") !== JSON.stringify(note.knowledgePoints || []) ||
       rowString(row, "domains_json") !== JSON.stringify(note.domains || []) ||
       rowString(row, "tools_json") !== JSON.stringify(note.tools || []) ||
+      rowString(row, "details_markdown") !== (note.detailsMarkdown || "") ||
+      rowString(row, "reason") !== normalizedReason ||
+      rowString(row, "suggested_action") !== normalizedAction ||
+      rowString(row, "sensitivity") !== normalizedSensitivity ||
+      rowString(row, "confidence") !== normalizedConfidence ||
+      rowString(row, "warnings_json") !== JSON.stringify(normalizedWarnings) ||
       rowString(row, "agent_status") !== status;
     this.run(
-      `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,summary=?,knowledge_points_json=?,
-       domains_json=?,tools_json=?,note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
+      `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,summary=?,key_points_json=?,knowledge_points_json=?,
+       domains_json=?,tools_json=?,details_markdown=?,reason=?,suggested_action=?,sensitivity=?,confidence=?,warnings_json=?,
+       note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
       note.title,
       note.markdown,
       note.category,
       JSON.stringify(note.tags),
       note.summary || "",
+      JSON.stringify(note.keyPoints || []),
       JSON.stringify(note.knowledgePoints || []),
       JSON.stringify(note.domains || []),
       JSON.stringify(note.tools || []),
+      note.detailsMarkdown || "",
+      normalizedReason,
+      normalizedAction,
+      normalizedSensitivity,
+      normalizedConfidence,
+      JSON.stringify(normalizedWarnings),
       rowNumber(row, "note_revision") + (changed ? 1 : 0),
       status,
       error || null,
@@ -1073,9 +1278,24 @@ export class AppDatabase {
     const title = rowString(row, "note_title");
     const category = rowString(row, "category");
     const tags = safeJson<string[]>(rowString(row, "tags_json"), []).slice(0, 10);
-    const sourceUrl = firstWebUrl(rowString(row, "text"));
+    const keyPoints = safeJson<string[]>(rowString(row, "key_points_json"), []).slice(0, 8);
+    const sourceUrl = rowString(row, "source_url") || firstWebUrl(rowString(row, "text"));
+    const sourceType = (rowString(row, "source_type") || (sourceUrl ? "web" : "manual")) as CaptureSourceType;
     const agentStatus = rowString(row, "agent_status");
     const processing = processingStatus(agentStatus);
+    const storedAction = rowString(row, "suggested_action") as SyncItem["suggestedAction"];
+    const suggestedAction = ["none", "knowledge", "research", "project", "resource", "practice", "delete"].includes(storedAction)
+      ? storedAction
+      : noteAction(markdown, category);
+    const storedSensitivity = rowString(row, "sensitivity") as SyncItem["sensitivity"];
+    const sensitivity = ["public", "internal", "confidential", "restricted"].includes(storedSensitivity)
+      ? storedSensitivity
+      : noteSensitivity(markdown);
+    const storedConfidence = rowString(row, "confidence") as SyncItem["processing"]["confidence"];
+    const confidence = ["high", "medium", "low"].includes(storedConfidence)
+      ? storedConfidence
+      : noteConfidence(markdown);
+    const warnings = safeJson<string[]>(rowString(row, "warnings_json"), []).slice(0, 10);
     const updatedAt = rowString(row, "updated_at") || rowString(row, "created_at");
     const attachmentSnapshots = attachments.map((item) => ({
       id: rowString(item, "id"),
@@ -1089,10 +1309,24 @@ export class AppDatabase {
       markdown,
       category,
       tags,
+      keyPoints,
+      detailsMarkdown: rowString(row, "details_markdown"),
+      reason: rowString(row, "reason"),
+      suggestedAction,
+      sensitivity,
+      confidence,
+      warnings,
       processing,
+      source: {
+        type: sourceType,
+        name: rowString(row, "source_name"),
+        url: sourceUrl,
+      },
+      captureType: rowString(row, "capture_type"),
+      originalText: rowString(row, "text"),
       attachments: attachmentSnapshots.map((item) => ({ id: item.id, sha256: item.sha256 })),
-      schemaVersion: "1.1",
-      pipelineVersion: "knowledge-relay-inbox-v1",
+      schemaVersion: "1.2",
+      pipelineVersion: "knowledge-relay-inbox-v2",
     });
     const version = crypto.createHash("sha256").update(versionMaterial).digest("hex");
     const snapshot = {
@@ -1108,23 +1342,27 @@ export class AppDatabase {
       createdAt: rowString(row, "received_at"),
       updatedAt,
       summary: noteSummary(markdown, title),
-      reason: processing === "enriched" ? noteReason(markdown) : "",
-      suggestedAction: processing === "enriched" ? noteAction(markdown, category) : syncAction(category),
+      keyPoints,
+      detailsMarkdown: rowString(row, "details_markdown"),
+      reason: processing === "enriched" ? rowString(row, "reason") || noteReason(markdown) : "",
+      suggestedAction: processing === "enriched" ? suggestedAction : syncAction(category),
       source: {
-        type: sourceUrl ? "web" : "manual",
-        name: sourceUrl ? new URL(sourceUrl).hostname : "微信 iLink",
+        type: sourceType,
+        name: rowString(row, "source_name") || (sourceUrl ? new URL(sourceUrl).hostname : "微信 iLink"),
         url: sourceUrl,
       },
+      captureType: (rowString(row, "capture_type") || inferCaptureType(rowString(row, "text"), [])) as CaptureType,
+      originalText: rowString(row, "text"),
       tags,
-      sensitivity: processing === "enriched" ? noteSensitivity(markdown) : "internal",
+      sensitivity: processing === "enriched" ? sensitivity : "internal",
       deleted: false,
       processing: {
         processor: processing === "enriched" ? "nanobot" : "deterministic",
         status: processing,
-        pipelineVersion: "knowledge-relay-inbox-v1",
+        pipelineVersion: "knowledge-relay-inbox-v2",
         processedAt: updatedAt,
-        confidence: processing === "enriched" ? noteConfidence(markdown) : "low",
-        warnings: noteWarnings(markdown, processing),
+        confidence: processing === "enriched" ? confidence : "low",
+        warnings: processing === "enriched" && warnings.length ? warnings : noteWarnings(markdown, processing),
       },
       attachments: attachmentSnapshots,
     };
@@ -1154,20 +1392,34 @@ export class AppDatabase {
   }
 
   listPendingAgentMessages(limit = 100): PendingAgentMessage[] {
+    return this.listPendingCaptures(limit);
+  }
+
+  listPendingCaptures(limit = 100): PendingAgentMessage[] {
     const rows = this.all(
-      `SELECT m.*,b.bot_id FROM messages m
-       JOIN bot_accounts b ON b.id=m.bot_account_id
-       WHERE m.tenant_id=? AND m.agent_status='pending' AND b.revoked_at IS NULL
+      `SELECT m.* FROM messages m
+       LEFT JOIN bot_accounts b ON b.id=m.bot_account_id
+       WHERE m.tenant_id=? AND m.agent_status='pending'
+         AND (m.bot_account_id IS NULL OR b.revoked_at IS NULL)
        ORDER BY m.seq LIMIT ?`,
       this.requireOwnerId(),
       limit,
     );
     return rows.map((row) => ({
-      botAccountId: rowString(row, "bot_account_id"),
-      message: {
+      capture: {
         id: rowString(row, "id"),
-        senderId: rowString(row, "sender_id"),
-        botId: rowString(row, "bot_id"),
+        source: {
+          channel: (rowString(row, "source_channel") || "wechat") as CaptureInput["source"]["channel"],
+          type: (rowString(row, "source_type") || "wechat") as CaptureSourceType,
+          externalId: rowString(row, "source_external_id") || rowString(row, "source_id"),
+          ...(rowOptional(row, "source_connection_id")
+            ? { connectionId: rowString(row, "source_connection_id") }
+            : {}),
+          name: rowString(row, "source_name") || "微信 iLink",
+          ...(rowOptional(row, "source_url") ? { url: rowString(row, "source_url") } : {}),
+        },
+        captureType: (rowString(row, "capture_type") || "text") as CaptureType,
+        actorId: rowString(row, "sender_id"),
         ...(rowOptional(row, "session_id") ? { sessionId: rowString(row, "session_id") } : {}),
         receivedAt: rowString(row, "received_at"),
         ...(rowOptional(row, "sent_at") ? { sentAt: rowString(row, "sent_at") } : {}),
@@ -1974,10 +2226,14 @@ export class AppDatabase {
         fileName: snapshot.fileName || `微信收件-${rowNumber(event, "seq")}.md`,
         markdown,
         contentMarkdown: snapshot.contentMarkdown ?? stripNoteEnvelope(markdown),
+        captureType: snapshot.captureType ?? inferCaptureType(snapshot.originalText ?? markdown, []),
+        originalText: snapshot.originalText ?? "",
         receivedAt: snapshot.receivedAt || createdAt,
         createdAt,
         updatedAt: snapshot.updatedAt || createdAt,
         summary: snapshot.summary ?? noteSummary(markdown, snapshot.title || "微信收件"),
+        keyPoints: Array.isArray(snapshot.keyPoints) ? snapshot.keyPoints.slice(0, 8) : [],
+        detailsMarkdown: snapshot.detailsMarkdown || "",
         reason: snapshot.reason || "",
         suggestedAction: snapshot.suggestedAction || "none",
         source: snapshot.source || { type: "manual", name: "微信 iLink", url: "" },
