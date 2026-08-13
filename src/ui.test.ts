@@ -23,10 +23,10 @@ describe("adminPage", () => {
     expect(adminPage).toContain("Nanobot Skill");
     expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
     expect(adminPage).toContain("/api/nanobot/provider");
-    expect(adminPage).toContain("OpenAI Codex OAuth");
+    expect(adminPage).toContain("使用 OpenAI 账户登录");
     expect(adminPage).toContain("providerModelOptions");
     expect(adminPage).toContain("/api/nanobot/provider/models?provider=");
-    expect(adminPage).toContain("已实时读取 ");
+    expect(adminPage).toContain("已获取 ");
     expect(adminPage).toContain('class="agent-workspace"');
     expect(adminPage).toContain(".agent-workspace{display:grid;gap:18px;align-items:stretch}");
     expect(adminPage).toContain('class="model-catalog-bar wide"');
@@ -37,7 +37,12 @@ describe("adminPage", () => {
     expect(adminPage).toContain('data-view="settings"');
     expect(adminPage).toContain('class="secondary small runtime-test"');
     expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
-    expect(adminPage).toContain("消息处理策略");
+    expect(adminPage).toContain("AI 智能整理");
+    expect(adminPage).toContain("选择模型服务并设置整理偏好");
+    expect(adminPage).not.toContain("不会绕过 Runtime 直连模型");
+    expect(adminPage).not.toContain("Agent Runtime / Control Plane");
+    expect(adminPage).not.toContain("保存并重新加载 Runtime");
+    expect(adminPage).toContain("整理方式");
     expect(adminPage).toContain("高级连接信息");
     expect(adminPage).toContain('class="list skill-list"');
     expect(adminPage).toContain(".skill-card{position:relative");

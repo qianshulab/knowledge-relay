@@ -7,6 +7,7 @@
 - Added a Nanobot-owned live model catalog with searchable browser-native model suggestions and manual fallback.
 - Moved live model feedback into a dedicated status rail, aligned provider controls, and added a responsive two-column Agent workspace for wide screens.
 - Grouped Agent diagnostics inside the provider console, equalized the wide-screen work cards, and moved account security from the dashboard into a dedicated Settings page.
+- Rewrote user-facing guidance around goals and outcomes, while keeping infrastructure terminology inside advanced configuration only.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
 - Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.
