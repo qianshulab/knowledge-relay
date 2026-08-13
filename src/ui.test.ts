@@ -22,7 +22,11 @@ describe("adminPage", () => {
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
     expect(adminPage).toContain('class="sync-workspace"');
     expect(adminPage).toContain("安装同步插件");
-    expect(adminPage).toContain("知流同步 · v1.2.1");
+    expect(adminPage).toContain('id="pluginReleaseTitle"');
+    expect(adminPage).toContain("发布插件新版");
+    expect(adminPage).toContain("/api/plugin-release");
+    expect(adminPage).toContain("校验并发布");
+    expect(adminPage).not.toContain("知流同步 · v1.2.1");
     expect(adminPage).toContain('id="syncTargetCount"');
     expect(adminPage).toContain('class="sync-empty"');
     expect(adminPage).toContain("Nanobot Skill");

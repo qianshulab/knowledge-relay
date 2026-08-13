@@ -14,6 +14,7 @@ reproduction, affected version, and impact.
 
 - Bind to `127.0.0.1` unless an HTTPS reverse proxy is in front of the service.
 - Never commit `.env`, `data/`, Obsidian sync tokens, iLink credentials, or API keys.
+- Obsidian plugin publishing is owner-authenticated and origin-checked. Uploaded ZIP files are never extracted on the server; structure, paths, size, version, CRC, plugin ID, and SHA-256 are validated before an atomic persistent publish.
 - Back up `data/inbox.sqlite`, `data/media`, `data/derived`, and `data/app-secret.key` together.
 - Rotate a model key immediately if it was exposed in a terminal, issue, build log, or chat.
 - The model-provider form is an owner-only Nanobot control plane. Use it only over localhost or HTTPS; saved keys live in the mode-0600 Nanobot config and are never returned by the API.

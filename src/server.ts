@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -16,6 +16,12 @@ import {
   getNanobotProviderSettings,
   saveNanobotProviderSettings,
 } from "./nanobot-config.js";
+import {
+  getPluginReleaseInfo,
+  PLUGIN_MAX_ARCHIVE_BYTES,
+  publishPluginRelease,
+  resolvePluginRelease,
+} from "./plugin-release.js";
 import type { AppDatabase, OwnerProfile } from "./storage/database.js";
 import { adminPage } from "./ui.js";
 
@@ -68,6 +74,11 @@ export function createServer(
   const nanobot = new NanobotClient(config);
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
   let oauthInProgress = false;
+  let pluginPublishInProgress = false;
+
+  for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed"]) {
+    app.addContentTypeParser(contentType, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
+  }
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
@@ -111,11 +122,16 @@ export function createServer(
   app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(adminPage));
   app.get("/health", async () => ({ ok: true, database: true, time: new Date().toISOString() }));
   app.get("/downloads/knowledge-relay-obsidian.zip", async (_request, reply) => {
-    const archive = path.resolve("release/knowledge-relay-obsidian.zip");
-    if (!existsSync(archive)) return reply.code(404).send({ error: "插件安装包尚未生成" });
+    const release = await resolvePluginRelease(config);
+    if (!release.available || !release.archivePath) {
+      return reply.code(404).send({ error: "插件安装包尚未发布" });
+    }
     reply.header("Content-Type", "application/zip");
     reply.header("Content-Disposition", "attachment; filename=knowledge-relay-obsidian.zip");
-    return reply.send(createReadStream(archive));
+    reply.header("Cache-Control", "no-cache");
+    if (release.size) reply.header("Content-Length", String(release.size));
+    if (release.sha256) reply.header("ETag", `"${release.sha256}"`);
+    return reply.send(createReadStream(release.archivePath));
   });
 
   app.get("/api/bootstrap", async () => ({ needsSetup: !database.hasOwner() }));
@@ -326,6 +342,23 @@ export function createServer(
   });
 
   app.get("/api/skills", async () => ({ skills: database.listSkills() }));
+
+  app.get("/api/plugin-release", async () => getPluginReleaseInfo(config));
+
+  app.post<{ Body: Buffer }>(
+    "/api/plugin-release",
+    { bodyLimit: PLUGIN_MAX_ARCHIVE_BYTES },
+    async (request, reply) => {
+      if (pluginPublishInProgress) return reply.code(409).send({ error: "已有插件版本正在发布，请稍后再试" });
+      if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "请上传 ZIP 安装包" });
+      pluginPublishInProgress = true;
+      try {
+        return await publishPluginRelease(config, request.body);
+      } finally {
+        pluginPublishInProgress = false;
+      }
+    },
+  );
 
   app.post<{ Body: Record<string, unknown> }>("/api/skills", async (request) => {
     return {
