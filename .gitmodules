@@ -4,3 +4,6 @@
 [submodule "external-skills/fetch-skill"]
 	path = external-skills/fetch-skill
 	url = https://github.com/aresbit/fetch-skill.git
+[submodule "obsidian-plugin"]
+	path = obsidian-plugin
+	url = https://github.com/qianshulab/knowledge-relay-obsidian.git
