@@ -25,6 +25,11 @@ describe("adminPage", () => {
     expect(adminPage).toContain("providerModelOptions");
     expect(adminPage).toContain("/api/nanobot/provider/models?provider=");
     expect(adminPage).toContain("已实时读取 ");
+    expect(adminPage).toContain('class="agent-workspace"');
+    expect(adminPage).toContain('class="model-catalog-bar wide"');
+    expect(adminPage).toContain(".provider-field>input,.provider-field>select{height:46px}");
+    expect(adminPage).toContain(".head>button,.head>.button-link{flex:0 0 auto;white-space:nowrap}");
+    expect(adminPage).not.toContain('class="model-picker"');
     expect(adminPage).toContain("消息处理策略");
     expect(adminPage).toContain("高级连接信息");
     expect(adminPage).toContain('class="list skill-list"');
