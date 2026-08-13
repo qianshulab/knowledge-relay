@@ -245,15 +245,16 @@ function indexedSearchText(value: string): string {
   return searchTokens(value).join(" ");
 }
 
-function ftsQuery(value: string): string {
+function querySearchTokens(value: string): string[] {
   const cleaned = normalizedSearchText(value)
     .replace(/(?:微信公众号|公众号)/g, " mp.weixin.qq.com ")
     .replace(/(?:请|帮我|帮忙|查找|搜索|检索|看看|找一下|我之前|我有没有|有没有|是否有|哪些|什么|相关的?|内容|资料|消息|收件箱|工具)/g, " ")
     .replace(/[?？!！,，。；;：:()（）\[\]{}“”‘’]/g, " ");
-  return searchTokens(cleaned)
-    .slice(0, 12)
-    .map((token) => `"${token.replace(/"/g, '""')}"`)
-    .join(" AND ");
+  return searchTokens(cleaned).slice(0, 12);
+}
+
+function likeValue(value: string): string {
+  return `%${value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
 }
 
 function cleanFacetValue(value: unknown): string {
@@ -618,19 +619,26 @@ export class AppDatabase {
         if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
       }
     }
+    const existingSearch = this.maybeOne(
+      "SELECT sql FROM sqlite_master WHERE name='message_search' AND type='table'",
+    );
+    if (existingSearch && /CREATE VIRTUAL TABLE/i.test(rowString(existingSearch, "sql"))) {
+      this.database.exec("DROP TABLE message_search");
+    }
     this.database.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
-        message_id UNINDEXED,
-        tenant_id UNINDEXED,
-        title,
-        summary,
-        body,
-        tags,
-        domains,
-        knowledge_points,
-        tools,
-        tokenize='unicode61 remove_diacritics 2'
+      CREATE TABLE IF NOT EXISTS message_search (
+        message_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tags TEXT NOT NULL,
+        domains TEXT NOT NULL,
+        knowledge_points TEXT NOT NULL,
+        tools TEXT NOT NULL,
+        all_text TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS idx_message_search_tenant ON message_search(tenant_id);
     `);
     this.rebuildSearchIndexIfNeeded();
     // Older releases stored a model-provider key and model choice here. The official
@@ -1231,17 +1239,16 @@ export class AppDatabase {
   }
 
   searchInbox(query: string, options: InboxSearchOptions = {}): InboxSearchResult[] {
-    const match = ftsQuery(query);
+    const terms = querySearchTokens(query);
     const values: SqlValue[] = [];
     const where: string[] = [];
     let sql = `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
-      0 AS archived,${match ? "bm25(message_search,0,0,8,6,3,2,5,5,5)" : "0"} AS search_rank
-      FROM messages m ${match ? "JOIN message_search ON message_search.message_id=m.id" : ""}`;
+      0 AS archived FROM messages m ${terms.length ? "JOIN message_search ON message_search.message_id=m.id" : ""}`;
     where.push("m.tenant_id=?");
     values.push(this.requireOwnerId());
-    if (match) {
-      where.push("message_search MATCH ?");
-      values.push(match);
+    for (const term of terms) {
+      where.push("message_search.all_text LIKE ? ESCAPE '\\'");
+      values.push(likeValue(term));
     }
     if (options.category) {
       where.push("m.category=?");
@@ -1264,9 +1271,10 @@ export class AppDatabase {
       where.push("m.received_at<?");
       values.push(options.receivedBefore);
     }
-    if (!match && where.length === 1) return [];
-    sql += ` WHERE ${where.join(" AND ")} ORDER BY ${match ? "search_rank ASC," : ""}m.seq DESC LIMIT ?`;
-    values.push(Math.min(Math.max(options.limit || 8, 1), 20));
+    if (!terms.length && where.length === 1) return [];
+    const resultLimit = Math.min(Math.max(options.limit || 8, 1), 20);
+    sql += ` WHERE ${where.join(" AND ")} ORDER BY m.seq DESC LIMIT ?`;
+    values.push(terms.length ? 500 : resultLimit);
     return this.all(sql, ...values).map((row) => {
       const item = this.mapMessage(row);
       return {
@@ -1275,8 +1283,22 @@ export class AppDatabase {
           .replace(/\s+/g, " ")
           .trim()
           .slice(0, 240),
+        searchScore: terms.reduce((score, term) => {
+          const title = indexedSearchText(item.title);
+          const summary = indexedSearchText(item.summary);
+          const metadata = indexedSearchText([
+            ...item.tags,
+            ...item.domains,
+            ...item.knowledgePoints,
+            ...item.tools,
+          ].join(" "));
+          return score + (title.includes(term) ? 12 : 0) + (summary.includes(term) ? 8 : 0) +
+            (metadata.includes(term) ? 9 : 0) + (indexedSearchText(item.text).includes(term) ? 3 : 0);
+        }, 0),
       };
-    });
+    }).sort((left, right) => right.searchScore - left.searchScore || right.seq - left.seq)
+      .slice(0, resultLimit)
+      .map(({ searchScore: _searchScore, ...item }) => item);
   }
 
   getMessage(messageId: string): MessageListItem | undefined {
@@ -1832,24 +1854,33 @@ export class AppDatabase {
   private upsertSearchIndex(messageId: string): void {
     const row = this.maybeOne("SELECT * FROM messages WHERE id=?", messageId);
     if (!row) return;
-    this.run("DELETE FROM message_search WHERE message_id=?", messageId);
     this.run(
-      `INSERT INTO message_search(message_id,tenant_id,title,summary,body,tags,domains,knowledge_points,tools)
-       VALUES(?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO message_search(message_id,tenant_id,title,summary,body,tags,domains,knowledge_points,tools,all_text)
+       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET
+       tenant_id=excluded.tenant_id,title=excluded.title,summary=excluded.summary,body=excluded.body,
+       tags=excluded.tags,domains=excluded.domains,knowledge_points=excluded.knowledge_points,
+       tools=excluded.tools,all_text=excluded.all_text`,
       messageId,
       rowString(row, "tenant_id"),
-      indexedSearchText(rowString(row, "note_title")),
-      indexedSearchText(rowString(row, "summary")),
-      indexedSearchText(`${rowString(row, "text")}\n${rowString(row, "note_markdown")}`),
-      indexedSearchText(safeJson<string[]>(rowString(row, "tags_json"), []).join(" ")),
-      indexedSearchText(safeJson<string[]>(rowString(row, "domains_json"), []).join(" ")),
-      indexedSearchText(safeJson<string[]>(rowString(row, "knowledge_points_json"), []).join(" ")),
-      indexedSearchText(safeJson<string[]>(rowString(row, "tools_json"), []).join(" ")),
+      ...[
+        rowString(row, "note_title"),
+        rowString(row, "summary"),
+        `${rowString(row, "text")}\n${rowString(row, "note_markdown")}`,
+        safeJson<string[]>(rowString(row, "tags_json"), []).join(" "),
+        safeJson<string[]>(rowString(row, "domains_json"), []).join(" "),
+        safeJson<string[]>(rowString(row, "knowledge_points_json"), []).join(" "),
+        safeJson<string[]>(rowString(row, "tools_json"), []).join(" "),
+      ].map(indexedSearchText),
+      indexedSearchText([
+        rowString(row, "note_title"), rowString(row, "summary"), rowString(row, "text"),
+        rowString(row, "note_markdown"), rowString(row, "tags_json"), rowString(row, "domains_json"),
+        rowString(row, "knowledge_points_json"), rowString(row, "tools_json"),
+      ].join("\n")),
     );
   }
 
   private rebuildSearchIndexIfNeeded(): void {
-    const version = "2";
+    const version = "3";
     const current = this.maybeOne("SELECT value FROM metadata WHERE key='message_search_version'");
     if (current && rowString(current, "value") === version) return;
     this.transaction(() => {
