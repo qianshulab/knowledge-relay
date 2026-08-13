@@ -192,10 +192,14 @@ async function inspectPath(archivePath: string, source: "uploaded" | "bundled", 
 }
 
 export async function resolvePluginRelease(config: AppConfig): Promise<ResolvedPluginRelease> {
-  const uploaded = await inspectPath(publishedArchive(config), "uploaded", publishedMetadata(config));
-  if (uploaded) return uploaded;
-  const bundled = await inspectPath(bundledArchive(), "bundled");
-  return bundled || { available: false, downloadUrl: PLUGIN_DOWNLOAD_URL };
+  const [uploaded, bundled] = await Promise.all([
+    inspectPath(publishedArchive(config), "uploaded", publishedMetadata(config)),
+    inspectPath(bundledArchive(), "bundled"),
+  ]);
+  if (uploaded && bundled && uploaded.version && bundled.version) {
+    return compareVersions(uploaded.version, bundled.version) >= 0 ? uploaded : bundled;
+  }
+  return uploaded || bundled || { available: false, downloadUrl: PLUGIN_DOWNLOAD_URL };
 }
 
 export async function getPluginReleaseInfo(config: AppConfig): Promise<PluginReleaseInfo> {

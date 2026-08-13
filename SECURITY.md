@@ -20,3 +20,6 @@ reproduction, affected version, and impact.
 - The model-provider form is an owner-only Nanobot control plane. Use it only over localhost or HTTPS; saved keys live in the mode-0600 Nanobot config and are never returned by the API.
 - Live model discovery runs inside the authenticated Nanobot sidecar and returns model metadata only; Knowledge Relay never receives the provider credential.
 - Only enable Skills you trust. The Knowledge Relay process never executes Skill scripts; the isolated official Nanobot Runtime executes the two pinned workspace Skills and has network access by design.
+- Treat every synchronized Markdown body as untrusted. Plugin 1.3 strips active HTML, dangerous URI schemes, local embeds, and automatic remote image loading before writing a managed block.
+- Sync ACK payloads contain remote ID, version, result, and a random local reference only; Vault paths, note content, model prompts, and tokens are not returned to the server.
+- `restricted` records are never written to a normal Vault. This is a delivery guard, not a replacement for filesystem encryption or device security.

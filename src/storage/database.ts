@@ -117,12 +117,36 @@ export type MessageAttachmentView = SyncAttachment & {
 
 export type SyncItem = {
   eventSeq: number;
+  id: string;
   messageId: string;
   revision: number;
+  version: string;
   title: string;
   fileName: string;
   markdown: string;
+  contentMarkdown: string;
   receivedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  summary: string;
+  reason: string;
+  suggestedAction: "none" | "knowledge" | "research" | "project" | "resource" | "practice" | "delete";
+  source: {
+    type: "web" | "manual";
+    name: string;
+    url: string;
+  };
+  tags: string[];
+  sensitivity: "public" | "internal" | "confidential" | "restricted";
+  deleted: false;
+  processing: {
+    processor: "nanobot" | "deterministic";
+    status: "pending" | "enriched" | "fallback" | "failed";
+    pipelineVersion: "knowledge-relay-inbox-v1";
+    processedAt: string;
+    confidence: "high" | "medium" | "low";
+    warnings: string[];
+  };
   attachments: SyncAttachment[];
 };
 
@@ -169,6 +193,100 @@ function noteFileName(title: string, messageId: string): string {
     .slice(0, 80);
   const suffix = crypto.createHash("sha1").update(messageId).digest("hex").slice(0, 8);
   return `${cleaned || "微信收件"}-${suffix}.md`;
+}
+
+function stripNoteEnvelope(markdown: string): string {
+  return markdown
+    .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, "")
+    .replace(/^#\s+[^\r\n]+\r?\n+/, "")
+    .trim();
+}
+
+function noteSummary(markdown: string, fallback: string): string {
+  const body = stripNoteEnvelope(markdown);
+  const quote = body.match(/^>\s+(.+)$/m)?.[1];
+  const line = quote || body.split(/\r?\n/).map((item) => item.replace(/^#+\s*/, "").trim()).find(Boolean) || fallback;
+  return line.replace(/\s+/g, " ").slice(0, 500);
+}
+
+function firstWebUrl(text: string): string {
+  const candidate = text.match(/https?:\/\/[^\s)>\]]+/i)?.[0] || "";
+  try {
+    const url = new URL(candidate);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function syncAction(category: string): SyncItem["suggestedAction"] {
+  if (category === "task") return "project";
+  if (["reference", "document", "image", "voice", "video"].includes(category)) return "resource";
+  return "none";
+}
+
+function noteReason(markdown: string): string {
+  const marker = markdown.lastIndexOf("> [!info] Agent 建议");
+  if (marker < 0) return "";
+  const beforeAdvice = markdown.slice(0, marker);
+  const matches = [...beforeAdvice.matchAll(/^##\s+为什么值得保留\s*$/gm)];
+  const heading = matches.at(-1);
+  if (!heading || heading.index === undefined) return "";
+  return beforeAdvice.slice(heading.index + heading[0].length).split(/^##\s+/m)[0]!
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+function agentAdvice(markdown: string): string {
+  const marker = markdown.lastIndexOf("> [!info] Agent 建议");
+  return marker >= 0 ? markdown.slice(marker) : "";
+}
+
+function noteAction(markdown: string, category: string): SyncItem["suggestedAction"] {
+  const label = agentAdvice(markdown).match(/^>\s*建议方向：(.+)$/m)?.[1]?.trim();
+  const values: Record<string, SyncItem["suggestedAction"]> = {
+    暂无建议: "none",
+    知识卡片: "knowledge",
+    研究课题: "research",
+    项目: "project",
+    学习资源: "resource",
+    安全实践: "practice",
+    建议删除: "delete",
+  };
+  return label && values[label] ? values[label] : syncAction(category);
+}
+
+function noteSensitivity(markdown: string): SyncItem["sensitivity"] {
+  const label = agentAdvice(markdown).match(/^>\s*敏感级别：(.+)$/m)?.[1]?.trim();
+  return ({ 公开: "public", 内部: "internal", 机密: "confidential", 严格受限: "restricted" } as const)[
+    label as "公开" | "内部" | "机密" | "严格受限"
+  ] || "internal";
+}
+
+function noteConfidence(markdown: string): SyncItem["processing"]["confidence"] {
+  const label = agentAdvice(markdown).match(/^>\s*置信度：(.+)$/m)?.[1]?.trim();
+  return ({ 高: "high", 中: "medium", 低: "low" } as const)[label as "高" | "中" | "低"] || "low";
+}
+
+function noteWarnings(markdown: string, status: SyncItem["processing"]["status"]): string[] {
+  const warningBlock = agentAdvice(markdown).match(/^>\s*\[!warning\][^\r\n]*\r?\n((?:>[^\r\n]*(?:\r?\n|$))+)/m)?.[1] || "";
+  const warnings = warningBlock
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^>\s?/, "").trim().slice(0, 300))
+    .filter(Boolean)
+    .slice(0, 10);
+  if (!warnings.length && (status === "fallback" || status === "failed")) {
+    warnings.push("智能整理暂时不可用，已保留原始内容。");
+  }
+  return warnings;
+}
+
+function processingStatus(value: string): SyncItem["processing"]["status"] {
+  if (value === "completed") return "enriched";
+  if (value === "failed") return "failed";
+  if (value === "fallback") return "fallback";
+  return "pending";
 }
 
 function mapOwner(row: SqlRow): OwnerProfile {
@@ -780,7 +898,7 @@ export class AppDatabase {
     error?: string,
   ): void {
     const row = this.maybeOne(
-      "SELECT note_title,note_markdown,category,tags_json,note_revision FROM messages WHERE id=? AND tenant_id=?",
+      "SELECT note_title,note_markdown,category,tags_json,note_revision,agent_status FROM messages WHERE id=? AND tenant_id=?",
       messageId,
       this.requireOwnerId(),
     );
@@ -789,7 +907,8 @@ export class AppDatabase {
       rowString(row, "note_title") !== note.title ||
       rowString(row, "note_markdown") !== note.markdown ||
       rowString(row, "category") !== note.category ||
-      rowString(row, "tags_json") !== JSON.stringify(note.tags);
+      rowString(row, "tags_json") !== JSON.stringify(note.tags) ||
+      rowString(row, "agent_status") !== status;
     this.run(
       `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,
        note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
@@ -811,20 +930,64 @@ export class AppDatabase {
     const revision = rowNumber(row, "note_revision");
     if (rowNumber(row, "published_revision") >= revision) return 0;
     const attachments = this.attachmentsForMessage(messageId);
+    const markdown = rowString(row, "note_markdown");
+    const title = rowString(row, "note_title");
+    const category = rowString(row, "category");
+    const tags = safeJson<string[]>(rowString(row, "tags_json"), []).slice(0, 10);
+    const sourceUrl = firstWebUrl(rowString(row, "text"));
+    const agentStatus = rowString(row, "agent_status");
+    const processing = processingStatus(agentStatus);
+    const updatedAt = rowString(row, "updated_at") || rowString(row, "created_at");
+    const attachmentSnapshots = attachments.map((item) => ({
+      id: rowString(item, "id"),
+      fileName: rowString(item, "file_name"),
+      mimeType: rowString(item, "mime_type"),
+      size: rowNumber(item, "size"),
+      sha256: rowString(item, "sha256"),
+    }));
+    const versionMaterial = JSON.stringify({
+      title,
+      markdown,
+      category,
+      tags,
+      processing,
+      attachments: attachmentSnapshots.map((item) => ({ id: item.id, sha256: item.sha256 })),
+      schemaVersion: "1.1",
+      pipelineVersion: "knowledge-relay-inbox-v1",
+    });
+    const version = crypto.createHash("sha256").update(versionMaterial).digest("hex");
     const snapshot = {
+      id: messageId,
       messageId,
       revision,
-      title: rowString(row, "note_title"),
-      fileName: noteFileName(rowString(row, "note_title"), messageId),
-      markdown: rowString(row, "note_markdown"),
+      version,
+      title,
+      fileName: noteFileName(title, messageId),
+      markdown,
+      contentMarkdown: stripNoteEnvelope(markdown),
       receivedAt: rowString(row, "received_at"),
-      attachments: attachments.map((item) => ({
-        id: rowString(item, "id"),
-        fileName: rowString(item, "file_name"),
-        mimeType: rowString(item, "mime_type"),
-        size: rowNumber(item, "size"),
-        sha256: rowString(item, "sha256"),
-      })),
+      createdAt: rowString(row, "received_at"),
+      updatedAt,
+      summary: noteSummary(markdown, title),
+      reason: processing === "enriched" ? noteReason(markdown) : "",
+      suggestedAction: processing === "enriched" ? noteAction(markdown, category) : syncAction(category),
+      source: {
+        type: sourceUrl ? "web" : "manual",
+        name: sourceUrl ? new URL(sourceUrl).hostname : "微信 iLink",
+        url: sourceUrl,
+      },
+      tags,
+      sensitivity: processing === "enriched" ? noteSensitivity(markdown) : "internal",
+      deleted: false,
+      processing: {
+        processor: processing === "enriched" ? "nanobot" : "deterministic",
+        status: processing,
+        pipelineVersion: "knowledge-relay-inbox-v1",
+        processedAt: updatedAt,
+        confidence: processing === "enriched" ? noteConfidence(markdown) : "low",
+        warnings: noteWarnings(markdown, processing),
+      },
+      attachments: attachmentSnapshots,
     };
     let eventSeq = 0;
     this.transaction(() => {
@@ -1279,12 +1442,14 @@ export class AppDatabase {
 
   acknowledgeSyncBatch(targetId: string, batchId: string): { cursor: number } {
     const batch = this.maybeOne(
-      "SELECT * FROM sync_batches WHERE id=? AND target_id=? AND status='open'",
+      "SELECT * FROM sync_batches WHERE id=? AND target_id=?",
       batchId,
       targetId,
     );
-    if (!batch) throw new Error("同步批次不存在、已完成或不属于这个设备");
+    if (!batch) throw new Error("同步批次不存在或不属于这个设备");
     const cursor = rowNumber(batch, "to_seq");
+    if (rowString(batch, "status") === "acked") return { cursor };
+    if (rowString(batch, "status") !== "open") throw new Error("同步批次状态无效");
     this.transaction(() => {
       this.run("UPDATE sync_batches SET status='acked',acked_at=? WHERE id=?", now(), batchId);
       this.run(
@@ -1295,6 +1460,23 @@ export class AppDatabase {
       );
     });
     return { cursor };
+  }
+
+  resetSyncTargetCursor(targetId: string): { cursor: number } {
+    const target = this.maybeOne(
+      "SELECT id FROM sync_targets WHERE id=? AND revoked_at IS NULL",
+      targetId,
+    );
+    if (!target) throw new Error("同步设备不存在或已撤销");
+    this.transaction(() => {
+      this.run("DELETE FROM sync_batches WHERE target_id=? AND status='open'", targetId);
+      this.run(
+        "UPDATE sync_targets SET last_ack_seq=0,last_seen_at=? WHERE id=?",
+        now(),
+        targetId,
+      );
+    });
+    return { cursor: 0 };
   }
 
   attachmentForTarget(
@@ -1444,7 +1626,8 @@ export class AppDatabase {
        WHERE i.batch_id=? ORDER BY e.seq`,
       rowString(row, "id"),
     ).map((event) => {
-      const snapshot = safeJson<Omit<SyncItem, "eventSeq">>(rowString(event, "snapshot_json"), {
+      const raw = rowString(event, "snapshot_json");
+      const snapshot = safeJson<Partial<Omit<SyncItem, "eventSeq">>>(raw, {
         messageId: rowString(event, "message_id"),
         revision: rowNumber(event, "revision"),
         title: "微信收件",
@@ -1453,7 +1636,41 @@ export class AppDatabase {
         receivedAt: rowString(event, "created_at"),
         attachments: [],
       });
-      return { eventSeq: rowNumber(event, "seq"), ...snapshot };
+      const messageId = snapshot.id || snapshot.messageId || rowString(event, "message_id");
+      const markdown = snapshot.markdown || "";
+      const createdAt = snapshot.createdAt || snapshot.receivedAt || rowString(event, "created_at");
+      const status = snapshot.processing?.status || "fallback";
+      const item: SyncItem = {
+        eventSeq: rowNumber(event, "seq"),
+        id: messageId,
+        messageId,
+        revision: snapshot.revision || rowNumber(event, "revision") || 1,
+        version: snapshot.version || crypto.createHash("sha256").update(raw).digest("hex"),
+        title: snapshot.title || "微信收件",
+        fileName: snapshot.fileName || `微信收件-${rowNumber(event, "seq")}.md`,
+        markdown,
+        contentMarkdown: snapshot.contentMarkdown ?? stripNoteEnvelope(markdown),
+        receivedAt: snapshot.receivedAt || createdAt,
+        createdAt,
+        updatedAt: snapshot.updatedAt || createdAt,
+        summary: snapshot.summary ?? noteSummary(markdown, snapshot.title || "微信收件"),
+        reason: snapshot.reason || "",
+        suggestedAction: snapshot.suggestedAction || "none",
+        source: snapshot.source || { type: "manual", name: "微信 iLink", url: "" },
+        tags: Array.isArray(snapshot.tags) ? snapshot.tags.slice(0, 10) : [],
+        sensitivity: snapshot.sensitivity || "internal",
+        deleted: false,
+        processing: snapshot.processing || {
+          processor: "deterministic",
+          status,
+          pipelineVersion: "knowledge-relay-inbox-v1",
+          processedAt: snapshot.updatedAt || createdAt,
+          confidence: "low",
+          warnings: ["这是由旧版同步记录迁移的内容。"],
+        },
+        attachments: Array.isArray(snapshot.attachments) ? snapshot.attachments : [],
+      };
+      return item;
     });
     return {
       batchId: rowString(row, "id"),

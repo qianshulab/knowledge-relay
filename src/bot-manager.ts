@@ -228,6 +228,9 @@ export class BotManager {
     const safe = publicMessage(message);
     const fallback = defaultNote(safe);
     if (!this.database.saveMessage(account.id, sourceId, safe, fallback)) return;
+    // Publish the authoritative raw capture immediately. Nanobot enrichment is a
+    // later revision, so a slow or unavailable Agent can never block Obsidian.
+    this.database.publishMessage(id);
     let reply: string | undefined;
     const settings = this.database.getAgentSettings(this.config.nanobot);
     if (settings.enabled) {

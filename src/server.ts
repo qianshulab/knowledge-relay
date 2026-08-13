@@ -415,11 +415,23 @@ export function createServer(
       : reply.code(404).send({ error: "同步设备不存在" });
   });
 
-  app.get("/api/sync/pull", async (request, reply) => {
+  app.get<{ Querystring: { limit?: string } }>("/api/sync/pull", async (request, reply) => {
     const token = bearer(request);
     const target = token ? database.syncTargetForToken(token) : undefined;
     if (!target) return reply.code(401).send({ error: "Obsidian 同步令牌无效" });
-    return { folder: target.folder, ...database.getOrCreateSyncBatch(target.id, config.sync.batchSize) };
+    const requestedLimit = Math.min(Math.max(Number(request.query.limit || 50) || 50, 1), 100);
+    const batch = database.getOrCreateSyncBatch(
+      target.id,
+      Math.min(requestedLimit, config.sync.batchSize),
+    );
+    return {
+      schemaVersion: "1.1",
+      collectionId: target.id,
+      syncId: batch.batchId || "",
+      serverTime: new Date().toISOString(),
+      folder: target.folder,
+      ...batch,
+    };
   });
 
   app.post<{ Body: Record<string, unknown> }>("/api/sync/ack", async (request, reply) => {
@@ -428,7 +440,19 @@ export function createServer(
     if (!target) return reply.code(401).send({ error: "Obsidian 同步令牌无效" });
     const batchId = stringBody(request.body?.batchId, 100);
     if (!batchId) return reply.code(400).send({ error: "缺少 batchId" });
-    return { ok: true, ...database.acknowledgeSyncBatch(target.id, batchId) };
+    return {
+      schemaVersion: "1.1",
+      ok: true,
+      syncId: batchId,
+      ...database.acknowledgeSyncBatch(target.id, batchId),
+    };
+  });
+
+  app.post("/api/sync/reset", async (request, reply) => {
+    const token = bearer(request);
+    const target = token ? database.syncTargetForToken(token) : undefined;
+    if (!target) return reply.code(401).send({ error: "Obsidian 同步令牌无效" });
+    return { schemaVersion: "1.1", ok: true, ...database.resetSyncTargetCursor(target.id) };
   });
 
   app.get<{ Params: { id: string } }>("/api/sync/attachments/:id", async (request, reply) => {

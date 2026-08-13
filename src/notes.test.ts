@@ -25,13 +25,24 @@ describe("note generation", () => {
         title: "提交报告",
         category: "task",
         tags: ["工作"],
-        content: "整理最终版。",
-        tasks: ["提交报告"],
+        summary: "这是一条包含明确交付时间的任务。",
+        reason: "需要按时完成并保留上下文。",
+        suggestedAction: "project",
+        sensitivity: "internal",
+        confidence: "medium",
+        warnings: [],
       },
       message,
     );
     expect(note.tags).toContain("微信收件");
-    expect(note.markdown).toContain("- [ ] 提交报告");
+    expect(note.markdown).toContain("待办：明天提交报告");
+    expect(note.markdown).toContain("建议方向：项目");
+    expect(note.markdown).toContain("为什么值得保留");
     expect(note.markdown).toContain('sender_id: "user-1"');
+  });
+
+  it("拒绝 Agent 越权返回路径或可执行字段", () => {
+    expect(() => normalizeAgentNote({ title: "越权", path: "/tmp/output" }, message))
+      .toThrow("不允许的字段");
   });
 });

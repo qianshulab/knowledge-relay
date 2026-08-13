@@ -83,6 +83,21 @@ export function normalizeAgentNote(
 ): ProcessedNote {
   if (!value || typeof value !== "object") throw new Error("Nanobot 返回值不是 JSON 对象");
   const object = value as Record<string, unknown>;
+  const allowedFields = new Set([
+    "title",
+    "category",
+    "tags",
+    "summary",
+    "reason",
+    "suggestedAction",
+    "sensitivity",
+    "confidence",
+    "warnings",
+    "reply",
+    "derived_files",
+  ]);
+  const unexpected = Object.keys(object).filter((key) => !allowedFields.has(key));
+  if (unexpected.length) throw new Error(`Nanobot 返回了不允许的字段：${unexpected.slice(0, 3).join("、")}`);
   const fallback = defaultNote(message);
   const title =
     typeof object.title === "string" && object.title.trim()
@@ -95,20 +110,52 @@ export function normalizeAgentNote(
   const tags = Array.isArray(object.tags)
     ? object.tags
         .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim().slice(0, 40))
+        .map((item) => item.replace(/^#+/, "").trim().slice(0, 80))
         .filter(Boolean)
-        .slice(0, 12)
+        .filter((item, index, values) => values.indexOf(item) === index)
+        .slice(0, 10)
     : fallback.tags;
-  const content =
-    typeof object.content === "string" && object.content.trim()
-      ? object.content.trim()
-      : message.text.trim() || "（这条消息仅包含附件）";
+  const content = message.text.trim() || "（这条消息仅包含附件）";
   const summary =
     typeof object.summary === "string" && object.summary.trim()
-      ? object.summary.trim()
+      ? object.summary.replace(/[\r\n]+/g, " ").trim().slice(0, 500)
       : undefined;
-  const tasks = Array.isArray(object.tasks)
-    ? object.tasks.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+  const reason =
+    typeof object.reason === "string" ? object.reason.replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
+  const actions = new Set(["none", "knowledge", "research", "project", "resource", "practice", "delete"]);
+  const suggestedAction = typeof object.suggestedAction === "string" && actions.has(object.suggestedAction)
+    ? object.suggestedAction
+    : "none";
+  const actionLabel: Record<string, string> = {
+    none: "暂无建议",
+    knowledge: "知识卡片",
+    research: "研究课题",
+    project: "项目",
+    resource: "学习资源",
+    practice: "安全实践",
+    delete: "建议删除",
+  };
+  const sensitivityValues = new Set(["public", "internal", "confidential", "restricted"]);
+  const sensitivity = typeof object.sensitivity === "string" && sensitivityValues.has(object.sensitivity)
+    ? object.sensitivity
+    : "internal";
+  const sensitivityLabel: Record<string, string> = {
+    public: "公开",
+    internal: "内部",
+    confidential: "机密",
+    restricted: "严格受限",
+  };
+  const confidenceValues = new Set(["high", "medium", "low"]);
+  const confidence = typeof object.confidence === "string" && confidenceValues.has(object.confidence)
+    ? object.confidence
+    : "low";
+  const confidenceLabel: Record<string, string> = { high: "高", medium: "中", low: "低" };
+  const warnings = Array.isArray(object.warnings)
+    ? object.warnings
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.replace(/[\r\n]+/g, " ").trim().slice(0, 300))
+        .filter(Boolean)
+        .slice(0, 10)
     : [];
   const attachmentBlock = message.attachments.flatMap((attachment) => [
     `- ${attachment.fileName}`,
@@ -135,7 +182,15 @@ export function normalizeAgentNote(
       ...(summary ? ["", `> ${summary.replace(/\n/g, " ")}`] : []),
       "",
       content,
-      ...(tasks.length ? ["", "## 待办", "", ...tasks.map((task) => `- [ ] ${task}`)] : []),
+      ...(reason ? ["", "## 为什么值得保留", "", reason] : []),
+      "",
+      "> [!info] Agent 建议",
+      `> 建议方向：${actionLabel[suggestedAction]}`,
+      `> 置信度：${confidenceLabel[confidence]}`,
+      `> 敏感级别：${sensitivityLabel[sensitivity]}`,
+      ...(warnings.length
+        ? ["", "> [!warning] 数据质量提醒", ...warnings.map((warning) => `> ${warning}`)]
+        : []),
       ...(attachmentBlock.length ? ["", "## 附件", "", ...attachmentBlock] : []),
       "",
     ].join("\n"),

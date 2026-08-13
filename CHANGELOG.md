@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0 - 2026-08-13
+
+- Split the capture flow into a durable raw revision followed by an optional Nanobot-enriched revision, so AI latency or failure cannot block Obsidian delivery.
+- Added sync protocol 1.1 fields with permanent remote IDs, deterministic content versions, source metadata, processing state, sensitivity, and idempotent ACK/reset semantics.
+- Rebuilt Obsidian plugin 1.3.0 around ID-only deduplication, managed Markdown blocks, preserved user-owned sections/frontmatter, bounded retries, startup sync, explicit optional polling, and local sync status.
+- Added sensitivity filtering, SHA-256 attachment verification, untrusted Markdown sanitization, token redaction, and conflict-safe handling for legacy notes without managed markers.
+- Added plugin commands for immediate sync, status, local index repair, cursor reset, inbox navigation, and recent error inspection.
+- Made the download endpoint choose the highest version between persistent uploaded releases and the application-bundled plugin.
+- Added protocol, recovery, migration, and engineering audit documentation.
+
 ## 1.4.0 - 2026-08-13
 
 - Added an integrated Nanobot provider console for API-key providers, local runtimes, custom OpenAI-compatible endpoints, and local OpenAI Codex OAuth.

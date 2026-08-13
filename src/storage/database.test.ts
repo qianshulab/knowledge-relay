@@ -73,12 +73,97 @@ describe("AppDatabase", () => {
     expect(retry.batchId).toBe(first.batchId);
     expect(first.items).toHaveLength(1);
     expect(first.items[0]?.messageId).toBe(message.id);
+    expect(first.items[0]?.id).toBe(message.id);
+    expect(first.items[0]?.version).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.items[0]?.processing.status).toBe("fallback");
+    expect(first.items[0]?.source.type).toBe("manual");
 
     expect(first.batchId).toBeTruthy();
     database.acknowledgeSyncBatch(created.target.id, first.batchId!);
     const empty = database.getOrCreateSyncBatch(created.target.id, 100);
     expect(empty.items).toHaveLength(0);
     expect(database.listMessages()[0]?.archived).toBe(true);
+    database.close();
+  });
+
+  it("重置设备游标后稳定重放但不改变远程 ID 和内容版本", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:replay-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "https://example.com/reference",
+      attachments: [],
+    };
+    const note = defaultNote(message);
+    database.saveMessage(botId, "replay-message", message, note);
+    database.updateProcessedNote(message.id, note, "fallback");
+    database.publishMessage(message.id);
+    const created = database.createSyncTarget({ name: "Replay", folder: "收件箱", primary: true });
+    const first = database.getOrCreateSyncBatch(created.target.id, 50);
+    database.acknowledgeSyncBatch(created.target.id, first.batchId!);
+    expect(database.getOrCreateSyncBatch(created.target.id, 50).items).toEqual([]);
+    expect(database.resetSyncTargetCursor(created.target.id)).toEqual({ cursor: 0 });
+    const replay = database.getOrCreateSyncBatch(created.target.id, 50);
+    expect(replay.items[0]?.id).toBe(first.items[0]?.id);
+    expect(replay.items[0]?.version).toBe(first.items[0]?.version);
+    database.close();
+  });
+
+  it("原始消息先发布，Agent 完成后以同一 ID 的新版本增量发布", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:progressive-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "一条需要继续整理的原始消息",
+      attachments: [],
+    };
+    const fallback = defaultNote(message);
+    database.saveMessage(botId, "progressive-message", message, fallback);
+    database.publishMessage(message.id);
+    const created = database.createSyncTarget({ name: "Progressive", folder: "收件箱", primary: true });
+    const pending = database.getOrCreateSyncBatch(created.target.id, 50);
+    expect(pending.items[0]?.processing.status).toBe("pending");
+
+    database.updateProcessedNote(message.id, fallback, "fallback");
+    database.publishMessage(message.id);
+    database.acknowledgeSyncBatch(created.target.id, pending.batchId!);
+    const fallbackBatch = database.getOrCreateSyncBatch(created.target.id, 50);
+    expect(fallbackBatch.items[0]?.id).toBe(pending.items[0]?.id);
+    expect(fallbackBatch.items[0]?.version).not.toBe(pending.items[0]?.version);
+    expect(fallbackBatch.items[0]?.processing.status).toBe("fallback");
+    database.close();
+  });
+
+  it("把 Agent 语义建议确定性映射到同步 DTO 而不接收本地操作", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:semantic-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "https://example.com/research",
+      attachments: [],
+    };
+    const note = {
+      title: "研究资料",
+      category: "reference",
+      tags: ["微信收件", "研究"],
+      markdown: `---\ntitle: "研究资料"\n---\n\n# 研究资料\n\n> 一句话摘要\n\n原始正文\n> 建议方向：建议删除\n> 敏感级别：公开\n\n## 为什么值得保留\n\n可作为后续研究资料。\n\n> [!info] Agent 建议\n> 建议方向：研究课题\n> 置信度：高\n> 敏感级别：机密\n`,
+    };
+    database.saveMessage(botId, "semantic-message", message, defaultNote(message));
+    database.updateProcessedNote(message.id, note, "completed");
+    database.publishMessage(message.id);
+    const created = database.createSyncTarget({ name: "Semantic", folder: "收件箱", primary: true });
+    const item = database.getOrCreateSyncBatch(created.target.id, 50).items[0]!;
+    expect(item.summary).toBe("一句话摘要");
+    expect(item.reason).toBe("可作为后续研究资料。");
+    expect(item.suggestedAction).toBe("research");
+    expect(item.sensitivity).toBe("confidential");
+    expect(item.processing).toMatchObject({ status: "enriched", confidence: "high", processor: "nanobot" });
     database.close();
   });
 

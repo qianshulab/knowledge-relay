@@ -46,7 +46,7 @@ describe("NanobotClient", () => {
       new Response(
         JSON.stringify({
           choices: [
-            { message: { content: JSON.stringify({ title: "测试", content: "内容", tags: [] }) } },
+            { message: { content: JSON.stringify({ title: "测试", summary: "内容摘要", tags: [] }) } },
           ],
         }),
         { status: 200 },
@@ -105,7 +105,7 @@ describe("NanobotClient", () => {
             message: {
               content: JSON.stringify({
                 title: "测试",
-                content: "内容",
+                summary: "内容摘要",
                 tags: [],
                 derived_files: [{
                   path: "article.md",
