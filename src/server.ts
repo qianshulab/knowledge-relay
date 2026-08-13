@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
 
@@ -10,6 +11,10 @@ import type { AppConfig } from "./config.js";
 import type { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { errorDetails, logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
+import {
+  getNanobotProviderSettings,
+  saveNanobotProviderSettings,
+} from "./nanobot-config.js";
 import type { AppDatabase, OwnerProfile } from "./storage/database.js";
 import { adminPage } from "./ui.js";
 
@@ -61,6 +66,7 @@ export function createServer(
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   const nanobot = new NanobotClient(config);
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  let oauthInProgress = false;
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
@@ -264,6 +270,55 @@ export function createServer(
   });
 
   app.post("/api/agent/test", async () => nanobot.health(database.getAgentSettings(config.nanobot)));
+
+  app.get("/api/nanobot/provider", async () => getNanobotProviderSettings(config));
+
+  app.put<{ Body: Record<string, unknown> }>("/api/nanobot/provider", async (request) => {
+    await saveNanobotProviderSettings(config, {
+      provider: stringBody(request.body?.provider, 80),
+      model: stringBody(request.body?.model, 200),
+      apiBase: stringBody(request.body?.apiBase, 1_000),
+      apiKey: stringBody(request.body?.apiKey, 2_000) || undefined,
+      clearApiKey: booleanBody(request.body?.clearApiKey),
+    });
+    return { ok: true, autoReload: config.nanobot.autoReload };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/nanobot/provider/openai-oauth", async (request, reply) => {
+    if (!config.nanobot.managed) {
+      return reply.code(409).send({ error: "当前部署不支持从网页发起 OAuth，请在 Nanobot 容器或服务器终端完成授权" });
+    }
+    if (oauthInProgress) return reply.code(409).send({ error: "已有一个 OpenAI OAuth 授权正在进行" });
+    oauthInProgress = true;
+    const model = stringBody(request.body?.model, 200) || "openai-codex/gpt-5.6-sol";
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          "nanobot",
+          ["provider", "login", "openai-codex", "--set-main", "--model", model, "--config", config.nanobot.configPath],
+          {
+            timeout: 150_000,
+            maxBuffer: 256 * 1024,
+            env: {
+              ...process.env,
+              XDG_DATA_HOME: path.join(config.dataDir, "nanobot", "auth"),
+            },
+          },
+          (error, _stdout, stderr) => {
+            if (!error) return resolve();
+            const detail = String(stderr || error.message)
+              .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[redacted]")
+              .replace(/[\r\n\t]+/g, " ")
+              .slice(0, 300);
+            reject(new Error(detail || "OpenAI OAuth 授权失败"));
+          },
+        );
+      });
+      return { ok: true, autoReload: config.nanobot.autoReload };
+    } finally {
+      oauthInProgress = false;
+    }
+  });
 
   app.get("/api/skills", async () => ({ skills: database.listSkills() }));
 

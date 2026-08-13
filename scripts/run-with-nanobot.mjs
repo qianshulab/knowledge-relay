@@ -11,12 +11,18 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const workspace = path.resolve(
   process.env.NANOBOT_WORKSPACE || path.join(dataDir, "nanobot", "workspace"),
 );
-const configPath = path.join(dataDir, "nanobot", "config.json");
+const configPath = path.resolve(
+  process.env.NANOBOT_CONFIG || path.join(dataDir, "nanobot", "config.json"),
+);
 const managed = !["0", "false", "no", "off"].includes(
   String(process.env.NANOBOT_MANAGED ?? "true").toLowerCase(),
 );
 const children = [];
 let stopping = false;
+
+process.env.NANOBOT_CONFIG = configPath;
+process.env.NANOBOT_WORKSPACE = workspace;
+process.env.XDG_DATA_HOME ||= path.join(dataDir, "nanobot", "auth");
 
 function portOpen(port) {
   return new Promise((resolve) => {
@@ -28,8 +34,8 @@ function portOpen(port) {
   });
 }
 
-function launch(command, args) {
-  const child = spawn(command, args, { cwd: root, env: process.env, stdio: "inherit" });
+function launch(command, args, env = process.env) {
+  const child = spawn(command, args, { cwd: root, env, stdio: "inherit" });
   children.push(child);
   return child;
 }
@@ -69,14 +75,7 @@ if (managed) {
   if (exitCode !== 0) process.exit(exitCode);
   let runtime;
   if (!(await portOpen(8900))) {
-    runtime = launch("nanobot", [
-      "serve",
-      "--config", configPath,
-      "--workspace", workspace,
-      "--host", "127.0.0.1",
-      "--port", "8900",
-      "--timeout", "120",
-    ]);
+    runtime = launch(process.execPath, [path.join(root, "scripts", "run-nanobot-runtime.mjs")]);
   }
   try {
     await waitForNanobot(runtime);
@@ -92,9 +91,15 @@ if (managed) {
   });
 }
 
+const appEnv = { ...process.env };
+for (const key of [
+  "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY", "DASHSCOPE_API_KEY", "MOONSHOT_API_KEY", "ZAI_API_KEY",
+  "SILICONFLOW_API_KEY", "GROQ_API_KEY", "QIANFAN_API_KEY",
+]) delete appEnv[key];
 const app = mode === "dev"
-  ? launch(path.join(root, "node_modules", ".bin", "tsx"), ["watch", "src/index.ts"])
-  : launch(process.execPath, [path.join(root, "dist", "index.js")]);
+  ? launch(path.join(root, "node_modules", ".bin", "tsx"), ["watch", "src/index.ts"], appEnv)
+  : launch(process.execPath, [path.join(root, "dist", "index.js")], appEnv);
 const appCode = await new Promise((resolve) => app.once("exit", (code) => resolve(code ?? 1)));
 stop();
 process.exit(appCode);

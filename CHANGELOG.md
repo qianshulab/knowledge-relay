@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0 - 2026-08-13
+
+- Added an integrated Nanobot provider console for API-key providers, local runtimes, custom OpenAI-compatible endpoints, and local OpenAI Codex OAuth.
+- Added automatic Nanobot Runtime reload after provider configuration changes.
+- Consolidated duplicate WeChat article rules into the single original workspace Skill.
+- Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
+- Added Docker build-time checks for the Python fetch tool, Node.js WeChat extractor, and Nanobot document/API runtime.
+
 ## 1.3.0 - 2026-08-13
 
 - Made the official Nanobot Runtime the only AI execution path; Knowledge Relay no longer calls DeepSeek or fetches web pages itself.

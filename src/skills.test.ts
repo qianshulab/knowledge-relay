@@ -47,7 +47,6 @@ describe("Skills management", () => {
       expect.arrayContaining([
         "inbox-router",
         "obsidian-note-builder",
-        "wechat-article-ingest",
         "document-to-markdown",
         "wechat-article-extractor",
         "fetch-skill",

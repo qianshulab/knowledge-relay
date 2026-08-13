@@ -75,7 +75,9 @@ npm run setup:nanobot
 npm run dev
 ```
 
-Nanobot 默认监听 `127.0.0.1:8900`。模型和 Key 在 `data/nanobot/config.json` 与 `.env` 中由 Nanobot 使用：
+Nanobot 默认监听 `127.0.0.1:8900`。打开“AI Agent”即可选择模型提供者、模型、API 地址并保存凭据。控制台只把配置写入 `data/nanobot/config.json`，不会把密钥写进知流数据库或回显到浏览器；实际模型请求仍完全由 Nanobot 发起。
+
+也可以继续通过 `.env` 为默认 DeepSeek 提供凭据：
 
 ```text
 DEEPSEEK_API_KEY=你的测试或生产 Key
@@ -84,7 +86,9 @@ NANOBOT_BASE_URL=http://127.0.0.1:8900/v1/
 
 本机地址不要求 Runtime API Key；Docker 内部网络必须用独立的 `NANOBOT_RUNTIME_API_KEY` 鉴权。每条收件使用隔离的任务 session。本产品不开放通用 Agent 对话，也不会把对话混入收件箱。
 
-出于安全边界，Nanobot 地址只能通过服务器的 `NANOBOT_BASE_URL` 配置；管理页面只显示 Runtime 与底层模型状态，不保存 DeepSeek Key，也不能切换底层模型。
+出于安全边界，Nanobot Runtime 地址仍只能通过服务器的 `NANOBOT_BASE_URL` 配置。页面可以管理 Nanobot 内部的 OpenAI、DeepSeek、Anthropic、OpenRouter、Gemini、百炼、Kimi、智谱、硅基流动、本地 Ollama/vLLM 和自定义 OpenAI 兼容提供者。保存后托管 Runtime 会自动重新加载。
+
+本机部署还可以在页面发起 OpenAI Codex OAuth；它会打开 OpenAI 官方授权页面，令牌由 Nanobot 的 OAuth 存储管理。远程或 Docker 部署建议使用 OpenAI API Key，或在 Nanobot 容器终端完成 OAuth。
 
 两个用户指定的上游仓库以 Git submodule 固定到明确 commit。初始化脚本会把完整文件安装到 `data/nanobot/workspace/skills/`，并安装微信公众号 Skill 的 Node.js 依赖：
 
@@ -130,7 +134,9 @@ npm run setup:nanobot
 docker compose up -d --build
 ```
 
-Compose 会构建两个隔离服务：`knowledge-relay` 和官方 `nanobot-ai==0.3.0` sidecar。DeepSeek Key 只注入 Nanobot 容器；知流仅持有内部 Runtime 鉴权 Key。后台仍只发布到宿主机 `127.0.0.1:8787`，Nanobot 端口不对宿主机和公网暴露。
+Compose 会构建两个隔离服务：`knowledge-relay` 和官方 `nanobot-ai==0.3.0` sidecar。Nanobot 镜像同时准备 Python 3、Node.js 22、文档解析能力、原版 fetch 脚本和公众号 Skill 的固定 npm 依赖，并在构建时逐项检查。后台仍只发布到宿主机 `127.0.0.1:8787`，Nanobot 端口不对宿主机和公网暴露。
+
+模型凭据既可以预先放在 `.env`，也可以启动后在后台写入共享 Nanobot 配置。后台不会返回已保存的密钥；公网配置模型前必须先启用 HTTPS。
 
 容器使用非 root 用户、健康检查、`no-new-privileges` 和受限临时目录。公网部署请在 HTTPS 反向代理后使用，并填写 `PUBLIC_BASE_URL`。升级前将数据库、媒体、派生附件和 `app-secret.key` 一起备份。
 

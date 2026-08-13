@@ -24,7 +24,10 @@ export type AppConfig = {
     baseUrl: string;
     apiKey?: string;
     model: string;
+    configPath: string;
     workspace: string;
+    managed: boolean;
+    autoReload: boolean;
     timeoutMs: number;
   };
   sync: {
@@ -106,8 +109,16 @@ export function loadConfig(): AppConfig {
       baseUrl: nanobotBaseUrl,
       apiKey: process.env.NANOBOT_API_KEY?.trim() || undefined,
       model: "",
+      configPath: path.resolve(
+        process.env.NANOBOT_CONFIG?.trim() || path.join(process.env.DATA_DIR?.trim() || "./data", "nanobot", "config.json"),
+      ),
       workspace: path.resolve(
         process.env.NANOBOT_WORKSPACE?.trim() || path.join(process.env.DATA_DIR?.trim() || "./data", "nanobot", "workspace"),
+      ),
+      managed: booleanFromEnv("NANOBOT_MANAGED", true),
+      autoReload: booleanFromEnv(
+        "NANOBOT_AUTO_RELOAD",
+        booleanFromEnv("NANOBOT_MANAGED", true),
       ),
       timeoutMs: numberFromEnv("NANOBOT_TIMEOUT_MS", 120_000),
     },

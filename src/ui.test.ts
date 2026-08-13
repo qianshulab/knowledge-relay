@@ -19,7 +19,9 @@ describe("adminPage", () => {
     expect(adminPage).toContain("pageFromLocation");
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
     expect(adminPage).toContain("原版 Nanobot Skill");
-    expect(adminPage).toContain("编辑原始 Skill");
-    expect(adminPage).toContain("实际加载的完整 SKILL.md");
+    expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
+    expect(adminPage).toContain("/api/nanobot/provider");
+    expect(adminPage).toContain("OpenAI Codex OAuth");
+    expect(adminPage).not.toContain("核对上游原始 SKILL.md");
   });
 });

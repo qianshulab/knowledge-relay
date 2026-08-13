@@ -1,4 +1,4 @@
-# Knowledge Relay 1.3 — ten-round product review
+# Knowledge Relay 1.4 — ten-round product review
 
 1. **Supply chain:** pinned both requested Skill sources; rejected dynamic webpage script execution and runtime code downloads; shipped an independent adapter.
 2. **Safe fetch:** validates HTTP(S), credentials, ports, every DNS answer and redirect; blocks private/reserved IPs; limits time, redirects, bytes, encodings, and content types.

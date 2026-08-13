@@ -10,7 +10,9 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const workspace = path.resolve(
   process.env.NANOBOT_WORKSPACE || path.join(dataDir, "nanobot", "workspace"),
 );
-const configPath = path.join(dataDir, "nanobot", "config.json");
+const configPath = path.resolve(
+  process.env.NANOBOT_CONFIG || path.join(dataDir, "nanobot", "config.json"),
+);
 const skillsRoot = path.join(workspace, "skills");
 const expectedRevisions = {
   "wechat-article-extractor": "d8f74b8946065e64537f1ad39f962dbed86da3c7",

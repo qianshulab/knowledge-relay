@@ -1,8 +1,10 @@
 # Privacy
 
 Knowledge Relay is a self-hosted, single-owner inbox. Messages, attachments, derived Markdown,
-sync state, and encrypted iLink credentials are stored under `DATA_DIR`. The model key is supplied
-to the separate Nanobot Runtime through its environment and is not stored by Knowledge Relay.
+sync state, and encrypted iLink credentials are stored under `DATA_DIR`. Model credentials may be
+supplied through the Nanobot environment or saved from the owner-only control panel directly into
+Nanobot's `config.json`. They are not stored in the Knowledge Relay database and are never returned
+to the browser after saving. Protect and back up the Nanobot config as a secret-bearing file.
 
 When Nanobot processing is enabled, message text and supported attachments are sent to the local
 Nanobot Runtime. Nanobot then sends the task context to its configured model provider. The original

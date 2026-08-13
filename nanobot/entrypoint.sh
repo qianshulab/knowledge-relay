@@ -22,9 +22,11 @@ for skill in wechat-article-extractor fetch-skill; do
   fi
 done
 
-exec nanobot serve \
-  --config /nanobot/config.json \
-  --workspace /nanobot/workspace \
-  --host 0.0.0.0 \
-  --port 8900 \
-  --timeout 120
+export NANOBOT_CONFIG=/nanobot/config.json
+export NANOBOT_WORKSPACE=/nanobot/workspace
+export NANOBOT_SERVE_HOST=0.0.0.0
+export NANOBOT_SERVE_PORT=8900
+export NANOBOT_SERVE_TIMEOUT=120
+export XDG_DATA_HOME=/nanobot/auth
+
+exec node /opt/knowledge-relay/run-nanobot-runtime.mjs

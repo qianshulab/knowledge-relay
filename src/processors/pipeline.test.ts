@@ -22,7 +22,10 @@ const config: AppConfig = {
   nanobot: {
     baseUrl: "http://127.0.0.1:8900/v1/",
     model: "",
+    configPath: "/tmp/ilink-test/nanobot/config.json",
     workspace: "/tmp/ilink-test/nanobot/workspace",
+    managed: true,
+    autoReload: true,
     timeoutMs: 120_000,
   },
   sync: { batchSize: 100 },
