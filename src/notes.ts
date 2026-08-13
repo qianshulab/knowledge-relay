@@ -22,6 +22,20 @@ function firstUsefulLine(text: string): string {
   );
 }
 
+function cleanList(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.normalize("NFKC").replace(/^#+/, "").replace(/[\r\n]+/g, " ").trim().slice(0, 80))
+    .filter(Boolean)
+    .filter((item, index, values) => values.indexOf(item) === index)
+    .slice(0, limit);
+}
+
+function yamlList(name: string, values: string[]): string[] {
+  return values.length ? [`${name}:`, ...values.map((value) => `  - ${yaml(value)}`)] : [`${name}: []`];
+}
+
 export function defaultNote(message: PublicInboundMessage): ProcessedNote {
   const firstLine = firstUsefulLine(message.text);
   const hasUrl = /https?:\/\/\S+/i.test(message.text);
@@ -47,6 +61,7 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
     transcript: item.transcript,
   }));
   const body = message.text.trim() || "（这条消息仅包含附件）";
+  const summary = body.replace(/[\r\n]+/g, " ").trim().slice(0, 500);
   const attachmentBlock = attachments.flatMap((item) => [
     `- ${item.fileName}`,
     ...(item.transcript ? [`  - 转写：${item.transcript}`] : []),
@@ -55,6 +70,10 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
     title,
     category,
     tags,
+    summary,
+    knowledgePoints: [],
+    domains: [],
+    tools: [],
     markdown: [
       "---",
       `title: ${yaml(title)}`,
@@ -66,6 +85,9 @@ export function defaultNote(message: PublicInboundMessage): ProcessedNote {
       `category: ${yaml(category)}`,
       "tags:",
       ...tags.map((tag) => `  - ${yaml(tag)}`),
+      ...yamlList("knowledge_points", []),
+      ...yamlList("domains", []),
+      ...yamlList("tools", []),
       "---",
       "",
       `# ${title}`,
@@ -88,6 +110,9 @@ export function normalizeAgentNote(
     "category",
     "tags",
     "summary",
+    "knowledge_points",
+    "domains",
+    "tools",
     "reason",
     "suggestedAction",
     "sensitivity",
@@ -121,6 +146,9 @@ export function normalizeAgentNote(
     typeof object.summary === "string" && object.summary.trim()
       ? object.summary.replace(/[\r\n]+/g, " ").trim().slice(0, 500)
       : undefined;
+  const knowledgePoints = cleanList(object.knowledge_points, 8);
+  const domains = cleanList(object.domains, 4);
+  const tools = cleanList(object.tools, 8);
   const reason =
     typeof object.reason === "string" ? object.reason.replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
   const actions = new Set(["none", "knowledge", "research", "project", "resource", "practice", "delete"]);
@@ -166,6 +194,10 @@ export function normalizeAgentNote(
     title,
     category,
     tags: Array.from(new Set(["微信收件", ...tags])),
+    summary: summary || fallback.summary || "",
+    knowledgePoints,
+    domains,
+    tools,
     markdown: [
       "---",
       `title: ${yaml(title)}`,
@@ -177,6 +209,9 @@ export function normalizeAgentNote(
       `category: ${yaml(category)}`,
       "tags:",
       ...Array.from(new Set(["微信收件", ...tags])).map((tag) => `  - ${yaml(tag)}`),
+      ...yamlList("knowledge_points", knowledgePoints),
+      ...yamlList("domains", domains),
+      ...yamlList("tools", tools),
       "---",
       "",
       `# ${title}`,

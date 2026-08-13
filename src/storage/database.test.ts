@@ -366,4 +366,61 @@ describe("AppDatabase", () => {
     ]);
     database.close();
   });
+
+  it("入库时建立只读检索索引并聚合领域、知识点和工具", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:indexed-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T05:00:00.000Z",
+      text: "这篇文章介绍移动应用安全测试与 Frida 动态分析。",
+      attachments: [],
+    };
+    database.saveMessage(botId, "indexed-message", message, defaultNote(message));
+    database.updateProcessedNote(message.id, {
+      title: "移动应用安全测试",
+      category: "reference",
+      tags: ["微信收件", "移动安全"],
+      summary: "使用 Frida 对移动应用进行动态分析。",
+      knowledgePoints: ["动态插桩", "移动应用安全"],
+      domains: ["网络安全"],
+      tools: ["Frida"],
+      markdown: "# 移动应用安全测试\n\n使用 Frida 对移动应用进行动态分析。",
+    }, "completed");
+
+    expect(database.searchInbox("移动安全工具")).toEqual([
+      expect.objectContaining({ id: message.id, tools: ["Frida"], domains: ["网络安全"] }),
+    ]);
+    expect(database.searchInbox("", { tool: "Frida" })[0]?.id).toBe(message.id);
+    expect(database.knowledgeFacets()).toMatchObject({
+      total: 1,
+      enriched: 1,
+      domains: [{ name: "网络安全", count: 1 }],
+      tools: [{ name: "Frida", count: 1 }],
+    });
+    database.close();
+  });
+
+  it("使用消息序号稳定分页且不会重复返回边界记录", async () => {
+    const { database, botId } = await setup();
+    for (let index = 0; index < 25; index += 1) {
+      const message: PublicInboundMessage = {
+        id: `bot-1:page-${index}`,
+        senderId: "wx-1",
+        botId: "bot-1",
+        receivedAt: new Date(Date.UTC(2026, 7, 13, 6, 0, index)).toISOString(),
+        text: `分页消息 ${index}`,
+        attachments: [],
+      };
+      database.saveMessage(botId, `page-${index}`, message, defaultNote(message));
+    }
+    const first = database.listMessages(20);
+    const second = database.listMessages(20, first.at(-1)!.seq);
+    expect(first).toHaveLength(20);
+    expect(second).toHaveLength(5);
+    expect(new Set([...first, ...second].map((item) => item.id)).size).toBe(25);
+    expect(Math.max(...second.map((item) => item.seq))).toBeLessThan(first.at(-1)!.seq);
+    database.close();
+  });
 });

@@ -1,180 +1,190 @@
 # 知流 · Knowledge Relay
 
-一个可自行部署的个人微信 iLink 收件产品：系统接收你发送给机器人的文字和附件，交给官方 HKUDS/nanobot Runtime 调用模型、选择并执行原版 Skills，再把结构化笔记和 Markdown 附件可靠地增量同步到指定 Obsidian Vault 收件箱。
+知流是一个可自托管的个人知识收件台：接收发送给微信 iLink Bot 的文字、网页与附件，由官方 Nanobot Runtime 完成解析和智能整理，再可靠同步到指定的 Obsidian 收件箱。
 
-产品边界：微信消息是收件来源，Nanobot 是唯一 Agent Runtime，Obsidian 是知识落点。模型 Key、模型路由、Agent Loop、工具调用和原版 Skills 全部由 Nanobot 管理；知流不直连 DeepSeek。系统不把普通 Agent 对话混入收件箱。
+> 当前版本：1.7.0 · 个人单用户版 · Node.js 22.13+ · Nanobot 0.3.0
 
-## 已实现
+## 产品能力
 
-- 首次个人账户初始化、密码登录和 HttpOnly 会话
-- 支持连接自己的 iLink Bot；每个连接独立长轮询
-- 接收文字、图片、语音、文件和视频，下载并解密微信 CDN 附件
-- SQLite 消息库、唯一约束、附件校验和、历史 JSONL 自动迁移
-- 微信 Bot 凭据使用 AES-256-GCM 加密；网页登录会话和插件令牌只存 SHA-256 哈希；模型 Key 只通过环境变量交给 Nanobot
-- 官方 Nanobot Runtime 负责调用 DeepSeek、运行 Agent Loop、工具和 Skills，自动生成标题、分类、标签、摘要和待办
-- 完整安装固定版本的 `wechat-article-extractor` 与 `fetch-skill`；后台展示的就是实际加载的原版 `SKILL.md`
-- 后台可启停、修改、恢复原版 Skill；Nanobot 解析后的 Markdown 作为派生附件同步
-- 模型不可用时自动使用内置规则，不阻塞收件与同步，并可通过当前微信消息做去重提醒
-- 可视化控制台：消息、微信账号、Agent、Skills 和同步设备
-- 控制台支持图片、PDF、文本、音视频安全预览，其他附件下载
-- 页面每 5 秒检测新消息并自动刷新概览和收件箱
-- Obsidian 稳定批次、独立设备游标、ACK 后逻辑归档、修订覆盖和附件下载
-- 轻量 Obsidian 插件 1.3.1：启动同步、可选定时/手动同步、永久 ID 去重、托管区块更新、敏感级别限制、Markdown 安全净化、SHA-256 校验和断点重试；安装包为无本地模块依赖的单文件构建
+- 微信文字、图片、语音、文件和视频捕获，附件下载、解密与校验
+- Nanobot 作为唯一 Agent Runtime，管理模型、Agent Loop、工具与原版 Skills
+- 固定版本的 `wechat-article-extractor` 与 `fetch-skill`，可解析公众号和普通网页
+- AI 入库时提取标题、摘要、分类、标签、专业领域、知识点与工具
+- 首页知识地图，按领域、知识点和工具查看与筛选历史内容
+- 收件箱只读检索助手：只搜索已收件内容，不联网、不执行命令、不修改数据
+- 最近捕获首屏 20 条，使用稳定游标继续加载，不会一次渲染全部历史消息
+- 无模型或模型故障时保存原文、继续同步，并支持微信去重提醒
+- Obsidian 批次同步、永久 ID 去重、修订更新、附件 SHA-256 校验与 ACK 归档
+- 独立维护的单文件 Obsidian 插件，可在控制台下载或发布新版
+- SQLite 本地存储、凭据加密、登录限速、安全响应头和 Docker 进程隔离
 
-## 本机启动
+## 工作方式
 
-需要 Node.js 22.13 或更高版本、Python 3.11+，并安装带 API/文档插件的官方 `nanobot-ai==0.3.0`。
+```text
+微信消息
+  ↓
+知流保存原文与附件
+  ↓
+Nanobot 选择 Skill、解析内容、调用模型
+  ↓
+结构化笔记 + 领域/知识点/工具 + 本地全文索引
+  ├── 只读收件箱检索
+  └── Obsidian 增量同步
+```
+
+知流不会持续训练模型，也不会在查询时把整个收件箱重新交给模型。AI 在入库阶段完成语义整理，SQLite FTS5 保存可检索索引；查询阶段只做受限的本地检索并返回原消息引用。这种“预处理、索引、检索”的分层方式更容易控制隐私、延迟和成本。
+
+## Docker 一键部署（推荐）
+
+需要 Git、Docker Engine 及 Docker Compose v2。
 
 ```bash
-npm install
-uv tool install 'nanobot-ai[api,documents]==0.3.0'
-git submodule update --init --recursive
-cp .env.example .env
-# 在 .env 填写 DEEPSEEK_API_KEY
+git clone --recurse-submodules https://github.com/qianshulab/knowledge-relay.git
+cd knowledge-relay
+./scripts/deploy-docker.sh
+```
+
+脚本会：
+
+1. 初始化两个固定版本的上游 Skill；
+2. 创建 `.env` 并生成 Nanobot 内部鉴权密钥；
+3. 构建并启动 `knowledge-relay` 与隔离的 `nanobot` sidecar；
+4. 输出服务状态和访问地址。
+
+打开 <http://127.0.0.1:8787> 创建个人账户。登录后在“系统设置 → AI 智能整理”配置 DeepSeek、OpenAI、Anthropic、OpenRouter、Gemini、Ollama 或自定义 OpenAI 兼容服务。
+
+常用维护命令：
+
+```bash
+docker compose ps
+docker compose logs -f --tail=200
+docker compose pull
+docker compose up -d --build
+docker compose down
+```
+
+数据保存在宿主机 `data/` 与 Docker volume `nanobot-data`。升级前必须同时备份二者。
+
+## 源码一键部署
+
+适用于 macOS 或 Linux，需要 Git、Node.js 22.13+、npm 与 Python 3.11+。
+
+```bash
+git clone --recurse-submodules https://github.com/qianshulab/knowledge-relay.git
+cd knowledge-relay
+./scripts/deploy-source.sh
+```
+
+脚本会在项目内创建 `.nanobot-venv`，安装固定版本的 `nanobot-ai[api,documents]==0.3.0`，准备 Skills、安装依赖、构建并启动服务。服务以前台方式运行，按 `Ctrl+C` 可安全停止。
+
+已有代码目录也可直接执行：
+
+```bash
+npm run deploy:docker
+# 或
+npm run deploy:source
+```
+
+开发模式：
+
+```bash
+npm ci
+npm run setup:nanobot
 npm run dev
-```
-
-打开 <http://127.0.0.1:8787>。首次打开会引导创建个人账户，并自动导入旧版本的 `data/state.json`、`data/inbox/*.jsonl` 和已绑定微信账号。由旧多用户版本升级时，系统保留拥有实际数据的主账户，并删除无数据的附加账户和邀请码。
-
-生产模式：
-
-```bash
-npm run build
-npm start
-```
-
-健康检查：
-
-```bash
-curl http://127.0.0.1:8787/health
 ```
 
 ## 第一次使用
 
-1. 创建个人账户并登录。
-2. 打开“设置 → 微信接入”，点击“添加微信”，扫码并在手机确认。
-3. 给机器人发送文字或附件，在“收件台”查看整理后的笔记。
-4. 打开“Obsidian 同步”，创建设备，复制只显示一次的 `obsidian_...` 令牌。
-5. 直接在同步页面下载插件，或按 [插件独立仓库的安装说明](https://github.com/qianshulab/knowledge-relay-obsidian) 安装，填写服务地址和令牌。以后插件单独升级时，可在同一页面展开“发布新版”并上传 ZIP，下载入口会自动切换到新版本。
-6. 点击插件的“立即同步”。写入成功后，服务端消息会显示“已归档”。
+1. 打开管理页面，创建唯一的个人账户。
+2. 进入“系统设置 → 微信接入”，扫码连接自己的 iLink Bot。
+3. 进入“系统设置 → AI 智能整理”，配置模型服务并检查连接。
+4. 在 Skills 页面确认公众号与网页 Skill 已启用。
+5. 给机器人发送一条消息，在收件台查看整理、知识地图和检索结果。
+6. 打开“Obsidian”，下载插件并创建连接，将只显示一次的令牌填入插件设置。
 
-插件默认优先使用当前 Vault 的 `90-系统/模板/T-快速捕获.md`。可在插件设置中关闭模板或更换路径；模板不可用时会自动回退，不会阻塞同步。
+## 收件箱检索助手
 
-点击侧边栏个人账户旁的设置按钮可以修改登录密码；修改后所有旧网页登录会话都会自动失效。
+检索助手不是通用聊天机器人。服务端没有为它开放 Nanobot、网络、文件、命令、写入或删除能力，只允许：
 
-“设置 → Nanobot Skills”把能力分成两组：执行型 Skills 展示实际 workspace 中加载的两个完整上游 `SKILL.md`，编辑、停用或恢复会直接更新 Nanobot workspace；收件整理规则负责分类、价值判断、文档、图片/语音与安全研究语义，不直接执行外部脚本。修改只影响之后收到的新消息。
+- 查询收件箱正文、标题、摘要和标签；
+- 按分类、领域、知识点、工具与时间范围过滤；
+- 返回匹配消息的摘要和可打开的原文引用。
 
-## Nanobot
+即使输入“忽略规则”“执行命令”或其他非检索请求，也只能得到本地收件箱搜索结果。模型未配置时，原始内容仍会进入全文索引；AI 语义字段保持为空，不影响基本搜索和 Obsidian 同步。
 
-知流只调用 HKUDS/nanobot 的本机 API，不调用任何模型供应商 API。`npm run dev` 会初始化专用 workspace，并同时启动 Nanobot 与知流：
+## Nanobot 与 Skills
 
-```bash
-uv tool install 'nanobot-ai[api,documents]==0.3.0'
-git submodule update --init --recursive
-npm run setup:nanobot
-npm run dev
-```
+知流不直连模型供应商。模型 Key、模型选择、工具调用与 Skill 执行都由 Nanobot 管理；主服务只连接本机 `127.0.0.1` 或 Compose 内精确命名的 `nanobot` 服务。
 
-Nanobot 默认监听 `127.0.0.1:8900`。打开“AI Agent”即可选择模型提供者、模型、API 地址并保存凭据。控制台只把配置写入 `data/nanobot/config.json`，不会把密钥写进知流数据库或回显到浏览器；实际模型请求仍完全由 Nanobot 发起。
+两个执行型 Skill 通过 Git submodule 固定版本：
 
-也可以继续通过 `.env` 为默认 DeepSeek 提供凭据：
+- `external-skills/wechat-article-extractor`
+- `external-skills/fetch-skill`
 
-```text
-DEEPSEEK_API_KEY=你的测试或生产 Key
-NANOBOT_BASE_URL=http://127.0.0.1:8900/v1/
-NANOBOT_CATALOG_URL=http://127.0.0.1:8901/
-```
+Docker 镜像已经准备它们所需的 Python、Node.js、npm 依赖和 Nanobot documents/API 组件。控制台编辑的是 Runtime 实际加载的完整 `SKILL.md`；启用、停用、编辑和恢复只影响之后收到的新消息。
 
-本机地址不要求 Runtime API Key；Docker 内部网络必须用独立的 `NANOBOT_RUNTIME_API_KEY` 鉴权。每条收件使用隔离的任务 session。本产品不开放通用 Agent 对话，也不会把对话混入收件箱。
+上游 `fetch-skill` 的回退链可能把 URL 发送给第三方 Reader 服务。详情与固定 commit 见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 
-出于安全边界，Nanobot Runtime 地址仍只能通过服务器的 `NANOBOT_BASE_URL` 配置。页面可以管理 Nanobot 内部的 OpenAI、DeepSeek、Anthropic、OpenRouter、Gemini、百炼、Kimi、智谱、硅基流动、本地 Ollama/vLLM 和自定义 OpenAI 兼容提供者。模型标识会通过 Nanobot 的内部目录服务实时读取；不支持目录的提供者仍可手动输入。保存后托管 Runtime 会自动重新加载。
+## Obsidian 插件
 
-本机部署还可以在页面发起 OpenAI Codex OAuth；它会打开 OpenAI 官方授权页面，令牌由 Nanobot 的 OAuth 存储管理。远程或 Docker 部署建议使用 OpenAI API Key，或在 Nanobot 容器终端完成 OAuth。
+插件源码与发布位于独立仓库：[qianshulab/knowledge-relay-obsidian](https://github.com/qianshulab/knowledge-relay-obsidian)。主仓库只固定引用验证过的插件版本，并在构建时生成可下载 ZIP。
 
-两个用户指定的上游仓库以 Git submodule 固定到明确 commit。初始化脚本会把完整文件安装到 `data/nanobot/workspace/skills/`，并安装微信公众号 Skill 的 Node.js 依赖：
+插件默认优先使用 Vault 中的 `90-系统/模板/T-快速捕获.md`。同步特性包括：
 
-```bash
-git submodule update --init --recursive
-npm run setup:nanobot
-```
+- 单文件 `main.js`，无运行时相对模块依赖；
+- 稳定批次、断点重试和 ACK；
+- 永久消息 ID 去重，同一消息修订更新；
+- 用户编辑区与知流托管区分离；
+- 附件 SHA-256 校验和敏感级别限制。
 
-另外内置五条与同步契约一致的整理规则：智能收件路由、知识价值与行动建议、文档理解与 Markdown、图片与语音理解、安全研究资料整理。知流只向 Nanobot 提交任务契约和用户偏好；原版 Skill 的选择、读取和脚本执行均发生在 Nanobot Agent Loop 内。
+协议与兼容规则见 [docs/API.md](./docs/API.md) 和 [docs/SYNC-AUDIT.md](./docs/SYNC-AUDIT.md)。
 
-Nanobot 自带的 GitHub、定时任务、天气、图片生成、Skill 安装、tmux、记忆等通用 Skills 与收件链路无关，专用 Runtime 会显式停用它们，以减少误触发和不必要的工具权限。需要扩展新能力时，优先在后台新增无脚本整理规则；只有确实需要新工具时才审查并固定新的 workspace Skill。
+## 配置
 
-## 网页 Skills 的执行语义
+常用环境变量：
 
-- 两个上游仓库固定到 [THIRD_PARTY.md](./THIRD_PARTY.md) 记录的 commit；原文件不被知流修改。
-- 原版 `fetch-skill` 的默认回退链可能把 URL 发送给 Jina Reader、defuddle.md 或 markdown.new；这是原 Skill 的既有行为，使用前请理解隐私影响。
-- 原版 `fetch-skill` 还包含 FxTwitter、Camofox、WeSpy 与可选 wechat exporter 能力；相关外部服务未安装时会按其原始回退逻辑运行。
-- Skill 脚本只在独立 Nanobot Runtime 中执行。Nanobot 配置限制 workspace 文件访问；Docker 进一步把它与知流进程隔离。
-- 网页内容仍视为不可信资料，知流只接收 Nanobot 返回的严格 JSON 与指定 artifacts 目录中的派生文件。
-- 只有模型成功分类后才保存派生 Markdown；模型失败时只保留原消息。
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `HOST` | `127.0.0.1` | 管理服务监听地址 |
+| `PORT` | `8787` | 管理服务端口 |
+| `DATA_DIR` | `./data` | 数据库、附件与密钥目录 |
+| `PUBLIC_BASE_URL` | 空 | 公网 HTTPS 地址 |
+| `NANOBOT_BASE_URL` | `http://127.0.0.1:8900/v1/` | 仅允许本机或内部 sidecar |
+| `NANOBOT_RUNTIME_API_KEY` | 必填（Docker） | Nanobot 内部鉴权密钥 |
+| `DEEPSEEK_API_KEY` | 空 | 可选的初始模型凭据，也可在页面配置 |
+| `ILINK_ALLOW_FROM` | 扫码者本人 | 允许的微信用户 ID |
+| `SYNC_BATCH_SIZE` | `100` | 单个 Obsidian 同步批次上限 |
 
-## Obsidian 同步语义
+完整示例见 [.env.example](./.env.example)。不要提交 `.env`、`data/app-secret.key` 或模型 Key。
 
-- 插件源码在独立仓库 [qianshulab/knowledge-relay-obsidian](https://github.com/qianshulab/knowledge-relay-obsidian) 开发和发布；主系统只固定引用经过验证的插件版本。
-- 插件发布前由 esbuild 把模板与同步模块统一打入 `main.js`，ZIP 不包含运行时本地模块依赖，避免 Obsidian 因相对模块路径无法启用插件。
-- 管理员可在 Obsidian 模块上传并独立发布插件安装包；服务端会校验插件 ID、版本、必需文件、文件路径、压缩体积和 SHA-256，并拒绝降级或同版本替换。
-- 上传的插件版本保存在 `DATA_DIR/plugin-release/`，Docker 重建或重启不会丢失；下载入口会在持久化上传包和镜像随附包之间选择版本更高者，公开地址始终保持不变。
-- 原始消息不会因同步成功而删除。
-- 每个 Vault/设备拥有独立游标。
-- 插件会先写完一整个批次的笔记和附件，再发送 ACK。
-- 未 ACK 的批次会稳定重放；相同消息不会创建第二份笔记。
-- 原始消息会先以 `pending` 版本发布；AI 完成或降级后再发布同一永久 ID 的新版本，Agent 不可用不会阻塞收件。
-- AI 以后产生修订时，插件只更新笔记的知流托管区块和同步元数据，不覆盖用户的状态、tags、任务或备注。
-- 插件检测到旧笔记缺少托管标记时会报告冲突，不做整篇覆盖；可通过本地索引修复命令排查。
-- `restricted` 内容不会写入普通 Vault；附件必须通过 SHA-256 校验后才参与 ACK。
-- 控制台中的“已归档”表示主设备已经确认到达该消息对应的同步事件。
+## 安全与公网部署
 
-完整 DTO、幂等、恢复和兼容规则见 [同步协议 1.1](./docs/API.md)，实现取舍与风险复核见 [同步工程审计](./docs/SYNC-AUDIT.md)。
+- 默认只绑定 `127.0.0.1`；公网使用必须放在 HTTPS 反向代理后，并设置 `PUBLIC_BASE_URL`。
+- `data/app-secret.key` 与 `data/inbox.sqlite` 必须成对备份；缺少主密钥将无法解密已有凭据。
+- Obsidian 连接令牌等同于对应收件数据的读取权限，可在控制台随时撤销。
+- Nanobot 工具运行在独立容器中，启用新的执行型 Skill 前应审查并固定版本。
+- iLink 使用腾讯公开实现；公开商业运营前请自行确认服务条款与限流要求。
 
-## 个人版与安全
+更多说明见 [SECURITY.md](./SECURITY.md)、[PRIVACY.md](./PRIVACY.md) 和 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 
-- 系统只保留一个个人账户，不提供注册、邀请码或用户管理接口。
-- 密码登录继续保护管理页面；Obsidian 使用可独立撤销的设备令牌。
-- 插件令牌等同于一个 Vault 的读权限，可随时在控制台撤销。
-- 默认只监听 `127.0.0.1`。公网部署必须配置 HTTPS 反向代理，并设置 `PUBLIC_BASE_URL=https://...`。
-- 数据目录中的 `app-secret.key` 是解密凭据所需的主密钥；备份时必须和数据库一起安全备份，但不要公开或提交版本库。
-- 当前使用 SQLite，适合个人单实例部署。
-
-## Docker
-
-编辑 `.env` 后运行：
+## 验证与健康检查
 
 ```bash
-docker compose up -d --build
+npm run verify
+curl http://127.0.0.1:8787/health
 ```
 
-Compose 会构建两个隔离服务：`knowledge-relay` 和官方 `nanobot-ai==0.3.0` sidecar。Nanobot 镜像同时准备 Python 3、Node.js 22、文档解析能力、原版 fetch 脚本和公众号 Skill 的固定 npm 依赖，并在构建时逐项检查。后台仍只发布到宿主机 `127.0.0.1:8787`，Nanobot 端口不对宿主机和公网暴露。
+`npm run verify` 会执行类型检查、48+ 项单元测试、服务构建、Nanobot 脚本检查以及 Obsidian 插件单文件校验。
 
-模型凭据既可以预先放在 `.env`，也可以启动后在后台写入共享 Nanobot 配置。后台不会返回已保存的密钥；公网配置模型前必须先启用 HTTPS。
+## 数据目录
 
-容器使用非 root 用户、健康检查、`no-new-privileges` 和受限临时目录。公网部署请在 HTTPS 反向代理后使用，并填写 `PUBLIC_BASE_URL`。升级前将数据库、媒体、派生附件和 `app-secret.key` 一起备份。
+- `data/inbox.sqlite`：账户、消息、AI 元数据、本地检索索引和同步状态
+- `data/app-secret.key`：本机凭据加密主密钥
+- `data/media/`：微信原始附件
+- `data/derived/`：解析生成的 Markdown 附件
+- `data/plugin-release/`：后台发布的 Obsidian 插件包
+- `data/nanobot/`：本机 Nanobot 配置、workspace、Skills 与 artifacts
 
-## 验证
+## License
 
-```bash
-npm run typecheck
-npm test
-npm run build
-node --check obsidian-plugin/main.js
-npm run package:plugin
-```
-
-## 数据位置
-
-- `data/inbox.sqlite`：个人账户、Bot、消息、同步批次和设置
-- `data/app-secret.key`：本机主加密密钥
-- `data/media/<date>/...`：按日期保存的附件
-- `data/derived/<date>/...`：安全解析出的 Markdown 附件
-- `data/nanobot/`：本机 Nanobot 配置、workspace、Skills、sessions 和 artifacts
-- `data/state.json`、`data/inbox/*.jsonl`：旧版数据，仅用于首次迁移，不再作为主存储
-
-## 当前产品边界
-
-- iLink 协议按腾讯公开的 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 实现；公开商业运营前应另外确认微信/iLink 的服务条款和限流规则。
-- Agent Skills 应使用经过审查、固定版本的白名单，不要安装不可信的任意脚本。
-- 复杂扫描 PDF、需要登录/验证码的网页和 SILK 语音转码属于后续可插拔处理器，消息接收和 Obsidian 同步本身不依赖这些能力。
-
-安全、隐私和本轮十次迭代记录见 [SECURITY.md](./SECURITY.md)、[PRIVACY.md](./PRIVACY.md) 与 [docs/ITERATION-REPORT.md](./docs/ITERATION-REPORT.md)。
+知流本体按 [MIT License](./LICENSE) 开源。第三方组件按各自许可证使用，详见 [THIRD_PARTY.md](./THIRD_PARTY.md)。

@@ -15,8 +15,11 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.6.0"');
+    expect(adminPage).toContain('const UI_BUILD = "1.7.0"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
+    expect(adminPage).toContain("默认显示最近 20 条");
+    expect(adminPage).toContain("收件箱检索助手");
+    expect(adminPage).toContain("white-space:nowrap");
     expect(adminPage).toContain("#globalNotice{position:fixed");
     expect(adminPage).not.toContain("background:#102d23;color:#7ae7ba");
     expect(adminPage).toContain("history.pushState");
@@ -83,7 +86,7 @@ describe("adminPage", () => {
     expect(adminPage).toContain('id="aiRuntimeCard"');
     expect(adminPage).toContain('id="aiCategoryBars"');
     expect(adminPage).toContain('id="aiRecentResults"');
-    expect(adminPage).toContain("renderIntelligence(result.messages)");
+    expect(adminPage).toContain("renderIntelligence(loadedMessages)");
     expect(adminPage).toContain('class="secondary small runtime-test"');
     expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
     expect(adminPage).toContain("AI 智能整理");

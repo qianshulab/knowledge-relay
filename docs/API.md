@@ -8,6 +8,38 @@
 Authorization: Bearer obsidian_xxx
 ```
 
+管理页面使用 HttpOnly 登录会话，不使用 Obsidian 设备令牌。与收件浏览和检索相关的接口如下。
+
+## 管理端收件分页
+
+```http
+GET /api/messages?limit=20&before=123
+```
+
+`limit` 范围为 1–50，默认 20；`before` 是上一页最后一条消息的 `seq`。响应中的 `pagination.nextBefore` 只能在 `hasMore=true` 时用于下一页：
+
+```json
+{
+  "messages": [],
+  "pagination": { "limit": 20, "hasMore": true, "nextBefore": 103 }
+}
+```
+
+## 知识聚合与只读检索
+
+```http
+GET /api/knowledge/facets
+POST /api/inbox/query
+Content-Type: application/json
+
+{
+  "question": "我之前收藏过哪些移动安全工具？",
+  "filters": { "domain": "网络安全" }
+}
+```
+
+`filters` 可使用 `category`、`domain`、`knowledgePoint` 和 `tool`。响应固定包含 `mode=indexed_inbox_search`、`scope=inbox_only` 与 `readOnly=true`。该接口只查询本地收件索引，不调用 Nanobot，不联网，也没有命令、写入或删除能力。
+
 ## 拉取稳定批次
 
 ```http

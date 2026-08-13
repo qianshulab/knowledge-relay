@@ -17,10 +17,13 @@ const catalogTokens = new Set(
 const catalogScript = path.resolve(
   process.env.NANOBOT_MODEL_CATALOG_SCRIPT || "./nanobot/model-catalog.py",
 );
-const nanobotExecutable = (process.env.PATH || "")
-  .split(path.delimiter)
-  .map((directory) => path.join(directory, "nanobot"))
-  .find((candidate) => fs.existsSync(candidate));
+const projectNanobot = path.resolve(".nanobot-venv", "bin", "nanobot");
+const nanobotExecutable = fs.existsSync(projectNanobot)
+  ? projectNanobot
+  : (process.env.PATH || "")
+    .split(path.delimiter)
+    .map((directory) => path.join(directory, "nanobot"))
+    .find((candidate) => fs.existsSync(candidate));
 let catalogPython = process.env.NANOBOT_PYTHON || "python3";
 if (!process.env.NANOBOT_PYTHON && nanobotExecutable) {
   try {
@@ -93,7 +96,7 @@ catalogServer.once("error", (error) => {
 });
 
 function start() {
-  runtime = spawn("nanobot", [
+  runtime = spawn(nanobotExecutable || "nanobot", [
     "serve",
     "--config", configPath,
     "--workspace", workspace,

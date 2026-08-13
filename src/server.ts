@@ -46,6 +46,28 @@ function booleanBody(value: unknown): boolean {
   return value === true;
 }
 
+function inboxDateRange(question: string): { receivedAfter?: string; receivedBefore?: string } {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  if (question.includes("昨天")) {
+    const yesterday = new Date(startOfToday);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return { receivedAfter: yesterday.toISOString(), receivedBefore: startOfToday.toISOString() };
+  }
+  if (question.includes("今天")) return { receivedAfter: startOfToday.toISOString() };
+  if (question.includes("本周")) {
+    const monday = new Date(startOfToday);
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+    return { receivedAfter: monday.toISOString() };
+  }
+  const days = question.includes("最近30天") || question.includes("近30天")
+    ? 30
+    : question.includes("最近7天") || question.includes("近7天")
+      ? 7
+      : 0;
+  return days ? { receivedAfter: new Date(Date.now() - days * 86_400_000).toISOString() } : {};
+}
+
 function sessionCookie(config: AppConfig, token: string, maxAgeSeconds: number): string {
   const secure = config.publicBaseUrl?.startsWith("https://") ? "; Secure" : "";
   return `ilink_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${secure}`;
@@ -211,9 +233,62 @@ export function createServer(
   });
 
   app.get<{ Querystring: { limit?: string; before?: string } }>("/api/messages", async (request) => {
-    const limit = Math.min(Math.max(Number(request.query.limit || 100) || 100, 1), 200);
+    const limit = Math.min(Math.max(Number(request.query.limit || 20) || 20, 1), 50);
     const before = Number(request.query.before || 0) || undefined;
-    return { messages: database.listMessages(limit, before) };
+    const messages = database.listMessages(limit + 1, before);
+    const hasMore = messages.length > limit;
+    const page = messages.slice(0, limit);
+    return {
+      messages: page,
+      pagination: {
+        limit,
+        hasMore,
+        nextBefore: hasMore ? page.at(-1)?.seq : undefined,
+      },
+    };
+  });
+
+  app.get("/api/knowledge/facets", async () => database.knowledgeFacets());
+
+  app.post<{ Body: Record<string, unknown> }>("/api/inbox/query", async (request, reply) => {
+    const question = stringBody(request.body?.question, 500);
+    const filters = request.body?.filters && typeof request.body.filters === "object"
+      ? request.body.filters as Record<string, unknown>
+      : {};
+    const requestedCategory = stringBody(filters.category, 40);
+    const inferredCategory = !requestedCategory && /(?:待办|任务)/.test(question) ? "task" : "";
+    const category = requestedCategory || inferredCategory;
+    const domain = stringBody(filters.domain, 80);
+    const knowledgePoint = stringBody(filters.knowledgePoint, 80);
+    const tool = stringBody(filters.tool, 80);
+    if (!question && !category && !domain && !knowledgePoint && !tool) {
+      return reply.code(400).send({ error: "请输入想查找的内容" });
+    }
+    const range = inboxDateRange(question);
+    const searchQuestion = question
+      .replace(/(?:最近|近)\s*(?:7|30)\s*天/g, " ")
+      .replace(/今天|昨天|本周/g, " ")
+      .replace(inferredCategory ? /待办|任务/g : /$^/, " ")
+      .trim();
+    const matches = database.searchInbox(searchQuestion, {
+      limit: 8,
+      category,
+      domain,
+      knowledgePoint,
+      tool,
+      ...range,
+    });
+    const filterName = domain || knowledgePoint || tool || category;
+    const answer = matches.length
+      ? `找到 ${matches.length} 条相关收件内容。最相关的是《${matches[0]!.title}》，可打开下方结果查看原文和整理笔记。`
+      : `没有找到${filterName ? `与“${filterName}”匹配的` : "与这次查询匹配的"}收件内容。可以换一个更具体的关键词再试。`;
+    return {
+      mode: "indexed_inbox_search",
+      readOnly: true,
+      answer,
+      matches,
+      scope: "inbox_only",
+    };
   });
 
   app.get<{ Params: { id: string } }>("/api/messages/:id", async (request, reply) => {

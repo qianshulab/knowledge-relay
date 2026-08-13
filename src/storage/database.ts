@@ -70,6 +70,10 @@ export type ProcessedNote = {
   markdown: string;
   category: string;
   tags: string[];
+  summary?: string;
+  knowledgePoints?: string[];
+  domains?: string[];
+  tools?: string[];
 };
 
 export type MessageListItem = {
@@ -81,6 +85,10 @@ export type MessageListItem = {
   text: string;
   category: string;
   tags: string[];
+  summary: string;
+  knowledgePoints: string[];
+  domains: string[];
+  tools: string[];
   title: string;
   markdown: string;
   revision: number;
@@ -88,6 +96,29 @@ export type MessageListItem = {
   agentError?: string;
   attachmentCount: number;
   archived: boolean;
+};
+
+export type KnowledgeFacet = { name: string; count: number };
+
+export type KnowledgeFacets = {
+  total: number;
+  enriched: number;
+  categories: KnowledgeFacet[];
+  domains: KnowledgeFacet[];
+  knowledgePoints: KnowledgeFacet[];
+  tools: KnowledgeFacet[];
+};
+
+export type InboxSearchResult = MessageListItem & { excerpt: string };
+
+export type InboxSearchOptions = {
+  limit?: number;
+  category?: string;
+  domain?: string;
+  knowledgePoint?: string;
+  tool?: string;
+  receivedAfter?: string;
+  receivedBefore?: string;
 };
 
 export type PendingAgentMessage = {
@@ -188,6 +219,45 @@ function safeJson<T>(value: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizedSearchText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function searchTokens(value: string): string[] {
+  const normalized = normalizedSearchText(value).slice(0, 40_000);
+  const tokens = new Set<string>();
+  for (const word of normalized.match(/[a-z0-9][a-z0-9_.+#/-]{1,63}/g) || []) tokens.add(word);
+  for (const block of normalized.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2,}/gu) || []) {
+    const characters = Array.from(block);
+    if (characters.length === 2) tokens.add(block);
+    for (let index = 0; index < characters.length - 1; index += 1) {
+      tokens.add(characters.slice(index, index + 2).join(""));
+      if (tokens.size >= 4_000) break;
+    }
+    if (tokens.size >= 4_000) break;
+  }
+  return Array.from(tokens);
+}
+
+function indexedSearchText(value: string): string {
+  return searchTokens(value).join(" ");
+}
+
+function ftsQuery(value: string): string {
+  const cleaned = normalizedSearchText(value)
+    .replace(/(?:微信公众号|公众号)/g, " mp.weixin.qq.com ")
+    .replace(/(?:请|帮我|帮忙|查找|搜索|检索|看看|找一下|我之前|我有没有|有没有|是否有|哪些|什么|相关的?|内容|资料|消息|收件箱|工具)/g, " ")
+    .replace(/[?？!！,，。；;：:()（）\[\]{}“”‘’]/g, " ");
+  return searchTokens(cleaned)
+    .slice(0, 12)
+    .map((token) => `"${token.replace(/"/g, '""')}"`)
+    .join(" AND ");
+}
+
+function cleanFacetValue(value: unknown): string {
+  return typeof value === "string" ? value.normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 80) : "";
 }
 
 function noteFileName(title: string, messageId: string): string {
@@ -423,6 +493,10 @@ export class AppDatabase {
         note_markdown TEXT NOT NULL,
         category TEXT NOT NULL DEFAULT 'inbox',
         tags_json TEXT NOT NULL DEFAULT '[]',
+        summary TEXT NOT NULL DEFAULT '',
+        knowledge_points_json TEXT NOT NULL DEFAULT '[]',
+        domains_json TEXT NOT NULL DEFAULT '[]',
+        tools_json TEXT NOT NULL DEFAULT '[]',
         published_revision INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -532,6 +606,33 @@ export class AppDatabase {
     } catch (error) {
       if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
     }
+    for (const statement of [
+      "ALTER TABLE messages ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE messages ADD COLUMN knowledge_points_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE messages ADD COLUMN domains_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE messages ADD COLUMN tools_json TEXT NOT NULL DEFAULT '[]'",
+    ]) {
+      try {
+        this.database.exec(statement);
+      } catch (error) {
+        if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+      }
+    }
+    this.database.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
+        message_id UNINDEXED,
+        tenant_id UNINDEXED,
+        title,
+        summary,
+        body,
+        tags,
+        domains,
+        knowledge_points,
+        tools,
+        tokenize='unicode61 remove_diacritics 2'
+      );
+    `);
+    this.rebuildSearchIndexIfNeeded();
     // Older releases stored a model-provider key and model choice here. The official
     // Nanobot Runtime owns both now, so purge those legacy values during migration.
     this.database.exec("UPDATE tenant_settings SET nanobot_api_key_enc=NULL,nanobot_model=''");
@@ -814,8 +915,9 @@ export class AppDatabase {
       this.run(
         `INSERT INTO messages(
           id,tenant_id,bot_account_id,source_id,sender_id,session_id,received_at,sent_at,text,
-          note_title,note_markdown,category,tags_json,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          note_title,note_markdown,category,tags_json,summary,knowledge_points_json,domains_json,tools_json,
+          created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         message.id,
         this.requireOwnerId(),
         botAccountId,
@@ -829,6 +931,10 @@ export class AppDatabase {
         note.markdown,
         note.category,
         JSON.stringify(note.tags),
+        note.summary || "",
+        JSON.stringify(note.knowledgePoints || []),
+        JSON.stringify(note.domains || []),
+        JSON.stringify(note.tools || []),
         createdAt,
         createdAt,
       );
@@ -851,6 +957,7 @@ export class AppDatabase {
           sha256,
         );
       }
+      this.upsertSearchIndex(message.id);
     });
     return true;
   }
@@ -903,7 +1010,8 @@ export class AppDatabase {
     error?: string,
   ): void {
     const row = this.maybeOne(
-      "SELECT note_title,note_markdown,category,tags_json,note_revision,agent_status FROM messages WHERE id=? AND tenant_id=?",
+      `SELECT note_title,note_markdown,category,tags_json,summary,knowledge_points_json,domains_json,
+       tools_json,note_revision,agent_status FROM messages WHERE id=? AND tenant_id=?`,
       messageId,
       this.requireOwnerId(),
     );
@@ -913,14 +1021,22 @@ export class AppDatabase {
       rowString(row, "note_markdown") !== note.markdown ||
       rowString(row, "category") !== note.category ||
       rowString(row, "tags_json") !== JSON.stringify(note.tags) ||
+      rowString(row, "summary") !== (note.summary || "") ||
+      rowString(row, "knowledge_points_json") !== JSON.stringify(note.knowledgePoints || []) ||
+      rowString(row, "domains_json") !== JSON.stringify(note.domains || []) ||
+      rowString(row, "tools_json") !== JSON.stringify(note.tools || []) ||
       rowString(row, "agent_status") !== status;
     this.run(
-      `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,
-       note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
+      `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,summary=?,knowledge_points_json=?,
+       domains_json=?,tools_json=?,note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
       note.title,
       note.markdown,
       note.category,
       JSON.stringify(note.tags),
+      note.summary || "",
+      JSON.stringify(note.knowledgePoints || []),
+      JSON.stringify(note.domains || []),
+      JSON.stringify(note.tools || []),
       rowNumber(row, "note_revision") + (changed ? 1 : 0),
       status,
       error || null,
@@ -928,6 +1044,7 @@ export class AppDatabase {
       messageId,
       this.requireOwnerId(),
     );
+    this.upsertSearchIndex(messageId);
   }
 
   publishMessage(messageId: string): number {
@@ -1077,6 +1194,89 @@ export class AppDatabase {
           limit,
         );
     return rows.map((row) => this.mapMessage(row));
+  }
+
+  knowledgeFacets(): KnowledgeFacets {
+    const rows = this.all(
+      `SELECT category,agent_status,domains_json,knowledge_points_json,tools_json
+       FROM messages WHERE tenant_id=? ORDER BY seq DESC`,
+      this.requireOwnerId(),
+    );
+    const categories = new Map<string, number>();
+    const domains = new Map<string, number>();
+    const knowledgePoints = new Map<string, number>();
+    const tools = new Map<string, number>();
+    const count = (target: Map<string, number>, raw: unknown): void => {
+      const value = cleanFacetValue(raw);
+      if (value) target.set(value, (target.get(value) || 0) + 1);
+    };
+    for (const row of rows) {
+      count(categories, rowString(row, "category"));
+      for (const value of safeJson<unknown[]>(rowString(row, "domains_json"), [])) count(domains, value);
+      for (const value of safeJson<unknown[]>(rowString(row, "knowledge_points_json"), [])) count(knowledgePoints, value);
+      for (const value of safeJson<unknown[]>(rowString(row, "tools_json"), [])) count(tools, value);
+    }
+    const top = (values: Map<string, number>, limit: number): KnowledgeFacet[] => Array.from(values)
+      .map(([name, facetCount]) => ({ name, count: facetCount }))
+      .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN"))
+      .slice(0, limit);
+    return {
+      total: rows.length,
+      enriched: rows.filter((row) => rowString(row, "agent_status") === "completed").length,
+      categories: top(categories, 10),
+      domains: top(domains, 16),
+      knowledgePoints: top(knowledgePoints, 20),
+      tools: top(tools, 16),
+    };
+  }
+
+  searchInbox(query: string, options: InboxSearchOptions = {}): InboxSearchResult[] {
+    const match = ftsQuery(query);
+    const values: SqlValue[] = [];
+    const where: string[] = [];
+    let sql = `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
+      0 AS archived,${match ? "bm25(message_search,0,0,8,6,3,2,5,5,5)" : "0"} AS search_rank
+      FROM messages m ${match ? "JOIN message_search ON message_search.message_id=m.id" : ""}`;
+    where.push("m.tenant_id=?");
+    values.push(this.requireOwnerId());
+    if (match) {
+      where.push("message_search MATCH ?");
+      values.push(match);
+    }
+    if (options.category) {
+      where.push("m.category=?");
+      values.push(options.category);
+    }
+    for (const [field, value] of [
+      ["domains_json", options.domain],
+      ["knowledge_points_json", options.knowledgePoint],
+      ["tools_json", options.tool],
+    ] as const) {
+      if (!value) continue;
+      where.push(`EXISTS(SELECT 1 FROM json_each(m.${field}) WHERE lower(value)=lower(?))`);
+      values.push(value);
+    }
+    if (options.receivedAfter) {
+      where.push("m.received_at>=?");
+      values.push(options.receivedAfter);
+    }
+    if (options.receivedBefore) {
+      where.push("m.received_at<?");
+      values.push(options.receivedBefore);
+    }
+    if (!match && where.length === 1) return [];
+    sql += ` WHERE ${where.join(" AND ")} ORDER BY ${match ? "search_rank ASC," : ""}m.seq DESC LIMIT ?`;
+    values.push(Math.min(Math.max(options.limit || 8, 1), 20));
+    return this.all(sql, ...values).map((row) => {
+      const item = this.mapMessage(row);
+      return {
+        ...item,
+        excerpt: (item.summary || item.text || (item.attachmentCount ? "（仅附件）" : item.markdown))
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 240),
+      };
+    });
   }
 
   getMessage(messageId: string): MessageListItem | undefined {
@@ -1615,6 +1815,10 @@ export class AppDatabase {
       text: rowString(row, "text"),
       category: rowString(row, "category"),
       tags: safeJson<string[]>(rowString(row, "tags_json"), []),
+      summary: rowString(row, "summary"),
+      knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), []),
+      domains: safeJson<string[]>(rowString(row, "domains_json"), []),
+      tools: safeJson<string[]>(rowString(row, "tools_json"), []),
       title: rowString(row, "note_title"),
       markdown: rowString(row, "note_markdown"),
       revision: rowNumber(row, "note_revision"),
@@ -1623,6 +1827,42 @@ export class AppDatabase {
       attachmentCount: rowNumber(row, "attachment_count"),
       archived: Boolean(rowNumber(row, "archived")),
     };
+  }
+
+  private upsertSearchIndex(messageId: string): void {
+    const row = this.maybeOne("SELECT * FROM messages WHERE id=?", messageId);
+    if (!row) return;
+    this.run("DELETE FROM message_search WHERE message_id=?", messageId);
+    this.run(
+      `INSERT INTO message_search(message_id,tenant_id,title,summary,body,tags,domains,knowledge_points,tools)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      messageId,
+      rowString(row, "tenant_id"),
+      indexedSearchText(rowString(row, "note_title")),
+      indexedSearchText(rowString(row, "summary")),
+      indexedSearchText(`${rowString(row, "text")}\n${rowString(row, "note_markdown")}`),
+      indexedSearchText(safeJson<string[]>(rowString(row, "tags_json"), []).join(" ")),
+      indexedSearchText(safeJson<string[]>(rowString(row, "domains_json"), []).join(" ")),
+      indexedSearchText(safeJson<string[]>(rowString(row, "knowledge_points_json"), []).join(" ")),
+      indexedSearchText(safeJson<string[]>(rowString(row, "tools_json"), []).join(" ")),
+    );
+  }
+
+  private rebuildSearchIndexIfNeeded(): void {
+    const version = "2";
+    const current = this.maybeOne("SELECT value FROM metadata WHERE key='message_search_version'");
+    if (current && rowString(current, "value") === version) return;
+    this.transaction(() => {
+      this.run("DELETE FROM message_search");
+      for (const row of this.all("SELECT id FROM messages ORDER BY seq")) {
+        this.upsertSearchIndex(rowString(row, "id"));
+      }
+      this.run(
+        `INSERT INTO metadata(key,value) VALUES('message_search_version',?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+        version,
+      );
+    });
   }
 
   private getSyncTarget(id: string): SyncTarget | undefined {

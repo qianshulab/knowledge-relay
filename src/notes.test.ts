@@ -26,6 +26,9 @@ describe("note generation", () => {
         category: "task",
         tags: ["工作"],
         summary: "这是一条包含明确交付时间的任务。",
+        knowledge_points: ["时间管理", "交付节点"],
+        domains: ["项目管理"],
+        tools: ["Obsidian"],
         reason: "需要按时完成并保留上下文。",
         suggestedAction: "project",
         sensitivity: "internal",
@@ -35,6 +38,11 @@ describe("note generation", () => {
       message,
     );
     expect(note.tags).toContain("微信收件");
+    expect(note.knowledgePoints).toEqual(["时间管理", "交付节点"]);
+    expect(note.domains).toEqual(["项目管理"]);
+    expect(note.tools).toEqual(["Obsidian"]);
+    expect(note.markdown).toContain("knowledge_points:");
+    expect(note.markdown).toContain('  - "Obsidian"');
     expect(note.markdown).toContain("待办：明天提交报告");
     expect(note.markdown).toContain("建议方向：项目");
     expect(note.markdown).toContain("为什么值得保留");
