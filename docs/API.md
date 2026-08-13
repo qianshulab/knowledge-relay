@@ -13,15 +13,15 @@ Authorization: Bearer obsidian_xxx
 ## 管理端收件分页
 
 ```http
-GET /api/messages?limit=20&before=123
+GET /api/messages?limit=10&before=123
 ```
 
-`limit` 范围为 1–50，默认 20；`before` 是上一页最后一条消息的 `seq`。响应中的 `pagination.nextBefore` 只能在 `hasMore=true` 时用于下一页：
+`limit` 范围为 1–50，默认 10；`before` 是上一页最后一条消息的 `seq`。响应中的 `pagination.nextBefore` 只能在 `hasMore=true` 时用于下一页：
 
 ```json
 {
   "messages": [],
-  "pagination": { "limit": 20, "hasMore": true, "nextBefore": 103 }
+  "pagination": { "limit": 10, "hasMore": true, "nextBefore": 103 }
 }
 ```
 
@@ -38,7 +38,7 @@ Content-Type: application/json
 }
 ```
 
-`filters` 可使用 `category`、`domain`、`knowledgePoint` 和 `tool`。响应固定包含 `mode=indexed_inbox_search`、`scope=inbox_only` 与 `readOnly=true`。该接口只查询本地收件索引，不调用 Nanobot，不联网，也没有命令、写入或删除能力。
+`filters` 可使用 `category`、`domain`、`knowledgePoint` 和 `tool`。模型可用时，Nanobot 先把问题转换为受限的检索计划，响应为 `mode=nanobot_planned_search` 并在 `interpretation` 返回简短意图；服务端随后只在本地索引执行匹配。模型不可用时响应为 `mode=indexed_inbox_search`。两种模式都固定包含 `scope=inbox_only` 与 `readOnly=true`。
 
 ## 拉取稳定批次
 

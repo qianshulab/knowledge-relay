@@ -248,7 +248,10 @@ function indexedSearchText(value: string): string {
 function querySearchTokens(value: string): string[] {
   const cleaned = normalizedSearchText(value)
     .replace(/(?:微信公众号|公众号)/g, " mp.weixin.qq.com ")
-    .replace(/(?:请|帮我|帮忙|查找|搜索|检索|看看|找一下|我之前|我有没有|有没有|是否有|哪些|什么|相关的?|内容|资料|消息|收件箱|工具)/g, " ")
+    .replace(/(?:请|麻烦)?(?:帮我|帮忙)?(?:查找|搜索|检索|看看|看下|找找|找一下)/g, " ")
+    .replace(/(?:我)?(?:之前|以前)?(?:收藏|保存|发送|发)(?:过|的)?/g, " ")
+    .replace(/(?:我之前|我有没有|有没有|是否有|有哪(?:些)?|哪些|什么)(?:和|与|关于)?/g, " ")
+    .replace(/(?:相关的?|有关的?|关于|内容|资料|消息|收件箱|工具)/g, " ")
     .replace(/[?？!！,，。；;：:()（）\[\]{}“”‘’]/g, " ");
   return searchTokens(cleaned).slice(0, 12);
 }

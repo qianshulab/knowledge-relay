@@ -13,7 +13,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; [urllib.request.urlopen('http://127.0.0.1:%d/health' % port, timeout=3) for port in (8900, 8902)]"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -31,6 +31,7 @@ services:
       NANOBOT_MANAGED: "false"
       NANOBOT_AUTO_RELOAD: "true"
       NANOBOT_BASE_URL: http://nanobot:8900/v1/
+      NANOBOT_SEARCH_BASE_URL: http://nanobot:8902/v1/
       NANOBOT_CATALOG_URL: http://nanobot:8901/
       NANOBOT_API_KEY: ${NANOBOT_RUNTIME_API_KEY:?请在 .env 设置 NANOBOT_RUNTIME_API_KEY}
       NANOBOT_CONFIG: /nanobot/config.json

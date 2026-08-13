@@ -22,7 +22,7 @@ import {
   publishPluginRelease,
   resolvePluginRelease,
 } from "./plugin-release.js";
-import type { AppDatabase, OwnerProfile } from "./storage/database.js";
+import type { AppDatabase, InboxSearchResult, OwnerProfile } from "./storage/database.js";
 import { adminPage, adminUiVersion } from "./ui.js";
 
 type OwnerRequest = FastifyRequest & { owner?: OwnerProfile; sessionToken?: string };
@@ -233,7 +233,7 @@ export function createServer(
   });
 
   app.get<{ Querystring: { limit?: string; before?: string } }>("/api/messages", async (request) => {
-    const limit = Math.min(Math.max(Number(request.query.limit || 20) || 20, 1), 50);
+    const limit = Math.min(Math.max(Number(request.query.limit || 10) || 10, 1), 50);
     const before = Number(request.query.before || 0) || undefined;
     const messages = database.listMessages(limit + 1, before);
     const hasMore = messages.length > limit;
@@ -264,28 +264,89 @@ export function createServer(
     if (!question && !category && !domain && !knowledgePoint && !tool) {
       return reply.code(400).send({ error: "请输入想查找的内容" });
     }
-    const range = inboxDateRange(question);
+    const parsedRange = inboxDateRange(question);
     const searchQuestion = question
       .replace(/(?:最近|近)\s*(?:7|30)\s*天/g, " ")
       .replace(/今天|昨天|本周/g, " ")
       .replace(inferredCategory ? /待办|任务/g : /$^/, " ")
       .trim();
-    const matches = database.searchInbox(searchQuestion, {
-      limit: 8,
+    const filterName = domain || knowledgePoint || tool || category;
+    let mode = "indexed_inbox_search";
+    let interpretation = "";
+    const settings = database.getAgentSettings(config.nanobot);
+    let plan: Awaited<ReturnType<NanobotClient["planInboxQuery"]>> | undefined;
+    if (question && settings.enabled) {
+      try {
+        plan = await nanobot.planInboxQuery(question, {
+          ...settings,
+          baseUrl: config.nanobot.searchBaseUrl || settings.baseUrl,
+        });
+        interpretation = plan.intent;
+        mode = "nanobot_planned_search";
+      } catch (error) {
+        logger.warn("Nanobot 检索意图理解失败，已使用本地规则检索", errorDetails(error));
+      }
+    }
+    const range = Object.keys(parsedRange).length
+      ? parsedRange
+      : {
+        ...(plan?.receivedAfter ? { receivedAfter: plan.receivedAfter } : {}),
+        ...(plan?.receivedBefore ? { receivedBefore: plan.receivedBefore } : {}),
+      };
+    const baseOptions = {
+      limit: 12,
       category,
       domain,
       knowledgePoint,
       tool,
       ...range,
+    };
+    const ranked = new Map<string, { item: InboxSearchResult; score: number }>();
+    const addMatches = (items: InboxSearchResult[], score: number): void => {
+      for (const item of items) {
+        const current = ranked.get(item.id);
+        ranked.set(item.id, { item, score: (current?.score || 0) + score });
+      }
+    };
+    if (searchQuestion || category || domain || knowledgePoint || tool || Object.keys(range).length) {
+      addMatches(database.searchInbox(searchQuestion, baseOptions), 30);
+    }
+    const expandedQueries = Array.from(new Set(plan?.queries || []))
+      .filter((value) => value && value !== searchQuestion)
+      .slice(0, 6);
+    expandedQueries.forEach((query, index) => {
+      addMatches(database.searchInbox(query, baseOptions), 22 - index * 2);
     });
-    const filterName = domain || knowledgePoint || tool || category;
+    if (plan?.category && !category) {
+      addMatches(database.searchInbox("", { ...baseOptions, category: plan.category }), 12);
+    }
+    if (!domain) {
+      plan?.domains.forEach((value) => {
+        addMatches(database.searchInbox("", { ...baseOptions, domain: value }), 12);
+      });
+    }
+    if (!knowledgePoint) {
+      plan?.knowledgePoints.forEach((value) => {
+        addMatches(database.searchInbox("", { ...baseOptions, knowledgePoint: value }), 12);
+      });
+    }
+    if (!tool) {
+      plan?.tools.forEach((value) => {
+        addMatches(database.searchInbox("", { ...baseOptions, tool: value }), 12);
+      });
+    }
+    const matches = Array.from(ranked.values())
+      .sort((left, right) => right.score - left.score || right.item.seq - left.item.seq)
+      .slice(0, 8)
+      .map((entry) => entry.item);
     const answer = matches.length
-      ? `找到 ${matches.length} 条相关收件内容。最相关的是《${matches[0]!.title}》，可打开下方结果查看原文和整理笔记。`
-      : `没有找到${filterName ? `与“${filterName}”匹配的` : "与这次查询匹配的"}收件内容。可以换一个更具体的关键词再试。`;
+      ? `${interpretation ? `已理解为“${interpretation}”。` : ""}找到 ${matches.length} 条相关收件内容，最相关的是《${matches[0]!.title}》。`
+      : `没有找到${filterName ? `与“${filterName}”匹配的` : "与这次查询匹配的"}收件内容。可以换一个更具体的说法再试。`;
     return {
-      mode: "indexed_inbox_search",
+      mode,
       readOnly: true,
       answer,
+      interpretation,
       matches,
       scope: "inbox_only",
     };

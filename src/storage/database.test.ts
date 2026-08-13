@@ -392,6 +392,9 @@ describe("AppDatabase", () => {
     expect(database.searchInbox("移动安全工具")).toEqual([
       expect.objectContaining({ id: message.id, tools: ["Frida"], domains: ["网络安全"] }),
     ]);
+    expect(database.searchInbox("我之前收藏过哪些和移动安全有关的内容？")).toEqual([
+      expect.objectContaining({ id: message.id, tools: ["Frida"], domains: ["网络安全"] }),
+    ]);
     expect(database.searchInbox("", { tool: "Frida" })[0]?.id).toBe(message.id);
     expect(database.knowledgeFacets()).toMatchObject({
       total: 1,
@@ -415,11 +418,13 @@ describe("AppDatabase", () => {
       };
       database.saveMessage(botId, `page-${index}`, message, defaultNote(message));
     }
-    const first = database.listMessages(20);
-    const second = database.listMessages(20, first.at(-1)!.seq);
-    expect(first).toHaveLength(20);
-    expect(second).toHaveLength(5);
-    expect(new Set([...first, ...second].map((item) => item.id)).size).toBe(25);
+    const first = database.listMessages(10);
+    const second = database.listMessages(10, first.at(-1)!.seq);
+    const third = database.listMessages(10, second.at(-1)!.seq);
+    expect(first).toHaveLength(10);
+    expect(second).toHaveLength(10);
+    expect(third).toHaveLength(5);
+    expect(new Set([...first, ...second, ...third].map((item) => item.id)).size).toBe(25);
     expect(Math.max(...second.map((item) => item.seq))).toBeLessThan(first.at(-1)!.seq);
     database.close();
   });

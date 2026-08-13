@@ -9,6 +9,14 @@ const workspace = path.resolve(process.env.NANOBOT_WORKSPACE || "./data/nanobot/
 const host = process.env.NANOBOT_SERVE_HOST || "127.0.0.1";
 const port = process.env.NANOBOT_SERVE_PORT || "8900";
 const timeout = process.env.NANOBOT_SERVE_TIMEOUT || "120";
+const searchWorkspace = path.resolve(
+  process.env.NANOBOT_SEARCH_WORKSPACE || path.join(path.dirname(workspace), "search-workspace"),
+);
+const searchPort = process.env.NANOBOT_SEARCH_PORT || "8902";
+const searchTimeout = process.env.NANOBOT_SEARCH_TIMEOUT || "45";
+const searchScript = path.resolve(
+  process.env.NANOBOT_SEARCH_SCRIPT || "./nanobot/search-runtime.py",
+);
 const catalogHost = process.env.NANOBOT_CATALOG_HOST || host;
 const catalogPort = Number(process.env.NANOBOT_CATALOG_PORT || "8901");
 const catalogTokens = new Set(
@@ -36,6 +44,7 @@ if (!process.env.NANOBOT_PYTHON && nanobotExecutable) {
   }
 }
 let runtime;
+let searchRuntime;
 let restarting = false;
 let stopping = false;
 let restartTimer;
@@ -92,41 +101,61 @@ catalogServer.once("error", (error) => {
   stopping = true;
   watcher?.close();
   if (runtime && runtime.exitCode === null) runtime.kill("SIGTERM");
+  if (searchRuntime && searchRuntime.exitCode === null) searchRuntime.kill("SIGTERM");
   process.exit(1);
 });
 
+function watchRuntime(child, label) {
+  child.once("error", (error) => {
+    console.error(`${label} 无法启动：${error.message}`);
+    process.exitCode = 1;
+  });
+  child.once("exit", (code, signal) => {
+    if (stopping || restarting) return;
+    console.error(`${label} 意外退出（${signal || code || "unknown"}）`);
+    if (runtime && runtime.exitCode === null) runtime.kill("SIGTERM");
+    if (searchRuntime && searchRuntime.exitCode === null) searchRuntime.kill("SIGTERM");
+    process.exit(code || 1);
+  });
+  return child;
+}
+
 function start() {
-  runtime = spawn(nanobotExecutable || "nanobot", [
+  fs.mkdirSync(searchWorkspace, { recursive: true, mode: 0o700 });
+  runtime = watchRuntime(spawn(nanobotExecutable || "nanobot", [
     "serve",
     "--config", configPath,
     "--workspace", workspace,
     "--host", host,
     "--port", port,
     "--timeout", timeout,
-  ], { env: process.env, stdio: "inherit" });
-  runtime.once("error", (error) => {
-    console.error(`Nanobot Runtime 无法启动：${error.message}`);
-    process.exitCode = 1;
-  });
-  runtime.once("exit", (code, signal) => {
-    if (stopping || restarting) return;
-    console.error(`Nanobot Runtime 意外退出（${signal || code || "unknown"}）`);
-    process.exit(code || 1);
-  });
+  ], { env: process.env, stdio: "inherit" }), "Nanobot 整理 Runtime");
+  searchRuntime = watchRuntime(spawn(catalogPython, [
+    searchScript,
+    "--config", configPath,
+    "--workspace", searchWorkspace,
+    "--host", host,
+    "--port", searchPort,
+    "--timeout", searchTimeout,
+  ], { env: process.env, stdio: "inherit" }), "Nanobot 检索 Runtime");
+}
+
+async function stopRuntimes(signal) {
+  const active = [runtime, searchRuntime].filter((child) => child && child.exitCode === null);
+  for (const child of active) child.kill(signal);
+  await Promise.all(active.map((child) => Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ])));
+  for (const child of active) {
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
 }
 
 async function restart() {
   if (stopping || restarting) return;
   restarting = true;
-  const previous = runtime;
-  if (previous && previous.exitCode === null) {
-    previous.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolve) => previous.once("exit", resolve)),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
-    if (previous.exitCode === null) previous.kill("SIGKILL");
-  }
+  await stopRuntimes("SIGTERM");
   restarting = false;
   if (!stopping) {
     console.log("Nanobot 配置已更新，正在重新加载 Runtime…");
@@ -134,23 +163,18 @@ async function restart() {
   }
 }
 
-function stop(signal = "SIGTERM") {
+async function stop(signal = "SIGTERM") {
   if (stopping) return;
   stopping = true;
   if (restartTimer) clearTimeout(restartTimer);
   watcher?.close();
   if (catalogServer.listening) catalogServer.close();
-  if (runtime && runtime.exitCode === null) {
-    runtime.once("exit", () => process.exit(0));
-    runtime.kill(signal);
-    setTimeout(() => process.exit(0), 5_000).unref();
-  } else {
-    process.exit(0);
-  }
+  await stopRuntimes(signal);
+  process.exit(0);
 }
 
-process.once("SIGINT", () => stop("SIGINT"));
-process.once("SIGTERM", () => stop("SIGTERM"));
+process.once("SIGINT", () => void stop("SIGINT"));
+process.once("SIGTERM", () => void stop("SIGTERM"));
 
 watcher = fs.watch(path.dirname(configPath), (_event, fileName) => {
   if (fileName && String(fileName) !== path.basename(configPath)) return;

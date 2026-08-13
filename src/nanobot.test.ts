@@ -92,6 +92,53 @@ describe("NanobotClient", () => {
     expect(body.messages[0].content).toContain("【Skill: 测试 Skill】");
   });
 
+  it("使用 Nanobot 先理解检索意图并生成受限的本地检索计划", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                queries: ["Frida 动态插桩", "移动安全 动态分析", "Frida 动态插桩"],
+                category: "reference",
+                domains: ["网络安全"],
+                knowledge_points: ["动态插桩"],
+                tools: ["Frida"],
+                received_after: "",
+                received_before: "",
+                intent: "查找收藏过的移动安全工具与动态分析资料",
+              }),
+            },
+          }],
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient(config);
+    await expect(client.planInboxQuery("我收藏过哪些安全工具？", {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    })).resolves.toEqual({
+      queries: ["Frida 动态插桩", "移动安全 动态分析"],
+      category: "reference",
+      domains: ["网络安全"],
+      knowledgePoints: ["动态插桩"],
+      tools: ["Frida"],
+      intent: "查找收藏过的移动安全工具与动态分析资料",
+    });
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body));
+    expect(body.model).toBeUndefined();
+    expect(body.session_id).toMatch(/^knowledge-relay:inbox-search:/);
+    expect(body.messages[0].content).toContain("理解用户真正想查找的内容");
+    expect(body.messages[0].content).toContain("我收藏过哪些安全工具");
+  });
+
   it("只接收 Nanobot 指定 artifacts 目录中的派生 Markdown", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "nanobot-artifact-test-"));
     const workspace = path.join(directory, "workspace");

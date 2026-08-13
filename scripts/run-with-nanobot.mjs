@@ -54,10 +54,11 @@ function stop(signal = "SIGTERM") {
 
 async function runtimeHealthy() {
   try {
-    const response = await fetch("http://127.0.0.1:8900/health", {
-      signal: AbortSignal.timeout(1_000),
-    });
-    return response.ok;
+    const responses = await Promise.all([8900, 8902].map((port) => fetch(
+      `http://127.0.0.1:${port}/health`,
+      { signal: AbortSignal.timeout(1_000) },
+    )));
+    return responses.every((response) => response.ok);
   } catch {
     return false;
   }
@@ -70,21 +71,22 @@ async function waitForNanobot(child, timeoutMs = 30_000) {
       throw new Error(`Nanobot Runtime 启动失败，退出码 ${child.exitCode}`);
     }
     try {
-      const response = await fetch("http://127.0.0.1:8900/health", {
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (response.ok) return;
+      const responses = await Promise.all([8900, 8902].map((port) => fetch(
+        `http://127.0.0.1:${port}/health`,
+        { signal: AbortSignal.timeout(1_000) },
+      )));
+      if (responses.every((response) => response.ok)) return;
     } catch {
       // Runtime may still be importing plugins.
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("Nanobot Runtime 在 30 秒内未通过健康检查");
+  throw new Error("Nanobot 整理与检索 Runtime 在 30 秒内未全部通过健康检查");
 }
 
 async function ensureNanobot() {
   if (stopping || await runtimeHealthy()) return;
-  if (await portOpen(8900)) {
+  if (await portOpen(8900) || await portOpen(8902)) {
     await waitForNanobot(undefined, 10_000);
     return;
   }
