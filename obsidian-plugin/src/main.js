@@ -1,3 +1,5 @@
+"use strict";
+
 const { Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, normalizePath } = require("obsidian");
 const {
   applyCaptureTemplate,

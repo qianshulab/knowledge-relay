@@ -1,3 +1,5 @@
+"use strict";
+
 const MANAGED_START = "<!-- knowledge-relay:managed:start -->";
 const MANAGED_END = "<!-- knowledge-relay:managed:end -->";
 
