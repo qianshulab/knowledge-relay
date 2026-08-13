@@ -15,7 +15,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.8.0"');
+    expect(adminPage).toContain('const UI_BUILD = "1.8.1"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
     expect(adminPage).toContain("每页显示 10 条");
     expect(adminPage).toContain('id="previousMessages"');
@@ -36,6 +36,12 @@ describe("adminPage", () => {
     expect(adminPage).toContain("history.pushState");
     expect(adminPage).toContain("pageFromLocation");
     expect(adminPage).toContain("if(activePage!==page)window.scrollTo(0,0)");
+    expect(adminPage).toContain("document.startViewTransition(render)");
+    expect(adminPage).toContain("pageTransition.skipTransition()");
+    expect(adminPage).toContain("prefers-reduced-motion: reduce");
+    expect(adminPage).toContain("view-transition-name:page-content");
+    expect(adminPage).toContain("::view-transition-new(page-content)");
+    expect(adminPage).toContain("void view.offsetWidth;view.classList.add('page-entering')");
     expect(adminPage).toContain("if(changed)notice('')");
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
     expect(adminPage).toContain('class="sync-workspace"');
