@@ -17,6 +17,8 @@ describe("adminPage", () => {
     expect(adminPage).toContain("收件箱已刷新，当前没有新消息。");
     expect(adminPage).toContain("history.pushState");
     expect(adminPage).toContain("pageFromLocation");
+    expect(adminPage).toContain("if(activePage!==page)window.scrollTo(0,0)");
+    expect(adminPage).toContain("if(changed)notice('')");
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
     expect(adminPage).toContain("Nanobot Skill");
     expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
@@ -26,10 +28,15 @@ describe("adminPage", () => {
     expect(adminPage).toContain("/api/nanobot/provider/models?provider=");
     expect(adminPage).toContain("已实时读取 ");
     expect(adminPage).toContain('class="agent-workspace"');
+    expect(adminPage).toContain(".agent-workspace{display:grid;gap:18px;align-items:stretch}");
     expect(adminPage).toContain('class="model-catalog-bar wide"');
     expect(adminPage).toContain(".provider-field>input,.provider-field>select{height:46px}");
     expect(adminPage).toContain(".head>button,.head>.button-link{flex:0 0 auto;white-space:nowrap}");
     expect(adminPage).not.toContain('class="model-picker"');
+    expect(adminPage).toContain('data-page="settings"');
+    expect(adminPage).toContain('data-view="settings"');
+    expect(adminPage).toContain('class="secondary small runtime-test"');
+    expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
     expect(adminPage).toContain("消息处理策略");
     expect(adminPage).toContain("高级连接信息");
     expect(adminPage).toContain('class="list skill-list"');
