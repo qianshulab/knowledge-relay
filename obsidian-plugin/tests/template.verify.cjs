@@ -10,7 +10,7 @@ const {
   normalizeItem,
   sanitizeMarkdown,
   updateManagedNote,
-} = require("./template.cjs");
+} = require("../src/template.cjs");
 
 const template = `---
 类型: 捕获

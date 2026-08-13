@@ -8,7 +8,7 @@ const root = process.cwd();
 const outputDirectory = path.join(root, "release");
 const output = path.join(outputDirectory, "knowledge-relay-obsidian.zip");
 const zip = new AdmZip();
-for (const file of ["main.js", "manifest.json", "styles.css", "template.cjs", "README.md", "versions.json"]) {
+for (const file of ["main.js", "manifest.json", "styles.css", "README.md", "versions.json"]) {
   zip.addLocalFile(path.join(root, "obsidian-plugin", file), "wechat-ilink-inbox-sync");
 }
 await fs.mkdir(outputDirectory, { recursive: true });

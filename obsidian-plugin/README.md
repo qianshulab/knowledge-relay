@@ -1,6 +1,8 @@
-# 知流同步插件 1.3
+# 知流同步插件 1.3.1
 
 知流同步把服务端收件台中的原始微信消息、Nanobot 整理结果、原附件和网页 Markdown 安全地写入指定 Obsidian 收件箱。插件不运行 Agent，也不决定分类规则；它只负责可靠同步和本地展示。
+
+插件源码独立维护于 [qianshulab/knowledge-relay-obsidian](https://github.com/qianshulab/knowledge-relay-obsidian)。发布包采用单文件构建，`main.js` 已包含模板与同步模块，不会在 Obsidian 运行时加载 `template.cjs`。
 
 ## 安装与连接
 
@@ -53,3 +55,13 @@
 - 只有需要完整重放时才使用“重置同步游标”；该操作有两次确认，本地远程 ID 索引仍会阻止重复笔记。
 
 插件设置保存在 `.obsidian/plugins/wechat-ilink-inbox-sync/data.json`。Obsidian 当前没有通用系统钥匙串接口，因此令牌也保存在这里；它不会进入笔记、同步日志或 ACK。请保护 Vault 配置目录，设备丢失时立即在知流撤销连接。
+
+## 本地开发
+
+```bash
+npm ci
+npm run verify
+npm run package
+```
+
+源码位于 `src/`。`npm run build` 使用 esbuild 生成仓库根目录的单文件 `main.js`；请勿手工编辑生成文件。`npm run package` 产出的 ZIP 只包含 Obsidian 运行所需文件，不包含源码模块。

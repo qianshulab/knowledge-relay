@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1 - 2026-08-13
+
+- Moved Obsidian plugin development and releases into a standalone repository while keeping a pinned integration reference in the main product.
+- Upgraded the plugin to 1.3.1 and bundled all local modules into a single `main.js` with esbuild, fixing Obsidian activation failures caused by `require("./template.cjs")`.
+- Added standalone plugin CI, versioned release packaging, checksum generation, and a regression check that rejects runtime local-module imports.
+- Updated the server-bundled plugin package to contain only the five required Obsidian installation files.
+
 ## 1.6.0 - 2026-08-13
 
 - Kept the two pinned upstream runtime Skills unchanged while adding deterministic URL routing and artifact rules around them.

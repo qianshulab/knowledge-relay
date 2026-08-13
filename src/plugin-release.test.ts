@@ -43,7 +43,7 @@ describe("plugin release", () => {
   it("validates the real packaged plugin", async () => {
     const content = await fs.readFile(path.resolve("release/knowledge-relay-obsidian.zip"));
     const info = inspectPluginArchive(content);
-    expect(info.version).toBe("1.3.0");
+    expect(info.version).toBe("1.3.1");
     expect(info.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -80,6 +80,6 @@ describe("plugin release", () => {
     const directory = path.join(config.dataDir, "plugin-release");
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(path.join(directory, "knowledge-relay-obsidian.zip"), archive({ version: "1.2.9" }));
-    await expect(resolvePluginRelease(config)).resolves.toMatchObject({ version: "1.3.0", source: "bundled" });
+    await expect(resolvePluginRelease(config)).resolves.toMatchObject({ version: "1.3.1", source: "bundled" });
   });
 });
