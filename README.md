@@ -9,8 +9,7 @@
 
 知流是一个开源、可自托管的个人知识收件台。它接收发送给微信 iLink Bot 的文字、链接和附件，通过官方 Nanobot Runtime 完成网页解析与智能整理，并增量同步到指定的 Obsidian 收件箱。
 
-> [!IMPORTANT]
-> 当前版本是个人单用户版，适合自用部署。默认仅监听本机地址，不应未经安全加固直接暴露到公网。
+当前发行面向个人部署，采用单用户数据模型，管理服务默认仅监听本机地址。
 
 ## 核心能力
 
@@ -43,7 +42,7 @@ flowchart LR
 | Nanobot Runtime | Agent Loop、模型调用、工具与 Skills 执行 |
 | Obsidian 插件 | 拉取增量批次、校验附件、写入 Vault 并确认归档 |
 
-知流不会绕过 Nanobot 直接调用模型供应商。模型配置、工具执行和 Skill 调度都由 Runtime 管理；收件检索只允许读取本地索引，不提供通用聊天或数据修改能力。
+Nanobot 是模型与工具的统一执行边界。收件检索仅查询本地索引，不开放通用对话和数据写入能力。
 
 ## 快速开始
 
@@ -57,7 +56,7 @@ cd knowledge-relay
 ./scripts/deploy-docker.sh
 ```
 
-脚本会创建本地 `.env`、生成 Nanobot 内部鉴权密钥、拉取成品镜像并启动服务。完成后访问：
+部署脚本会初始化本地配置、生成 Runtime 内部鉴权密钥并启动两个容器。管理页面地址：
 
 <http://127.0.0.1:8787>
 
@@ -68,14 +67,14 @@ docker compose ps
 curl --fail http://127.0.0.1:8787/health
 ```
 
-正式镜像发布于 GitHub Container Registry：
+镜像发布于 GitHub Container Registry：
 
-- `ghcr.io/qianshulab/knowledge-relay:1.8.2`
-- `ghcr.io/qianshulab/knowledge-relay-nanobot:1.8.2`
+- `ghcr.io/qianshulab/knowledge-relay:latest`
+- `ghcr.io/qianshulab/knowledge-relay-nanobot:latest`
 
-镜像同时支持 `linux/amd64` 和 `linux/arm64`。发布镜像不包含任何模型凭据；API Key 只会从部署机器的 `.env` 或后台配置写入本地 Runtime。
+镜像支持 `linux/amd64` 和 `linux/arm64`，不包含模型凭据。模型认证信息由部署者在本地配置。
 
-如需从当前源码构建镜像：
+本地构建镜像：
 
 ```bash
 KNOWLEDGE_RELAY_LOCAL_BUILD=1 ./scripts/deploy-docker.sh
@@ -101,39 +100,37 @@ npm run dev
 
 ## 首次配置
 
-1. 打开管理页面并创建唯一的个人账户。
-2. 在“系统设置 → AI 智能整理”选择模型提供者、模型和认证方式；这一步可稍后完成。
+1. 打开管理页面并创建本地管理员账户。
+2. 在“系统设置 → AI 智能整理”选择模型提供者、模型和认证方式。
 3. 在“系统设置 → 微信接入”扫码连接自己的 iLink Bot。
 4. 在“系统设置 → Skills”确认网页和公众号 Skills 已启用。
 5. 给机器人发送一条测试消息，在收件台确认原文、整理状态和附件。
-6. 打开“Obsidian 同步”，下载插件并创建连接，将一次性令牌填入插件设置。
+6. 打开“Obsidian 同步”，下载插件、创建连接并填写连接令牌。
 
-未配置模型时，知流仍可接收、保存和同步原始内容；智能分类、摘要和语义化检索会自动降级。
+模型配置为可选项。未配置模型时，原始内容的接收、存储和同步保持可用。
 
 ## Nanobot 与 Skills
 
-知流使用官方 Nanobot 作为唯一 Agent Runtime。后台支持配置主流模型服务、本地模型及自定义 OpenAI 兼容接口；对于提供模型目录 API 的服务，可实时读取可用模型列表。
+知流使用官方 Nanobot 作为 Agent Runtime。模型提供者、模型与认证信息均在后台配置；支持模型目录 API 的提供者可以直接读取在线模型列表。
 
-以下执行型 Skills 以 Git submodule 固定上游版本，并在 Nanobot 容器内运行：
+Runtime 内置两个执行型 Skills：
 
 - [`wechat-article-extractor`](https://github.com/freestylefly/wechat-article-extractor-skill)：微信公众号文章提取。
 - [`fetch-skill`](https://github.com/aresbit/fetch-skill)：普通网页读取与 Markdown 转换。
 
-Docker Runtime 已准备所需的 Python、Node.js、npm 和 Nanobot documents/API 组件。后台对 Skill 的启用、停用或修改只影响之后收到的新消息。
-
-上游 Skill 的固定提交、许可证和外部网络行为见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
+依赖和运行环境已包含在 Nanobot 镜像中。Skill 的版本、许可证和外部网络行为记录在 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 
 ## Obsidian 同步
 
 插件由独立仓库维护：[qianshulab/knowledge-relay-obsidian](https://github.com/qianshulab/knowledge-relay-obsidian)。管理后台提供已验证插件包的下载与发布入口。
 
-同步协议保证：
+同步协议提供：
 
-- 服务端消息 ID 与 Obsidian 笔记稳定对应；
-- 同一消息重新整理时更新托管区块，不覆盖用户编辑区；
-- 所有文件写入成功后才确认批次，断网重试不会重复创建笔记；
-- 原始附件和派生 Markdown 均进行完整性校验；
-- 同步成功后服务端归档对应批次，后续只拉取新增或修订内容。
+- 服务端消息 ID 与 Obsidian 笔记的稳定映射。
+- 托管区块修订更新，不覆盖用户编辑区。
+- 批次确认、断点重试和幂等写入。
+- 原始附件与派生 Markdown 的完整性校验。
+- 成功同步后的服务端归档与增量拉取。
 
 协议细节见 [API 文档](./docs/API.md) 和 [同步审计](./docs/SYNC-AUDIT.md)。
 
@@ -155,8 +152,6 @@ Docker Runtime 已准备所需的 Python、Node.js、npm 和 Nanobot documents/A
 | `SYNC_BATCH_SIZE` | `100` | 单次 Obsidian 同步的最大消息数 |
 | `KNOWLEDGE_RELAY_IMAGE_TAG` | `latest` | 使用的成品镜像版本 |
 
-不要提交 `.env`、`data/app-secret.key`、数据库、同步令牌或模型凭据。
-
 ## 日常运维
 
 ### 查看日志
@@ -173,7 +168,7 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-如需固定版本，在 `.env` 中设置：
+固定镜像版本：
 
 ```dotenv
 KNOWLEDGE_RELAY_IMAGE_TAG=1.8.2
@@ -181,26 +176,28 @@ KNOWLEDGE_RELAY_IMAGE_TAG=1.8.2
 
 ### 备份
 
-升级或迁移前应同时备份：
+备份范围：
 
 - 宿主机 `data/`：数据库、附件、插件包和应用加密主密钥；
 - Docker volume `nanobot-data`：模型配置、Workspace、Skills 和 Runtime artifacts。
 
-`data/app-secret.key` 必须与 `data/inbox.sqlite` 成对恢复，否则已有加密凭据将无法解密。
+`data/app-secret.key` 与 `data/inbox.sqlite` 构成同一加密数据集，恢复时需要保持配对。
 
 ## 安全边界
 
-- 默认端口只绑定 `127.0.0.1`；公网使用必须部署 HTTPS 反向代理并设置 `PUBLIC_BASE_URL`。
-- 不要直接暴露 Nanobot Runtime 端口，也不要复用管理会话、同步令牌和内部 Runtime Key。
-- Obsidian 连接令牌具有收件数据读取权限，泄露后应立即在后台撤销并重新创建连接。
-- 执行型 Skill 可以访问网页和运行受限脚本；安装第三方 Skill 前必须审查来源并固定版本。
-- 当前版本不提供多用户隔离、公开注册或租户级权限模型。
+| 范围 | 默认边界 |
+|---|---|
+| 管理页面 | 绑定 `127.0.0.1`；公网部署通过 HTTPS 反向代理并设置 `PUBLIC_BASE_URL` |
+| Nanobot Runtime | 仅在容器内部网络提供服务，不映射宿主机端口 |
+| Obsidian 连接 | 独立令牌，可在管理后台撤销 |
+| 执行型 Skills | 固定上游版本，在独立 Runtime 容器中运行 |
+| 用户模型 | 个人单用户；不包含公开注册和租户权限 |
 
 安全报告与部署建议见 [SECURITY.md](./SECURITY.md)，数据处理范围见 [PRIVACY.md](./PRIVACY.md)。
 
 ## 故障排查
 
-| 现象 | 优先检查 |
+| 现象 | 检查项 |
 |---|---|
 | 无法访问管理页面 | `docker compose ps`、8787 端口占用、防火墙及服务是否只绑定本机 |
 | Nanobot 状态异常 | `docker compose logs nanobot`、内部 Runtime Key、模型配置与网络连通性 |
@@ -208,7 +205,7 @@ KNOWLEDGE_RELAY_IMAGE_TAG=1.8.2
 | 微信没有新消息 | 微信连接状态、允许的发送者、iLink 长轮询日志 |
 | Obsidian 没有同步 | 插件服务器地址、连接令牌、同步目标状态及插件日志 |
 
-若问题仍无法定位，请附上已脱敏的日志和复现步骤提交 [Issue](https://github.com/qianshulab/knowledge-relay/issues)。
+问题反馈：[GitHub Issues](https://github.com/qianshulab/knowledge-relay/issues)。日志中应移除连接令牌、模型凭据和个人内容。
 
 ## 项目文档
 
