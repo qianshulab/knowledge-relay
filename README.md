@@ -175,6 +175,7 @@ curl http://127.0.0.1:8787/health
 ```
 
 `npm run verify` 会执行类型检查、48+ 项单元测试、服务构建、Nanobot 脚本检查以及 Obsidian 插件单文件校验。
+GitHub Actions 会在每次提交和标签发布时重复验证，并分别构建 `linux/amd64` 与 `linux/arm64` 的主服务和 Nanobot 镜像。
 
 ## 数据目录
 

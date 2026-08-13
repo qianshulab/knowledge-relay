@@ -1,8 +1,9 @@
-# Copy this file to .github/workflows/ci.yml when the publishing token has the workflow scope.
 name: CI
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -13,27 +14,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.1
           cache: npm
       - run: npm ci
       - run: npm run verify
-      - run: npm run package:plugin
       - run: npm audit --omit=dev --audit-level=high
+      - run: npm run package:plugin
       - uses: actions/upload-artifact@v4
         with:
           name: knowledge-relay-obsidian
           path: |
             release/knowledge-relay-obsidian.zip
             release/knowledge-relay-obsidian.sha256
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - name: Build Knowledge Relay
+        uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile
+          push: false
+          platforms: linux/amd64,linux/arm64
+      - name: Build Nanobot Runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.nanobot
           push: false
           platforms: linux/amd64,linux/arm64
