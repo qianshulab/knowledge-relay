@@ -20,6 +20,11 @@ describe("adminPage", () => {
     expect(adminPage).toContain("if(activePage!==page)window.scrollTo(0,0)");
     expect(adminPage).toContain("if(changed)notice('')");
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
+    expect(adminPage).toContain('class="sync-workspace"');
+    expect(adminPage).toContain("安装同步插件");
+    expect(adminPage).toContain("知流同步 · v1.2.1");
+    expect(adminPage).toContain('id="syncTargetCount"');
+    expect(adminPage).toContain('class="sync-empty"');
     expect(adminPage).toContain("Nanobot Skill");
     expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
     expect(adminPage).toContain("/api/nanobot/provider");

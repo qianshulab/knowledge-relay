@@ -9,6 +9,7 @@
 - Grouped Agent diagnostics inside the provider console, equalized the wide-screen work cards, and moved account security from the dashboard into a dedicated Settings page.
 - Rewrote user-facing guidance around goals and outcomes, while keeping infrastructure terminology inside advanced configuration only.
 - Moved the low-frequency Settings entry beside the personal account on desktop, while preserving a compact mobile navigation fallback.
+- Rebuilt Obsidian onboarding as a stable two-step setup with an always-visible plugin download, compact connection form, responsive status column, and purposeful empty state.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
 - Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.
