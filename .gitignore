@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+.env.bak
+.env.tmp.*
 data/
 coverage/
 *.log

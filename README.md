@@ -38,20 +38,26 @@ Nanobot 选择 Skill、解析内容、调用模型
 
 ## Docker 一键部署（推荐）
 
-需要 Git、Docker Engine 及 Docker Compose v2。
+需要 Git、Docker Engine 及 Docker Compose v2。脚本默认拉取 GHCR 上已经构建好的 amd64/arm64 成品镜像，不会在本机构建，也不会包含开发者的模型凭据。
 
 ```bash
-git clone --recurse-submodules https://github.com/qianshulab/knowledge-relay.git
+git clone https://github.com/qianshulab/knowledge-relay.git
 cd knowledge-relay
 ./scripts/deploy-docker.sh
 ```
 
 脚本会：
 
-1. 初始化两个固定版本的上游 Skill；
-2. 创建 `.env` 并生成 Nanobot 内部鉴权密钥；
-3. 构建并启动 `knowledge-relay` 与隔离的 `nanobot` sidecar；
+1. 创建 `.env` 并生成 Nanobot 内部鉴权密钥；
+2. 拉取同版本的 `knowledge-relay` 与隔离的 `nanobot` 多架构镜像；
+3. 启动两个容器并等待健康检查；
 4. 输出服务状态和访问地址。
+
+如需审查并从当前源码自行构建，可执行：
+
+```bash
+KNOWLEDGE_RELAY_LOCAL_BUILD=1 ./scripts/deploy-docker.sh
+```
 
 打开 <http://127.0.0.1:8787> 创建个人账户。登录后在“系统设置 → AI 智能整理”配置 DeepSeek、OpenAI、Anthropic、OpenRouter、Gemini、Ollama 或自定义 OpenAI 兼容服务。
 
@@ -61,11 +67,13 @@ cd knowledge-relay
 docker compose ps
 docker compose logs -f --tail=200
 docker compose pull
-docker compose up -d --build
+docker compose up -d --no-build
 docker compose down
 ```
 
 数据保存在宿主机 `data/` 与 Docker volume `nanobot-data`。升级前必须同时备份二者。
+
+成品镜像发布在 `ghcr.io/qianshulab/knowledge-relay` 与 `ghcr.io/qianshulab/knowledge-relay-nanobot`。每个正式版本同时提供版本号、主次版本号和 `latest` 标签；镜像只包含程序、固定版本 Skills 与运行环境，模型 Key 只从部署机器的 `.env` 在容器启动时注入。
 
 ## 源码一键部署
 
@@ -155,7 +163,8 @@ Docker 镜像已经准备它们所需的 Python、Node.js、npm 依赖和 Nanobo
 | `NANOBOT_BASE_URL` | `http://127.0.0.1:8900/v1/` | 仅允许本机或内部 sidecar |
 | `NANOBOT_SEARCH_BASE_URL` | `http://127.0.0.1:8902/v1/` | 无工具的检索意图 Runtime |
 | `NANOBOT_RUNTIME_API_KEY` | 必填（Docker） | Nanobot 内部鉴权密钥 |
-| `DEEPSEEK_API_KEY` | 空 | 可选的初始模型凭据，也可在页面配置 |
+| `DEEPSEEK_API_KEY` | 空 | 可选的本机初始模型凭据，也可在页面配置；不会写入镜像 |
+| `KNOWLEDGE_RELAY_IMAGE_TAG` | `latest` | Docker 成品镜像版本，例如 `1.8.2` |
 | `ILINK_ALLOW_FROM` | 扫码者本人 | 允许的微信用户 ID |
 | `SYNC_BATCH_SIZE` | `100` | 单个 Obsidian 同步批次上限 |
 

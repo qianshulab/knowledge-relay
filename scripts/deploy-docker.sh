@@ -13,7 +13,6 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-git submodule update --init --recursive
 if [ ! -f .env ]; then
   cp .env.example .env
   chmod 600 .env
@@ -27,10 +26,23 @@ if [ -z "$current_runtime_key" ] || [ "$current_runtime_key" = "请替换为随�
     echo "未找到 openssl，无法安全生成 Nanobot 内部鉴权密钥。" >&2
     exit 1
   fi
-  sed -i.bak "s/^NANOBOT_RUNTIME_API_KEY=.*/NANOBOT_RUNTIME_API_KEY=$runtime_key/" .env
+  env_temp_file=".env.tmp.$$"
+  trap 'rm -f "$env_temp_file"' EXIT HUP INT TERM
+  awk -v runtime_key="$runtime_key" '
+    /^NANOBOT_RUNTIME_API_KEY=/ { print "NANOBOT_RUNTIME_API_KEY=" runtime_key; next }
+    { print }
+  ' .env > "$env_temp_file"
+  chmod 600 "$env_temp_file"
+  mv "$env_temp_file" .env
 fi
 
-docker compose up -d --build
+if [ "${KNOWLEDGE_RELAY_LOCAL_BUILD:-0}" = "1" ]; then
+  git submodule update --init --recursive
+  docker compose up -d --build
+else
+  docker compose pull
+  docker compose up -d --no-build
+fi
 docker compose ps
 echo "知流已启动：http://127.0.0.1:8787"
 echo "模型服务可在登录后的 系统设置 → AI 智能整理 中配置。"
