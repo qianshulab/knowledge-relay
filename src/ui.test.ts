@@ -35,6 +35,10 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain('class="model-picker"');
     expect(adminPage).toContain('data-page="settings"');
     expect(adminPage).toContain('data-view="settings"');
+    expect(adminPage).toContain('data-go="settings" title="个人设置"');
+    expect(adminPage).toContain('class="mobile-settings"');
+    expect(adminPage).not.toContain('class="nav-settings"');
+    expect(adminPage).toContain("aside { position:sticky;top:0;align-self:start;height:100vh");
     expect(adminPage).toContain('class="secondary small runtime-test"');
     expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
     expect(adminPage).toContain("AI 智能整理");
