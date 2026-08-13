@@ -13,6 +13,7 @@
 - Added owner-only Obsidian plugin publishing with ZIP validation, version protection, atomic persistent storage, live release metadata, and a stable download URL.
 - Rebalanced the Obsidian workspace into two focused setup cards and a full-width connection status area, with infrequent plugin publishing moved into a dedicated dialog.
 - Consolidated the primary navigation into Inbox, Obsidian, and Settings; merged the dashboard with the inbox, grouped infrequent WeChat/AI/Skill configuration under a status-aware settings hub, and rebuilt the sidebar account control.
+- Replaced the sidebar with a compact top application bar, moved the personal account into an avatar menu, and flattened WeChat, AI, Skills, and account settings into one-click tabs.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
 - Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.
