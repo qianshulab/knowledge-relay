@@ -23,4 +23,11 @@ describe("Docker deployment contract", () => {
     expect(workflow).toContain("http://127.0.0.1:8787/api/bootstrap");
     expect(workflow).toContain("needs: smoke-test");
   });
+
+  it("keeps a fresh runtime healthy before model credentials are configured", () => {
+    const hardening = read("scripts/harden-nanobot-config.mjs");
+    expect(hardening).toContain("__KNOWLEDGE_RELAY_PROVIDER_NOT_CONFIGURED__");
+    expect(read("src/nanobot-config.ts")).toContain("UNCONFIGURED_PROVIDER_KEY");
+    expect(read("nanobot/model-catalog.py")).toContain('"not_configured"');
+  });
 });

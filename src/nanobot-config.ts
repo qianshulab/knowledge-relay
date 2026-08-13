@@ -5,6 +5,8 @@ import type { AppConfig } from "./config.js";
 
 type JsonObject = Record<string, unknown>;
 
+const UNCONFIGURED_PROVIDER_KEY = "__KNOWLEDGE_RELAY_PROVIDER_NOT_CONFIGURED__";
+
 export type NanobotProviderDefinition = {
   id: string;
   configKey: string;
@@ -51,7 +53,10 @@ function providerDefinition(id: string): NanobotProviderDefinition {
 }
 
 function configuredSecret(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0;
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.trim() !== UNCONFIGURED_PROVIDER_KEY
+    && !/^\$\{[A-Z0-9_]+\}$/.test(value.trim());
 }
 
 function validateProviderBaseUrl(provider: NanobotProviderDefinition, value: string): string {

@@ -51,9 +51,18 @@ describe("Nanobot provider configuration", () => {
   it("只返回密钥是否存在，不返回密钥内容", async () => {
     const config = await fixture();
     const settings = await getNanobotProviderSettings(config);
-    expect(settings.active).toMatchObject({ provider: "deepseek", model: "deepseek-chat", apiKeyConfigured: true });
+    expect(settings.active).toMatchObject({ provider: "deepseek", model: "deepseek-chat", apiKeyConfigured: false });
     expect(JSON.stringify(settings)).not.toContain("DEEPSEEK_API_KEY");
     expect(settings.providers.some((item) => item.id === "openai_codex" && item.auth === "oauth")).toBe(true);
+  });
+
+  it("只在 Nanobot 配置中存在真实凭据时显示已配置", async () => {
+    const config = await fixture();
+    const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    raw.providers.deepseek.apiKey = "test-key-not-real";
+    await fs.writeFile(config.nanobot.configPath, JSON.stringify(raw));
+    const settings = await getNanobotProviderSettings(config);
+    expect(settings.active.apiKeyConfigured).toBe(true);
   });
 
   it("切换提供者时写入 Nanobot 配置并保留旧提供者密钥", async () => {
@@ -116,7 +125,7 @@ describe("Nanobot provider configuration", () => {
     await execFileAsync(process.execPath, [
       path.resolve("scripts/harden-nanobot-config.mjs"),
       config.nanobot.configPath,
-    ]);
+    ], { env: { ...process.env, DEEPSEEK_API_KEY: "" } });
     const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
     expect(raw.agents.defaults.disabledSkills).toEqual(expect.arrayContaining([
       "clawhub",
@@ -129,6 +138,6 @@ describe("Nanobot provider configuration", () => {
       "weather",
     ]));
     expect(raw.agents.defaults.provider).toBe("deepseek");
-    expect(raw.providers.deepseek.apiKey).toBe("${DEEPSEEK_API_KEY}");
+    expect(raw.providers.deepseek.apiKey).toBe("__KNOWLEDGE_RELAY_PROVIDER_NOT_CONFIGURED__");
   });
 });
