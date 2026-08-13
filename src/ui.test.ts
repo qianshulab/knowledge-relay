@@ -21,9 +21,14 @@ describe("adminPage", () => {
     expect(adminPage).toContain("if(changed)notice('')");
     expect(adminPage).toContain("/downloads/knowledge-relay-obsidian.zip");
     expect(adminPage).toContain('class="sync-workspace"');
+    expect(adminPage.match(/sync-setup-card sync-module-card/g)).toHaveLength(2);
+    expect(adminPage).toContain('class="sync-form-footer wide"');
     expect(adminPage).toContain("安装同步插件");
     expect(adminPage).toContain('id="pluginReleaseTitle"');
     expect(adminPage).toContain("发布插件新版");
+    expect(adminPage).toContain('id="openPluginPublisher"');
+    expect(adminPage).toContain('id="pluginPublishDialog" class="plugin-publish-dialog"');
+    expect(adminPage).not.toContain('id="togglePluginPublisher"');
     expect(adminPage).toContain("/api/plugin-release");
     expect(adminPage).toContain("校验并发布");
     expect(adminPage).not.toContain("知流同步 · v1.2.1");

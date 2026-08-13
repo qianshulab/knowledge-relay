@@ -11,6 +11,7 @@
 - Moved the low-frequency Settings entry beside the personal account on desktop, while preserving a compact mobile navigation fallback.
 - Rebuilt Obsidian onboarding as a stable two-step setup with an always-visible plugin download, compact connection form, responsive status column, and purposeful empty state.
 - Added owner-only Obsidian plugin publishing with ZIP validation, version protection, atomic persistent storage, live release metadata, and a stable download URL.
+- Rebalanced the Obsidian workspace into two focused setup cards and a full-width connection status area, with infrequent plugin publishing moved into a dedicated dialog.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
 - Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.
