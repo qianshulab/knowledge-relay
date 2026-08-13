@@ -82,11 +82,12 @@ Nanobot 默认监听 `127.0.0.1:8900`。打开“AI Agent”即可选择模型�
 ```text
 DEEPSEEK_API_KEY=你的测试或生产 Key
 NANOBOT_BASE_URL=http://127.0.0.1:8900/v1/
+NANOBOT_CATALOG_URL=http://127.0.0.1:8901/
 ```
 
 本机地址不要求 Runtime API Key；Docker 内部网络必须用独立的 `NANOBOT_RUNTIME_API_KEY` 鉴权。每条收件使用隔离的任务 session。本产品不开放通用 Agent 对话，也不会把对话混入收件箱。
 
-出于安全边界，Nanobot Runtime 地址仍只能通过服务器的 `NANOBOT_BASE_URL` 配置。页面可以管理 Nanobot 内部的 OpenAI、DeepSeek、Anthropic、OpenRouter、Gemini、百炼、Kimi、智谱、硅基流动、本地 Ollama/vLLM 和自定义 OpenAI 兼容提供者。保存后托管 Runtime 会自动重新加载。
+出于安全边界，Nanobot Runtime 地址仍只能通过服务器的 `NANOBOT_BASE_URL` 配置。页面可以管理 Nanobot 内部的 OpenAI、DeepSeek、Anthropic、OpenRouter、Gemini、百炼、Kimi、智谱、硅基流动、本地 Ollama/vLLM 和自定义 OpenAI 兼容提供者。模型标识会通过 Nanobot 的内部目录服务实时读取；不支持目录的提供者仍可手动输入。保存后托管 Runtime 会自动重新加载。
 
 本机部署还可以在页面发起 OpenAI Codex OAuth；它会打开 OpenAI 官方授权页面，令牌由 Nanobot 的 OAuth 存储管理。远程或 Docker 部署建议使用 OpenAI API Key，或在 Nanobot 容器终端完成 OAuth。
 

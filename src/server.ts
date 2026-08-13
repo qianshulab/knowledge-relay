@@ -12,6 +12,7 @@ import type { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { errorDetails, logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
 import {
+  getNanobotProviderModels,
   getNanobotProviderSettings,
   saveNanobotProviderSettings,
 } from "./nanobot-config.js";
@@ -272,6 +273,10 @@ export function createServer(
   app.post("/api/agent/test", async () => nanobot.health(database.getAgentSettings(config.nanobot)));
 
   app.get("/api/nanobot/provider", async () => getNanobotProviderSettings(config));
+
+  app.get<{ Querystring: { provider?: string } }>("/api/nanobot/provider/models", async (request) => {
+    return getNanobotProviderModels(config, stringBody(request.query.provider, 80));
+  });
 
   app.put<{ Body: Record<string, unknown> }>("/api/nanobot/provider", async (request) => {
     await saveNanobotProviderSettings(config, {

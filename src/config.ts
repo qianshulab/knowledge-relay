@@ -22,6 +22,7 @@ export type AppConfig = {
   };
   nanobot: {
     baseUrl: string;
+    catalogUrl?: string;
     apiKey?: string;
     model: string;
     configPath: string;
@@ -107,6 +108,9 @@ export function loadConfig(): AppConfig {
     },
     nanobot: {
       baseUrl: nanobotBaseUrl,
+      catalogUrl: new URL(
+        process.env.NANOBOT_CATALOG_URL?.trim() || "http://127.0.0.1:8901/",
+      ).toString(),
       apiKey: process.env.NANOBOT_API_KEY?.trim() || undefined,
       model: "",
       configPath: path.resolve(

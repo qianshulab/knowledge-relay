@@ -23,6 +23,7 @@ let stopping = false;
 process.env.NANOBOT_CONFIG = configPath;
 process.env.NANOBOT_WORKSPACE = workspace;
 process.env.XDG_DATA_HOME ||= path.join(dataDir, "nanobot", "auth");
+process.env.NANOBOT_API_KEY ||= process.env.NANOBOT_RUNTIME_API_KEY || "";
 
 function portOpen(port) {
   return new Promise((resolve) => {

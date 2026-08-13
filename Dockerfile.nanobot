@@ -11,6 +11,7 @@ ENV PATH="/opt/nanobot-venv/bin:${PATH}"
 
 WORKDIR /opt/knowledge-relay
 COPY nanobot/config.docker.json nanobot/AGENTS.md nanobot/entrypoint.sh nanobot/run-wechat-extractor.cjs nanobot/extract-wechat-isolated.cjs ./
+COPY nanobot/model-catalog.py ./nanobot/model-catalog.py
 COPY scripts/run-nanobot-runtime.mjs ./
 COPY external-skills/wechat-article-extractor ./skills/wechat-article-extractor
 COPY external-skills/fetch-skill ./skills/fetch-skill
@@ -18,13 +19,14 @@ RUN cd ./skills/wechat-article-extractor \
     && npm ci --omit=dev \
     && node -e "require('./scripts/extract.js')" \
     && python3 ../fetch-skill/scripts/fetch.py --help >/dev/null \
+    && python3 /opt/knowledge-relay/nanobot/model-catalog.py --help >/dev/null \
     && nanobot --version \
     && chmod +x /opt/knowledge-relay/entrypoint.sh \
     && mkdir -p /nanobot \
     && chown -R node:node /nanobot /opt/knowledge-relay
 
 USER node
-EXPOSE 8900
+EXPOSE 8900 8901
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=3)"
 ENTRYPOINT ["/opt/knowledge-relay/entrypoint.sh"]

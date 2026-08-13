@@ -27,6 +27,9 @@ export NANOBOT_WORKSPACE=/nanobot/workspace
 export NANOBOT_SERVE_HOST=0.0.0.0
 export NANOBOT_SERVE_PORT=8900
 export NANOBOT_SERVE_TIMEOUT=120
+export NANOBOT_CATALOG_HOST=0.0.0.0
+export NANOBOT_CATALOG_PORT=8901
+export NANOBOT_MODEL_CATALOG_SCRIPT=/opt/knowledge-relay/nanobot/model-catalog.py
 export XDG_DATA_HOME=/nanobot/auth
 
 exec node /opt/knowledge-relay/run-nanobot-runtime.mjs

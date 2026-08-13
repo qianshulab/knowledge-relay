@@ -14,6 +14,14 @@ export type NanobotProviderDefinition = {
   auth: "api_key" | "local" | "oauth";
 };
 
+export type NanobotModelOption = {
+  id: string;
+  label?: string;
+  description?: string;
+  ownedBy?: string;
+  contextWindow?: number;
+};
+
 export const NANOBOT_PROVIDERS: NanobotProviderDefinition[] = [
   { id: "deepseek", configKey: "deepseek", name: "DeepSeek", defaultModel: "deepseek-chat", defaultBaseUrl: "https://api.deepseek.com", auth: "api_key" },
   { id: "openai", configKey: "openai", name: "OpenAI", defaultModel: "gpt-5.4", defaultBaseUrl: "https://api.openai.com/v1", auth: "api_key" },
@@ -57,6 +65,23 @@ function validateProviderBaseUrl(provider: NanobotProviderDefinition, value: str
     throw new Error("在线模型提供者必须使用 HTTPS");
   }
   return url.toString();
+}
+
+function validatedCatalogUrl(config: AppConfig): URL {
+  const url = new URL(config.nanobot.catalogUrl || "http://127.0.0.1:8901/");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+    throw new Error("Nanobot 模型目录地址无效");
+  }
+  if (!["127.0.0.1", "localhost", "::1", "nanobot"].includes(url.hostname)) {
+    throw new Error("模型目录只能由本机 Nanobot 或 Docker 内部 nanobot 服务提供");
+  }
+  return url;
+}
+
+function boundedText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const result = value.trim().slice(0, maximum);
+  return result || undefined;
 }
 
 async function readConfig(config: AppConfig): Promise<JsonObject> {
@@ -131,6 +156,67 @@ export async function saveNanobotProviderSettings(
   providers[definition.configKey] = providerConfig;
   raw.providers = providers;
   await writeConfig(config, raw);
+}
+
+export async function getNanobotProviderModels(
+  config: AppConfig,
+  providerId: string,
+): Promise<{
+  provider: string;
+  status: "available" | "not_configured" | "unsupported" | "missing_api_base" | "error";
+  models: NanobotModelOption[];
+  modelCount: number;
+  message?: string;
+  fetchedAt: number;
+}> {
+  const provider = providerDefinition(providerId.trim());
+  const url = new URL("models", validatedCatalogUrl(config));
+  url.searchParams.set("provider", provider.id);
+  const response = await fetch(url, {
+    headers: config.nanobot.apiKey ? { Authorization: `Bearer ${config.nanobot.apiKey}` } : {},
+    signal: AbortSignal.timeout(15_000),
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(response.status === 401
+      ? "Nanobot 模型目录认证失败"
+      : `Nanobot 模型目录暂时不可用（HTTP ${response.status}）`);
+  }
+  let value: Record<string, unknown>;
+  try {
+    value = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error("Nanobot 模型目录返回了无效数据");
+  }
+  const allowedStatus = new Set(["available", "not_configured", "unsupported", "missing_api_base", "error"]);
+  const status = typeof value.status === "string" && allowedStatus.has(value.status)
+    ? value.status as "available" | "not_configured" | "unsupported" | "missing_api_base" | "error"
+    : "error";
+  const models = Array.isArray(value.models)
+    ? value.models.slice(0, 500).flatMap((item): NanobotModelOption[] => {
+      const row = record(item);
+      const id = boundedText(row.id, 200);
+      if (!id) return [];
+      const contextWindow = typeof row.context_window === "number" && Number.isFinite(row.context_window)
+        ? Math.max(0, Math.floor(row.context_window))
+        : undefined;
+      return [{
+        id,
+        ...(boundedText(row.label, 200) ? { label: boundedText(row.label, 200) } : {}),
+        ...(boundedText(row.description, 500) ? { description: boundedText(row.description, 500) } : {}),
+        ...(boundedText(row.owned_by, 100) ? { ownedBy: boundedText(row.owned_by, 100) } : {}),
+        ...(contextWindow ? { contextWindow } : {}),
+      }];
+    })
+    : [];
+  return {
+    provider: provider.id,
+    status,
+    models,
+    modelCount: models.length,
+    ...(boundedText(value.message, 300) ? { message: boundedText(value.message, 300) } : {}),
+    fetchedAt: typeof value.fetched_at === "number" ? value.fetched_at : Date.now() / 1_000,
+  };
 }
 
 export async function activateNanobotOAuthProvider(

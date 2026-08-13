@@ -2,14 +2,19 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "./config.js";
-import { getNanobotProviderSettings, saveNanobotProviderSettings } from "./nanobot-config.js";
+import {
+  getNanobotProviderModels,
+  getNanobotProviderSettings,
+  saveNanobotProviderSettings,
+} from "./nanobot-config.js";
 
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map((item) => fs.rm(item, { recursive: true, force: true })));
 });
 
@@ -70,5 +75,36 @@ describe("Nanobot provider configuration", () => {
       apiBase: "http://example.com/v1",
       apiKey: "test-key-not-real",
     })).rejects.toThrow("必须使用 HTTPS");
+  });
+
+  it("通过 Nanobot 内部目录读取实时模型且不接触提供者密钥", async () => {
+    const config = await fixture();
+    config.nanobot.apiKey = "runtime-token";
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      expect(String(input)).toBe("http://127.0.0.1:8901/models?provider=deepseek");
+      expect(init?.headers).toEqual({ Authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify({
+        provider: "deepseek",
+        status: "available",
+        models: [
+          { id: "deepseek-chat", owned_by: "DeepSeek", context_window: 128_000 },
+          { id: "deepseek-reasoner", label: "Reasoner" },
+        ],
+        model_count: 2,
+        fetched_at: 123,
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getNanobotProviderModels(config, "deepseek");
+    expect(result).toMatchObject({
+      provider: "deepseek",
+      status: "available",
+      modelCount: 2,
+      models: [
+        { id: "deepseek-chat", ownedBy: "DeepSeek", contextWindow: 128_000 },
+        { id: "deepseek-reasoner", label: "Reasoner" },
+      ],
+    });
   });
 });

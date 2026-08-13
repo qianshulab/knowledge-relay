@@ -4,6 +4,7 @@
 
 - Added an integrated Nanobot provider console for API-key providers, local runtimes, custom OpenAI-compatible endpoints, and local OpenAI Codex OAuth.
 - Added automatic Nanobot Runtime reload after provider configuration changes.
+- Added a Nanobot-owned live model catalog with searchable browser-native model suggestions and manual fallback.
 - Consolidated duplicate WeChat article rules into the single original workspace Skill.
 - Refined the administration UI with a more dimensional runtime dashboard and cleaner Skill cards.
 - Stabilized scrolling by replacing fixed blurred animation layers and hover movement with lightweight static effects.

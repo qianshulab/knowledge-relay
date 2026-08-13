@@ -22,6 +22,9 @@ describe("adminPage", () => {
     expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
     expect(adminPage).toContain("/api/nanobot/provider");
     expect(adminPage).toContain("OpenAI Codex OAuth");
+    expect(adminPage).toContain("providerModelOptions");
+    expect(adminPage).toContain("/api/nanobot/provider/models?provider=");
+    expect(adminPage).toContain("已实时读取 ");
     expect(adminPage).toContain("消息处理策略");
     expect(adminPage).toContain("高级连接信息");
     expect(adminPage).toContain('class="list skill-list"');
@@ -34,5 +37,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("backdrop-filter");
     expect(adminPage).not.toContain("animation:drift");
     expect(adminPage).not.toContain("transform:translateY(-1px)");
+    expect(adminPage).toContain("animation:ambient-orbit");
+    expect(adminPage).toContain("will-change:transform");
   });
 });
