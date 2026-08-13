@@ -56,9 +56,10 @@ cd knowledge-relay
 ./scripts/deploy-docker.sh
 ```
 
-部署脚本会初始化本地配置、生成 Runtime 内部鉴权密钥并启动两个容器。管理页面地址：
+部署脚本会初始化本地配置、生成 Runtime 内部鉴权密钥并启动两个容器。Docker 默认发布到宿主机的所有网络接口：
 
-<http://127.0.0.1:8787>
+- 本机：<http://127.0.0.1:8787>
+- 局域网设备：`http://<主机IP>:8787`
 
 检查运行状态：
 
@@ -73,6 +74,34 @@ curl --fail http://127.0.0.1:8787/health
 - `ghcr.io/qianshulab/knowledge-relay-nanobot:latest`
 
 镜像支持 `linux/amd64` 和 `linux/arm64`，不包含模型凭据。模型认证信息由部署者在本地配置。
+
+### 网络绑定
+
+Docker 的绑定地址由 `.env` 中的 `KNOWLEDGE_RELAY_BIND_ADDRESS` 控制。
+
+```dotenv
+# 允许同一局域网访问（默认）
+KNOWLEDGE_RELAY_BIND_ADDRESS=0.0.0.0
+PORT=8787
+
+# 或绑定宿主机的固定地址
+KNOWLEDGE_RELAY_BIND_ADDRESS=192.168.1.20
+
+# 或限制为本机访问
+KNOWLEDGE_RELAY_BIND_ADDRESS=127.0.0.1
+```
+
+也可以在首次部署时临时指定：
+
+```bash
+KNOWLEDGE_RELAY_BIND_ADDRESS=192.168.1.20 PORT=8787 ./scripts/deploy-docker.sh
+```
+
+局域网 HTTP 可用于管理页面。Obsidian 插件连接非本机地址时要求 HTTPS；配置反向代理与证书后，将域名转发到 `127.0.0.1:8787`，并设置：
+
+```dotenv
+PUBLIC_BASE_URL=https://inbox.example.com
+```
 
 本地构建镜像：
 
@@ -140,8 +169,9 @@ Runtime 内置两个执行型 Skills：
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `HOST` | `127.0.0.1` | 管理服务监听地址 |
-| `PORT` | `8787` | 管理服务端口 |
+| `HOST` | `127.0.0.1` | 源码部署时的监听地址 |
+| `PORT` | `8787` | 源码服务端口或 Docker 宿主机端口 |
+| `KNOWLEDGE_RELAY_BIND_ADDRESS` | `0.0.0.0` | Docker 在宿主机发布端口的绑定地址 |
 | `DATA_DIR` | `./data` | 数据库、附件和本机密钥目录 |
 | `PUBLIC_BASE_URL` | 空 | 公网部署时使用的 HTTPS 地址 |
 | `SESSION_DAYS` | `30` | 管理页面登录会话有效期 |
@@ -171,7 +201,7 @@ docker compose up -d --no-build
 固定镜像版本：
 
 ```dotenv
-KNOWLEDGE_RELAY_IMAGE_TAG=1.8.2
+KNOWLEDGE_RELAY_IMAGE_TAG=1.8.3
 ```
 
 ### 备份
@@ -187,7 +217,7 @@ KNOWLEDGE_RELAY_IMAGE_TAG=1.8.2
 
 | 范围 | 默认边界 |
 |---|---|
-| 管理页面 | 绑定 `127.0.0.1`；公网部署通过 HTTPS 反向代理并设置 `PUBLIC_BASE_URL` |
+| 管理页面 | Docker 默认绑定 `0.0.0.0` 供局域网访问；源码部署默认绑定 `127.0.0.1` |
 | Nanobot Runtime | 仅在容器内部网络提供服务，不映射宿主机端口 |
 | Obsidian 连接 | 独立令牌，可在管理后台撤销 |
 | 执行型 Skills | 固定上游版本，在独立 Runtime 容器中运行 |

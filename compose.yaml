@@ -28,6 +28,7 @@ services:
     env_file: .env
     environment:
       HOST: 0.0.0.0
+      PORT: 8787
       DATA_DIR: /app/data
       DEEPSEEK_API_KEY: ""
       NANOBOT_MANAGED: "false"
@@ -42,7 +43,7 @@ services:
       nanobot:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8787:8787"
+      - "${KNOWLEDGE_RELAY_BIND_ADDRESS:-0.0.0.0}:${PORT:-8787}:8787"
     volumes:
       - ./data:/app/data
       - nanobot-data:/nanobot

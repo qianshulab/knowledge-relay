@@ -44,5 +44,13 @@ else
   docker compose up -d --no-build
 fi
 docker compose ps
-echo "知流已启动：http://127.0.0.1:8787"
+configured_bind=$(sed -n 's/^KNOWLEDGE_RELAY_BIND_ADDRESS=//p' .env | tail -n 1)
+configured_port=$(sed -n 's/^PORT=//p' .env | tail -n 1)
+published_bind=${KNOWLEDGE_RELAY_BIND_ADDRESS:-${configured_bind:-0.0.0.0}}
+published_port=${PORT:-${configured_port:-8787}}
+if [ "$published_bind" = "0.0.0.0" ]; then
+  echo "知流已启动：本机 http://127.0.0.1:$published_port，局域网 http://<主机IP>:$published_port"
+else
+  echo "知流已启动：http://$published_bind:$published_port"
+fi
 echo "模型服务可在登录后的 系统设置 → AI 智能整理 中配置。"
