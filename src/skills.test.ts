@@ -48,12 +48,19 @@ describe("Skills management", () => {
         "inbox-router",
         "obsidian-note-builder",
         "document-to-markdown",
+        "media-understanding",
+        "security-research-curator",
         "wechat-article-extractor",
         "fetch-skill",
       ]),
     );
     expect(skills.every((skill) => skill.builtin && skill.enabled)).toBe(true);
     expect(skills.filter((skill) => skill.kind === "adapter")).toHaveLength(2);
+    expect(skills.filter((skill) => skill.kind === "prompt")).toHaveLength(5);
+    const valueRule = skills.find((skill) => skill.slug === "obsidian-note-builder")!;
+    expect(valueRule.name).toBe("知识价值与行动建议");
+    expect(valueRule.content).toContain("不生成 Markdown、YAML、文件名、Vault 路径或双链");
+    expect(valueRule.content).toContain("suggestedAction");
     database.close();
   });
 

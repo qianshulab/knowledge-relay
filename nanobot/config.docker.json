@@ -10,6 +10,7 @@
       "maxToolIterations": 24,
       "maxConcurrentSubagents": 1,
       "failOnToolError": true,
+      "disabledSkills": ["clawhub", "cron", "github", "image-generation", "memory", "my", "skill-creator", "summarize", "tmux", "update-setup", "weather"],
       "dream": { "enabled": false }
     }
   },

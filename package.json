@@ -1,6 +1,6 @@
 {
   "name": "knowledge-relay",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "description": "Self-hosted WeChat iLink capture, safe web parsing, AI processing, and Obsidian sync.",
@@ -11,7 +11,7 @@
     "start": "node scripts/run-with-nanobot.mjs start",
     "setup:nanobot": "node scripts/setup-nanobot.mjs",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && python3 -c \"from pathlib import Path; compile(Path('nanobot/model-catalog.py').read_text(), 'nanobot/model-catalog.py', 'exec')\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/template.verify.cjs",
+    "verify": "npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && node --check scripts/harden-nanobot-config.mjs && python3 -c \"from pathlib import Path; compile(Path('nanobot/model-catalog.py').read_text(), 'nanobot/model-catalog.py', 'exec')\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/template.verify.cjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -98,6 +98,7 @@ describe("NanobotClient", () => {
     const runId = crypto.createHash("sha256").update("bot:1").digest("hex").slice(0, 20);
     await fs.mkdir(path.join(workspace, "artifacts", runId), { recursive: true });
     await fs.writeFile(path.join(workspace, "artifacts", runId, "article.md"), "# 原版 Skill 结果\n");
+    await fs.writeFile(path.join(workspace, "artifacts", runId, "document.md"), "# 文档解析结果\n");
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -112,6 +113,10 @@ describe("NanobotClient", () => {
                   title: "文章",
                   url: "https://mp.weixin.qq.com/s/test",
                   source_type: "webpage",
+                }, {
+                  path: "document.md",
+                  title: "附件文档",
+                  source_type: "document",
                 }, { path: "missing.md", title: "不存在的文件" }],
               }),
             },
@@ -148,6 +153,11 @@ describe("NanobotClient", () => {
         title: "文章",
         sourceType: "wechat",
         markdown: "# 原版 Skill 结果\n",
+      }),
+      expect.objectContaining({
+        title: "附件文档",
+        sourceType: "document",
+        markdown: "# 文档解析结果\n",
       }),
     ]);
     await fs.rm(directory, { recursive: true, force: true });

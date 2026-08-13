@@ -62,7 +62,7 @@ curl http://127.0.0.1:8787/health
 
 点击侧边栏个人账户旁的设置按钮可以修改登录密码；修改后所有旧网页登录会话都会自动失效。
 
-“设置 → Nanobot Skills”会显示实际 workspace 中加载的完整原版 Skills。编辑、停用或恢复会直接更新 Nanobot workspace；其他内置提示规则用于补充收件整理偏好。修改只影响之后收到的新消息。
+“设置 → Nanobot Skills”把能力分成两组：执行型 Skills 展示实际 workspace 中加载的两个完整上游 `SKILL.md`，编辑、停用或恢复会直接更新 Nanobot workspace；收件整理规则负责分类、价值判断、文档、图片/语音与安全研究语义，不直接执行外部脚本。修改只影响之后收到的新消息。
 
 ## Nanobot
 
@@ -98,7 +98,9 @@ git submodule update --init --recursive
 npm run setup:nanobot
 ```
 
-另外保留收件分类、Obsidian 笔记和文档整理规则。知流只向 Nanobot 提交任务契约和用户偏好；原版 Skill 的选择、读取和脚本执行均发生在 Nanobot Agent Loop 内。
+另外内置五条与同步契约一致的整理规则：智能收件路由、知识价值与行动建议、文档理解与 Markdown、图片与语音理解、安全研究资料整理。知流只向 Nanobot 提交任务契约和用户偏好；原版 Skill 的选择、读取和脚本执行均发生在 Nanobot Agent Loop 内。
+
+Nanobot 自带的 GitHub、定时任务、天气、图片生成、Skill 安装、tmux、记忆等通用 Skills 与收件链路无关，专用 Runtime 会显式停用它们，以减少误触发和不必要的工具权限。需要扩展新能力时，优先在后台新增无脚本整理规则；只有确实需要新工具时才审查并固定新的 workspace Skill。
 
 ## 网页 Skills 的执行语义
 

@@ -15,7 +15,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.5.1"');
+    expect(adminPage).toContain('const UI_BUILD = "1.6.0"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
     expect(adminPage).toContain("#globalNotice{position:fixed");
     expect(adminPage).not.toContain("background:#102d23;color:#7ae7ba");
@@ -39,6 +39,8 @@ describe("adminPage", () => {
     expect(adminPage).toContain('id="syncTargetCount"');
     expect(adminPage).toContain('class="sync-empty"');
     expect(adminPage).toContain("Nanobot Skill");
+    expect(adminPage).toContain("执行型 Nanobot Skills");
+    expect(adminPage).toContain("收件整理规则");
     expect(adminPage).toContain("Nanobot 实际加载的完整 SKILL.md");
     expect(adminPage).toContain("/api/nanobot/provider");
     expect(adminPage).toContain("使用 OpenAI 账户登录");

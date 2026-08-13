@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0 - 2026-08-13
+
+- Kept the two pinned upstream runtime Skills unchanged while adding deterministic URL routing and artifact rules around them.
+- Replaced the conflicting Obsidian-Markdown prompt with structured knowledge-value, action, sensitivity, confidence, and warning guidance.
+- Added professional rules for multimodal captures and cybersecurity research, and strengthened inbox routing and document-to-Markdown behavior.
+- Split the Skills screen into executable Nanobot Skills and non-executable organization rules.
+- Disabled unrelated bundled Nanobot Skills in the dedicated inbox Runtime to reduce accidental tool selection and unnecessary capability exposure.
+- Allowed document-derived Markdown artifacts, prevented same-message artifact filename collisions, and enforced the supported category vocabulary server-side.
+
 ## 1.5.1 - 2026-08-13
 
 - Recover interrupted AI work on startup and automatically restart a failed managed Nanobot Runtime.

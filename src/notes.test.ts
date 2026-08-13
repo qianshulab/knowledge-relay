@@ -45,4 +45,10 @@ describe("note generation", () => {
     expect(() => normalizeAgentNote({ title: "越权", path: "/tmp/output" }, message))
       .toThrow("不允许的字段");
   });
+
+  it("拒绝模型自造分类并回退到确定性分类", () => {
+    const note = normalizeAgentNote({ title: "报告", category: "urgent-secret", tags: [] }, message);
+    expect(note.category).toBe("task");
+    expect(note.markdown).toContain('category: "task"');
+  });
 });

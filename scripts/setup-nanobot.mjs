@@ -75,4 +75,8 @@ if (!fs.existsSync(configPath)) {
   });
 }
 
+execFileSync(process.execPath, [path.join(root, "scripts", "harden-nanobot-config.mjs"), configPath], {
+  stdio: "inherit",
+});
+
 console.log(`Nanobot workspace ready: ${workspace}`);

@@ -13,6 +13,7 @@ WORKDIR /opt/knowledge-relay
 COPY nanobot/config.docker.json nanobot/AGENTS.md nanobot/entrypoint.sh nanobot/run-wechat-extractor.cjs nanobot/extract-wechat-isolated.cjs ./
 COPY nanobot/model-catalog.py ./nanobot/model-catalog.py
 COPY scripts/run-nanobot-runtime.mjs ./
+COPY scripts/harden-nanobot-config.mjs ./
 COPY external-skills/wechat-article-extractor ./skills/wechat-article-extractor
 COPY external-skills/fetch-skill ./skills/fetch-skill
 RUN cd ./skills/wechat-article-extractor \

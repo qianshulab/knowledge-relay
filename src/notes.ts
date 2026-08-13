@@ -103,9 +103,10 @@ export function normalizeAgentNote(
     typeof object.title === "string" && object.title.trim()
       ? cleanTitle(object.title)
       : fallback.title;
+  const categories = new Set(["inbox", "task", "reference", "idea", "document", "image", "voice", "video"]);
   const category =
-    typeof object.category === "string" && object.category.trim()
-      ? object.category.trim().slice(0, 40)
+    typeof object.category === "string" && categories.has(object.category.trim())
+      ? object.category.trim()
       : fallback.category;
   const tags = Array.isArray(object.tags)
     ? object.tags

@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +14,7 @@ import {
 } from "./nanobot-config.js";
 
 const directories: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -106,5 +109,26 @@ describe("Nanobot provider configuration", () => {
         { id: "deepseek-reasoner", label: "Reasoner" },
       ],
     });
+  });
+
+  it("专用 Runtime 停用与收件无关的 Nanobot 通用 Skills", async () => {
+    const config = await fixture();
+    await execFileAsync(process.execPath, [
+      path.resolve("scripts/harden-nanobot-config.mjs"),
+      config.nanobot.configPath,
+    ]);
+    const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    expect(raw.agents.defaults.disabledSkills).toEqual(expect.arrayContaining([
+      "clawhub",
+      "cron",
+      "github",
+      "image-generation",
+      "skill-creator",
+      "summarize",
+      "tmux",
+      "weather",
+    ]));
+    expect(raw.agents.defaults.provider).toBe("deepseek");
+    expect(raw.providers.deepseek.apiKey).toBe("${DEEPSEEK_API_KEY}");
   });
 });

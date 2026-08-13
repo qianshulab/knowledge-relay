@@ -6,6 +6,7 @@ mkdir -p /nanobot/workspace/skills /nanobot/workspace/.upstream /nanobot/workspa
 if [ ! -f /nanobot/config.json ]; then
   cp /opt/knowledge-relay/config.docker.json /nanobot/config.json
 fi
+node /opt/knowledge-relay/harden-nanobot-config.mjs /nanobot/config.json
 if [ ! -f /nanobot/workspace/AGENTS.md ]; then
   cp /opt/knowledge-relay/AGENTS.md /nanobot/workspace/AGENTS.md
 fi
