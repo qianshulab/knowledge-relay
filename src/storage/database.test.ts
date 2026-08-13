@@ -177,6 +177,16 @@ describe("AppDatabase", () => {
     database.close();
   });
 
+  it("可以更新个人账户名称并立即反映到会话资料", async () => {
+    const { database } = await setup();
+    const session = database.createSession(30);
+    const updated = database.updateOwnerDisplayName("  我的 知流  ");
+    expect(updated.displayName).toBe("我的 知流");
+    expect(database.ownerForSession(session.token)?.displayName).toBe("我的 知流");
+    expect(() => database.updateOwnerDisplayName("   ")).toThrow("账户名称不能为空");
+    database.close();
+  });
+
   it("附件只能通过当前个人账户查询", async () => {
     const { directory, database, botId } = await setup();
     const filePath = path.join(directory, "sample.txt");

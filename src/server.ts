@@ -179,9 +179,18 @@ export function createServer(
 
   app.get("/api/me", async (request) => ({ owner: (request as OwnerRequest).owner }));
 
+  app.put<{ Body: Record<string, unknown> }>("/api/me/profile", async (request, reply) => {
+    const displayName = stringBody(request.body?.displayName, 60);
+    if (!displayName) return reply.code(400).send({ error: "请输入账户名称" });
+    return { owner: database.updateOwnerDisplayName(displayName) };
+  });
+
   app.post<{ Body: Record<string, unknown> }>("/api/me/password", async (request, reply) => {
     const currentPassword = stringBody(request.body?.currentPassword, 200);
     const newPassword = stringBody(request.body?.newPassword, 200);
+    const confirmPassword = stringBody(request.body?.confirmPassword, 200);
+    if (newPassword.length < 8) return reply.code(400).send({ error: "新密码至少需要 8 个字符" });
+    if (newPassword !== confirmPassword) return reply.code(400).send({ error: "两次输入的新密码不一致" });
     if (!database.changePassword(currentPassword, newPassword)) {
       return reply.code(400).send({ error: "当前密码不正确" });
     }

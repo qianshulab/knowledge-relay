@@ -444,6 +444,16 @@ export class AppDatabase {
     return mapOwner(row);
   }
 
+  updateOwnerDisplayName(displayName: string): OwnerProfile {
+    const normalized = displayName.trim().replace(/\s+/g, " ").slice(0, 60);
+    if (!normalized) throw new Error("账户名称不能为空");
+    const userId = this.requireOwnerId();
+    this.run("UPDATE users SET display_name=? WHERE id=?", normalized, userId);
+    const row = this.ownerRow();
+    if (!row) throw new Error("个人账户不存在");
+    return mapOwner(row);
+  }
+
   changePassword(currentPassword: string, newPassword: string): boolean {
     const userId = this.requireOwnerId();
     const row = this.maybeOne("SELECT password_hash FROM users WHERE id=?", userId);
