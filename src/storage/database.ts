@@ -103,6 +103,12 @@ export type KnowledgeFacet = { name: string; count: number };
 export type KnowledgeFacets = {
   total: number;
   enriched: number;
+  facetTotals: {
+    categories: number;
+    domains: number;
+    knowledgePoints: number;
+    tools: number;
+  };
   categories: KnowledgeFacet[];
   domains: KnowledgeFacet[];
   knowledgePoints: KnowledgeFacet[];
@@ -1234,10 +1240,16 @@ export class AppDatabase {
     return {
       total: rows.length,
       enriched: rows.filter((row) => rowString(row, "agent_status") === "completed").length,
+      facetTotals: {
+        categories: categories.size,
+        domains: domains.size,
+        knowledgePoints: knowledgePoints.size,
+        tools: tools.size,
+      },
       categories: top(categories, 10),
-      domains: top(domains, 16),
-      knowledgePoints: top(knowledgePoints, 20),
-      tools: top(tools, 16),
+      domains: top(domains, 10),
+      knowledgePoints: top(knowledgePoints, 10),
+      tools: top(tools, 10),
     };
   }
 

@@ -1,0 +1,135 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { BotManager } from "./bot-manager.js";
+import type { AppConfig } from "./config.js";
+import type { AccountLoginManager } from "./ilink/account-login-manager.js";
+import type { PublicInboundMessage } from "./messages.js";
+import { defaultNote } from "./notes.js";
+import { createServer } from "./server.js";
+import { AppDatabase } from "./storage/database.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await Promise.all(temporaryDirectories.splice(0).map((directory) =>
+    fs.rm(directory, { recursive: true, force: true }),
+  ));
+});
+
+describe("收件箱 AI 检索链路", () => {
+  it("先让 Nanobot 理解需求，再按受限计划匹配本地收件索引", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-search-test-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    database.createOwner({ displayName: "Owner", password: "test-password" });
+    const session = database.createSession(30);
+    const bot = database.addBotAccount({
+      botToken: "test-token",
+      botId: "bot-1",
+      baseUrl: "https://example.weixin.qq.com/",
+      ownerUserId: "wx-1",
+      connectedAt: new Date().toISOString(),
+    });
+    const message: PublicInboundMessage = {
+      id: "bot-1:nas-article",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T12:00:00.000Z",
+      text: "这篇内容讨论 NAS、冷数据归档和家庭存储。",
+      attachments: [],
+    };
+    const fallback = defaultNote(message);
+    database.saveMessage(bot.id, "nas-article", message, fallback);
+    database.updateProcessedNote(message.id, {
+      ...fallback,
+      title: "家庭 NAS 与冷数据归档",
+      category: "reference",
+      summary: "NAS 适合家庭存储和冷数据归档。",
+      domains: ["存储"],
+      knowledgePoints: ["冷数据归档"],
+      tools: ["NAS"],
+    }, "completed");
+    database.saveAgentSettings({
+      enabled: true,
+      baseUrl: "http://127.0.0.1:8900/v1/",
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    });
+    const config: AppConfig = {
+      host: "127.0.0.1",
+      port: 8787,
+      dataDir: directory,
+      sessionDays: 30,
+      ilink: {
+        apiBaseUrl: "https://example.weixin.qq.com/",
+        cdnBaseUrl: "https://example.weixin.qq.com/",
+        appId: "bot",
+        botAgent: "test",
+        longPollMs: 1_000,
+        maxMediaBytes: 1_024,
+        allowFrom: ["wx-1"],
+      },
+      webhook: { timeoutMs: 1_000 },
+      nanobot: {
+        baseUrl: "http://127.0.0.1:8900/v1/",
+        searchBaseUrl: "http://127.0.0.1:8902/v1/",
+        model: "",
+        configPath: path.join(directory, "nanobot", "config.json"),
+        workspace: path.join(directory, "nanobot", "workspace"),
+        managed: true,
+        autoReload: true,
+        timeoutMs: 1_000,
+      },
+      sync: { batchSize: 100 },
+      autoAck: false,
+      autoAckText: "已收到",
+      logLevel: "error",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        queries: ["NAS 冷数据归档", "家庭存储"],
+        category: "reference",
+        domains: ["存储"],
+        knowledge_points: ["冷数据归档"],
+        tools: ["NAS"],
+        received_after: "",
+        received_before: "",
+        intent: "查找与 NAS 家庭存储有关的收藏内容",
+      }) } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const searchSpy = vi.spyOn(database, "searchInbox");
+    const app = createServer(
+      config,
+      database,
+      {} as BotManager,
+      {} as AccountLoginManager,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/inbox/query",
+      headers: { Authorization: `Bearer ${session.token}` },
+      payload: { question: "我之前收藏过哪些和 NAS 存储有关的内容？", filters: {} },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      mode: "nanobot_planned_search",
+      interpretation: "查找与 NAS 家庭存储有关的收藏内容",
+      matches: [expect.objectContaining({ id: message.id })],
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:8902/v1/chat/completions");
+    expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(searchSpy.mock.invocationCallOrder[0]!);
+
+    await app.close();
+    database.close();
+  });
+});

@@ -221,7 +221,7 @@ export class NanobotClient {
       "仅输出一个 JSON 对象，不要 Markdown 代码围栏、解释文字、内部推理过程或思维链。",
       '只允许字段：title、category、tags、summary、knowledge_points、domains、tools、reason、suggestedAction、sensitivity、confidence、warnings、reply、derived_files。',
       "title 最长 120 字；category 只能是 inbox、task、reference、idea、document、image、voice、video；summary 是最长 500 字的一句话；reason 是最长 300 字的简短保留价值说明，不是推理过程。",
-      "knowledge_points 是最多 8 个具体知识概念；domains 是最多 4 个专业领域；tools 是最多 8 个内容中明确出现的软件、平台、协议或工具。三者都必须是短字符串数组，不能凭空补充。",
+      "knowledge_points 是最多 8 个具体知识概念；domains 是最多 4 个稳定的上位专业领域，不要把文章标题或过细知识点当作领域；tools 是最多 8 个内容中明确出现的软件、平台、协议或工具。三者都必须是短字符串数组，不能凭空补充。",
       "suggestedAction 只能是 none、knowledge、research、project、resource、practice、delete。",
       "sensitivity 只能是 public、internal、confidential、restricted；confidence 只能是 high、medium、low；tags 最多 10 个且不带 #。",
       "不得生成或修改永久 ID、版本、游标、同步批次、Obsidian 路径、文件名、YAML、shell、command 或 script 字段。",

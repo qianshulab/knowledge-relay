@@ -24,6 +24,10 @@ describe("adminPage", () => {
     expect(adminPage).toContain("收件箱检索助手");
     expect(adminPage).toContain("Nanobot 正在理解检索需求");
     expect(adminPage).toContain("nanobot_planned_search");
+    expect(adminPage).toContain("按出现频次稳定展示每类前 10 项");
+    expect(adminPage).toContain("count.textContent=actualTotal>facets.length?'高频 '");
+    expect(adminPage).toContain("textual=mime.startsWith('text/')");
+    expect(adminPage).toContain("pre.textContent=content");
     expect(adminPage).not.toContain("只查找你的收件内容");
     expect(adminPage).not.toContain("不会联网、执行命令、修改或删除数据");
     expect(adminPage).toContain("white-space:nowrap");

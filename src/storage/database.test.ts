@@ -399,6 +399,12 @@ describe("AppDatabase", () => {
     expect(database.knowledgeFacets()).toMatchObject({
       total: 1,
       enriched: 1,
+      facetTotals: {
+        categories: 1,
+        domains: 1,
+        knowledgePoints: 2,
+        tools: 1,
+      },
       domains: [{ name: "网络安全", count: 1 }],
       tools: [{ name: "Frida", count: 1 }],
     });
