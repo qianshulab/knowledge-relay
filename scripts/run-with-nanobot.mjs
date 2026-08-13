@@ -19,6 +19,9 @@ const managed = !["0", "false", "no", "off"].includes(
 );
 const children = [];
 let stopping = false;
+let runtime;
+let runtimeCheck;
+let runtimeMonitor;
 
 process.env.NANOBOT_CONFIG = configPath;
 process.env.NANOBOT_WORKSPACE = workspace;
@@ -43,8 +46,20 @@ function launch(command, args, env = process.env) {
 
 function stop(signal = "SIGTERM") {
   stopping = true;
+  if (runtimeMonitor) clearInterval(runtimeMonitor);
   for (const child of children) {
     if (!child.killed) child.kill(signal);
+  }
+}
+
+async function runtimeHealthy() {
+  try {
+    const response = await fetch("http://127.0.0.1:8900/health", {
+      signal: AbortSignal.timeout(1_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -67,6 +82,32 @@ async function waitForNanobot(child, timeoutMs = 30_000) {
   throw new Error("Nanobot Runtime 在 30 秒内未通过健康检查");
 }
 
+async function ensureNanobot() {
+  if (stopping || await runtimeHealthy()) return;
+  if (await portOpen(8900)) {
+    await waitForNanobot(undefined, 10_000);
+    return;
+  }
+  const child = launch(process.execPath, [path.join(root, "scripts", "run-nanobot-runtime.mjs")]);
+  runtime = child;
+  child.once("exit", (code, signal) => {
+    if (runtime === child) runtime = undefined;
+    if (!stopping) {
+      console.error(`Nanobot Runtime 意外退出（${signal || code || "unknown"}），将自动重新启动`);
+    }
+  });
+  await waitForNanobot(child);
+}
+
+function scheduleNanobotCheck() {
+  if (stopping || runtimeCheck) return;
+  runtimeCheck = ensureNanobot()
+    .catch((error) => {
+      if (!stopping) console.error(`Nanobot Runtime 恢复失败：${error instanceof Error ? error.message : String(error)}`);
+    })
+    .finally(() => { runtimeCheck = undefined; });
+}
+
 process.once("SIGINT", () => stop("SIGINT"));
 process.once("SIGTERM", () => stop("SIGTERM"));
 
@@ -74,22 +115,14 @@ if (managed) {
   const setup = launch(process.execPath, [path.join(root, "scripts", "setup-nanobot.mjs")]);
   const exitCode = await new Promise((resolve) => setup.once("exit", (code) => resolve(code ?? 1)));
   if (exitCode !== 0) process.exit(exitCode);
-  let runtime;
-  if (!(await portOpen(8900))) {
-    runtime = launch(process.execPath, [path.join(root, "scripts", "run-nanobot-runtime.mjs")]);
-  }
   try {
-    await waitForNanobot(runtime);
+    await ensureNanobot();
   } catch (error) {
     stop();
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
-  runtime?.once("exit", (code, signal) => {
-    if (stopping) return;
-    console.error(`Nanobot Runtime 意外退出（${signal || code || "unknown"}）`);
-    stop();
-  });
+  runtimeMonitor = setInterval(scheduleNanobotCheck, 5_000);
 }
 
 const appEnv = { ...process.env };

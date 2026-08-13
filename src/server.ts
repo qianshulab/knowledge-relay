@@ -23,7 +23,7 @@ import {
   resolvePluginRelease,
 } from "./plugin-release.js";
 import type { AppDatabase, OwnerProfile } from "./storage/database.js";
-import { adminPage } from "./ui.js";
+import { adminPage, adminUiVersion } from "./ui.js";
 
 type OwnerRequest = FastifyRequest & { owner?: OwnerProfile; sessionToken?: string };
 
@@ -81,6 +81,7 @@ export function createServer(
   }
 
   app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("X-Knowledge-Relay-UI", adminUiVersion);
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
@@ -119,7 +120,10 @@ export function createServer(
     (request as OwnerRequest).sessionToken = token;
   });
 
-  app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(adminPage));
+  app.get("/", async (_request, reply) => reply
+    .header("Cache-Control", "no-store, max-age=0")
+    .type("text/html; charset=utf-8")
+    .send(adminPage));
   app.get("/health", async () => ({ ok: true, database: true, time: new Date().toISOString() }));
   app.get("/downloads/knowledge-relay-obsidian.zip", async (_request, reply) => {
     const release = await resolvePluginRelease(config);

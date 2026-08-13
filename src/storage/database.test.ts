@@ -138,6 +138,43 @@ describe("AppDatabase", () => {
     database.close();
   });
 
+  it("重启后可重建尚未完成的 Agent 任务及其附件", async () => {
+    const { directory, database, botId } = await setup();
+    const attachmentPath = path.join(directory, "capture.txt");
+    await fs.writeFile(attachmentPath, "captured content", "utf8");
+    const message: PublicInboundMessage = {
+      id: "bot-1:pending-recovery",
+      senderId: "wx-1",
+      botId: "bot-1",
+      sessionId: "session-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      sentAt: "2026-08-13T01:02:02.000Z",
+      text: "一条处理中断的消息",
+      attachments: [{
+        kind: "file",
+        fileName: "capture.txt",
+        path: attachmentPath,
+        size: 16,
+        mimeType: "text/plain",
+      }],
+    };
+    database.saveMessage(botId, "pending-recovery", message, defaultNote(message));
+    const pending = database.listPendingAgentMessages();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      botAccountId: botId,
+      message: {
+        id: message.id,
+        botId: "bot-1",
+        sessionId: "session-1",
+        attachments: [{ fileName: "capture.txt", path: attachmentPath }],
+      },
+    });
+    database.updateProcessedNote(message.id, defaultNote(message), "fallback");
+    expect(database.listPendingAgentMessages()).toEqual([]);
+    database.close();
+  });
+
   it("把 Agent 语义建议确定性映射到同步 DTO 而不接收本地操作", async () => {
     const { database, botId } = await setup();
     const message: PublicInboundMessage = {

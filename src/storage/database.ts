@@ -90,6 +90,11 @@ export type MessageListItem = {
   archived: boolean;
 };
 
+export type PendingAgentMessage = {
+  botAccountId: string;
+  message: PublicInboundMessage;
+};
+
 export type SyncTarget = {
   id: string;
   name: string;
@@ -1012,6 +1017,39 @@ export class AppDatabase {
     );
     for (const row of rows) this.publishMessage(rowString(row, "id"));
     return rows.length;
+  }
+
+  listPendingAgentMessages(limit = 100): PendingAgentMessage[] {
+    const rows = this.all(
+      `SELECT m.*,b.bot_id FROM messages m
+       JOIN bot_accounts b ON b.id=m.bot_account_id
+       WHERE m.tenant_id=? AND m.agent_status='pending' AND b.revoked_at IS NULL
+       ORDER BY m.seq LIMIT ?`,
+      this.requireOwnerId(),
+      limit,
+    );
+    return rows.map((row) => ({
+      botAccountId: rowString(row, "bot_account_id"),
+      message: {
+        id: rowString(row, "id"),
+        senderId: rowString(row, "sender_id"),
+        botId: rowString(row, "bot_id"),
+        ...(rowOptional(row, "session_id") ? { sessionId: rowString(row, "session_id") } : {}),
+        receivedAt: rowString(row, "received_at"),
+        ...(rowOptional(row, "sent_at") ? { sentAt: rowString(row, "sent_at") } : {}),
+        text: rowString(row, "text"),
+        attachments: this.attachmentsForMessage(rowString(row, "id")).map((attachment) => ({
+          kind: rowString(attachment, "kind") as PublicInboundMessage["attachments"][number]["kind"],
+          fileName: rowString(attachment, "file_name"),
+          path: rowString(attachment, "storage_path"),
+          size: rowNumber(attachment, "size"),
+          mimeType: rowString(attachment, "mime_type"),
+          ...(rowOptional(attachment, "transcript")
+            ? { transcript: rowString(attachment, "transcript") }
+            : {}),
+        })),
+      },
+    }));
   }
 
   listMessages(limit = 100, beforeSeq?: number): MessageListItem[] {

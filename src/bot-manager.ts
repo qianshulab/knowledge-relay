@@ -7,7 +7,7 @@ import type { InboundMessage } from "./messages.js";
 import { publicMessage } from "./messages.js";
 import { NanobotClient } from "./nanobot.js";
 import { defaultNote } from "./notes.js";
-import type { AppDatabase, StoredBotAccount } from "./storage/database.js";
+import type { AgentSettings, AppDatabase, StoredBotAccount } from "./storage/database.js";
 import { persistExtractedMarkdown } from "./web-content.js";
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -56,7 +56,58 @@ export class BotManager {
   }
 
   async startAll(): Promise<void> {
+    await this.recoverPendingAgentMessages();
     for (const account of this.database.getBotAccounts()) await this.start(account.id);
+  }
+
+  async recoverPendingAgentMessages(): Promise<number> {
+    const pending = this.database.listPendingAgentMessages();
+    if (!pending.length) return 0;
+    logger.warn("发现服务中断时未完成的 AI 任务，正在自动恢复", { count: pending.length });
+    const settings = this.database.getAgentSettings(this.config.nanobot);
+    let next = 0;
+    const worker = async () => {
+      while (next < pending.length) {
+        const current = pending[next++];
+        if (!current) return;
+        const fallback = defaultNote(current.message);
+        try {
+          if (settings.enabled) {
+            await this.completeWithAgent(current.message, settings);
+          } else {
+            this.database.updateProcessedNote(current.message.id, fallback, "fallback");
+          }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.database.updateProcessedNote(current.message.id, fallback, "fallback", detail);
+          logger.warn("中断的 AI 任务恢复失败，已保存原始内容", {
+            messageId: current.message.id,
+            error: detail,
+          });
+        }
+        this.database.publishMessage(current.message.id);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, pending.length) }, worker));
+    logger.info("服务中断时遗留的 AI 任务已恢复", { count: pending.length });
+    return pending.length;
+  }
+
+  private async completeWithAgent(
+    message: ReturnType<typeof publicMessage>,
+    settings: AgentSettings,
+  ): Promise<string | undefined> {
+    const processed = await this.nanobot.process(
+      message,
+      settings,
+      this.database.getEnabledSkills(),
+    );
+    const derivedAttachments = [];
+    for (const document of processed.derivedDocuments) {
+      derivedAttachments.push(await persistExtractedMarkdown(this.config, message.id, document));
+    }
+    this.database.completeProcessedMessage(message.id, processed.note, derivedAttachments);
+    return processed.reply;
   }
 
   async start(accountId: string): Promise<void> {
@@ -235,18 +286,7 @@ export class BotManager {
     const settings = this.database.getAgentSettings(this.config.nanobot);
     if (settings.enabled) {
       try {
-        const skills = this.database.getEnabledSkills();
-        const processed = await this.nanobot.process(
-          safe,
-          settings,
-          skills,
-        );
-        const derivedAttachments = [];
-        for (const document of processed.derivedDocuments) {
-          derivedAttachments.push(await persistExtractedMarkdown(this.config, id, document));
-        }
-        this.database.completeProcessedMessage(id, processed.note, derivedAttachments);
-        reply = processed.reply;
+        reply = await this.completeWithAgent(safe, settings);
         this.agentFailureAlerts.delete(account.id);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

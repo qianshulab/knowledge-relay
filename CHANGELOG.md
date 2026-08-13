@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1 - 2026-08-13
+
+- Recover interrupted AI work on startup and automatically restart a failed managed Nanobot Runtime.
+- Unified remaining legacy green panels, forms, dialogs, Skills, sync cards, tokens, and success feedback into the blue-cyan-violet interface system.
+- Replaced layout-shifting success banners with compact auto-dismissing status toasts and clearer refresh feedback.
+- Added no-store delivery and UI build negotiation so an open console reloads automatically after future server interface upgrades.
+
 ## 1.5.0 - 2026-08-13
 
 - Split the capture flow into a durable raw revision followed by an optional Nanobot-enriched revision, so AI latency or failure cannot block Obsidian delivery.

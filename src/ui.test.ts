@@ -14,7 +14,11 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain('data-page="users"');
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
-    expect(adminPage).toContain("收件箱已刷新，当前没有新消息。");
+    expect(adminPage).toContain("已是最新，没有发现新消息。");
+    expect(adminPage).toContain('const UI_BUILD = "1.5.1"');
+    expect(adminPage).toContain("x-knowledge-relay-ui");
+    expect(adminPage).toContain("#globalNotice{position:fixed");
+    expect(adminPage).not.toContain("background:#102d23;color:#7ae7ba");
     expect(adminPage).toContain("history.pushState");
     expect(adminPage).toContain("pageFromLocation");
     expect(adminPage).toContain("if(activePage!==page)window.scrollTo(0,0)");
