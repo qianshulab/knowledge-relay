@@ -22,9 +22,9 @@ const config: AppConfig = {
   nanobot: {
     baseUrl: "http://127.0.0.1:8900/v1/",
     model: "",
+    workspace: "/tmp/ilink-test/nanobot/workspace",
     timeoutMs: 120_000,
   },
-  webFetch: { allowBenchmarkNetwork: false },
   sync: { batchSize: 100 },
   autoAck: false,
   autoAckText: "已收到并保存。",

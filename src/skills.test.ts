@@ -23,6 +23,22 @@ async function ownerDatabase(): Promise<{ database: AppDatabase }> {
   return { database };
 }
 
+async function runtimeOwnerDatabase(): Promise<{ database: AppDatabase; workspace: string }> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ilink-runtime-skills-test-"));
+  directories.push(directory);
+  const workspace = path.join(directory, "workspace");
+  for (const skill of ["fetch-skill", "wechat-article-extractor"]) {
+    await fs.mkdir(path.join(workspace, "skills", skill), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".upstream", skill), { recursive: true });
+    const content = `---\nname: ${skill}\n---\n# ORIGINAL ${skill}\n`;
+    await fs.writeFile(path.join(workspace, "skills", skill, "SKILL.md"), content);
+    await fs.writeFile(path.join(workspace, ".upstream", skill, "SKILL.md"), content);
+  }
+  const database = await AppDatabase.open(directory, workspace);
+  database.createOwner({ displayName: "First", password: "test-password" });
+  return { database, workspace };
+}
+
 describe("Skills management", () => {
   it("默认展示并启用系统内置 Skills", async () => {
     const { database } = await ownerDatabase();
@@ -73,6 +89,35 @@ describe("Skills management", () => {
     expect(database.listSkills().some((item) => item.id === skill.id)).toBe(true);
     expect(database.deleteOrResetSkill(skill.id)).toBe("deleted");
     expect(database.listSkills().some((item) => item.id === skill.id)).toBe(false);
+    database.close();
+  });
+
+  it("后台展示并直接启停 Nanobot workspace 中的完整原版 Skill", async () => {
+    const { database, workspace } = await runtimeOwnerDatabase();
+    const original = database.listSkills().find((skill) => skill.slug === "fetch-skill")!;
+    expect(original.content).toContain("# ORIGINAL fetch-skill");
+    const changed = database.updateSkill(original.id, {
+      name: original.name,
+      description: original.description,
+      content: `${original.content}\n自定义补充。`,
+      enabled: false,
+    });
+    expect(changed.enabled).toBe(false);
+    await expect(fs.access(path.join(workspace, "skills", "fetch-skill", "SKILL.md"))).rejects.toThrow();
+    await expect(
+      fs.readFile(path.join(workspace, "skills", "fetch-skill", "SKILL.md.disabled"), "utf8"),
+    ).resolves.toContain("自定义补充");
+    await fs.appendFile(
+      path.join(workspace, "skills", "fetch-skill", "SKILL.md.disabled"),
+      "\n外部编辑也应立即显示。",
+    );
+    expect(
+      database.listSkills().find((skill) => skill.slug === "fetch-skill")?.content,
+    ).toContain("外部编辑也应立即显示");
+    expect(database.deleteOrResetSkill(changed.id)).toBe("reset");
+    await expect(
+      fs.readFile(path.join(workspace, "skills", "fetch-skill", "SKILL.md"), "utf8"),
+    ).resolves.toBe(original.content);
     database.close();
   });
 });

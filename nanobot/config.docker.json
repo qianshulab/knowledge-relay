@@ -1,0 +1,48 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/nanobot/workspace",
+      "model": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "maxTokens": 8192,
+      "contextWindowTokens": 131072,
+      "temperature": 0.1,
+      "maxToolIterations": 24,
+      "maxConcurrentSubagents": 1,
+      "failOnToolError": true,
+      "dream": { "enabled": false }
+    }
+  },
+  "providers": {
+    "deepseek": {
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      "apiBase": "https://api.deepseek.com/v1"
+    }
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8900,
+    "timeout": 120,
+    "apiKey": "${NANOBOT_RUNTIME_API_KEY}"
+  },
+  "channels": { "websocket": { "enabled": false } },
+  "tools": {
+    "web": { "enable": true, "fetch": { "useJinaReader": true } },
+    "exec": {
+      "enable": true,
+      "timeout": 90,
+      "pathPrepend": "/usr/local/bin:/usr/bin",
+      "allowedEnvKeys": ["WECHAT_API_URL"],
+      "allowPatterns": [],
+      "denyPatterns": []
+    },
+    "file": { "enable": true },
+    "cliApps": { "enable": false },
+    "my": { "enable": false, "allowSet": false },
+    "restrictToWorkspace": true,
+    "webuiAllowLocalServiceAccess": false,
+    "webuiAllowRemotePackageInstall": false,
+    "mcpServers": {},
+    "ssrfWhitelist": []
+  }
+}

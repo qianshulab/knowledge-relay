@@ -7,7 +7,6 @@ coverage/
 .DS_Store
 .nanobot-venv/
 nanobot-workspace/
-external-skills/
 release/knowledge-relay-obsidian-1.1.0.zip
 releases/
 dist/

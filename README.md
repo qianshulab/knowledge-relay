@@ -1,8 +1,8 @@
 # 知流 · Knowledge Relay
 
-一个可自行部署的个人微信 iLink 收件产品：系统接收你发送给机器人的文字和附件，用安全适配器解析公众号和公开网页，再由 Nanobot 或 OpenAI 兼容模型整理成 Obsidian Markdown，通过轻量插件可靠地增量同步到指定 Vault 收件箱。
+一个可自行部署的个人微信 iLink 收件产品：系统接收你发送给机器人的文字和附件，交给官方 HKUDS/nanobot Runtime 调用模型、选择并执行原版 Skills，再把结构化笔记和 Markdown 附件可靠地增量同步到指定 Obsidian Vault 收件箱。
 
-产品边界：微信消息是收件来源，Nanobot 是可选处理引擎，Obsidian 是知识落点。系统不把普通 Agent 对话混入收件箱；当前后台也不开放通用聊天，只提供处理规则、Skills 和连接测试。
+产品边界：微信消息是收件来源，Nanobot 是唯一 Agent Runtime，Obsidian 是知识落点。模型 Key、模型路由、Agent Loop、工具调用和原版 Skills 全部由 Nanobot 管理；知流不直连 DeepSeek。系统不把普通 Agent 对话混入收件箱。
 
 ## 已实现
 
@@ -10,10 +10,10 @@
 - 支持连接自己的 iLink Bot；每个连接独立长轮询
 - 接收文字、图片、语音、文件和视频，下载并解密微信 CDN 附件
 - SQLite 消息库、唯一约束、附件校验和、历史 JSONL 自动迁移
-- 微信 Bot 凭据和 Nanobot API Key 使用 AES-256-GCM 加密；会话和插件令牌只存 SHA-256 哈希
-- 可选 Nanobot 或 DeepSeek 等 OpenAI 兼容接口，自动生成标题、分类、标签、摘要和待办
-- 后台 Skills 管理：区分真正执行的安全适配器与 AI 提示规则，支持启停、修改、恢复默认和自定义规则
-- 微信公众号与公开网页正文安全抓取、清洗、Markdown 转换和派生附件同步
+- 微信 Bot 凭据使用 AES-256-GCM 加密；网页登录会话和插件令牌只存 SHA-256 哈希；模型 Key 只通过环境变量交给 Nanobot
+- 官方 Nanobot Runtime 负责调用 DeepSeek、运行 Agent Loop、工具和 Skills，自动生成标题、分类、标签、摘要和待办
+- 完整安装固定版本的 `wechat-article-extractor` 与 `fetch-skill`；后台展示的就是实际加载的原版 `SKILL.md`
+- 后台可启停、修改、恢复原版 Skill；Nanobot 解析后的 Markdown 作为派生附件同步
 - 模型不可用时自动使用内置规则，不阻塞收件与同步，并可通过当前微信消息做去重提醒
 - 可视化控制台：消息、微信账号、Agent、Skills 和同步设备
 - 控制台支持图片、PDF、文本、音视频安全预览，其他附件下载
@@ -23,11 +23,14 @@
 
 ## 本机启动
 
-需要 Node.js 22.13 或更高版本。
+需要 Node.js 22.13 或更高版本、Python 3.11+，并安装带 API/文档插件的官方 `nanobot-ai==0.3.0`。
 
 ```bash
 npm install
+uv tool install 'nanobot-ai[api,documents]==0.3.0'
+git submodule update --init --recursive
 cp .env.example .env
+# 在 .env 填写 DEEPSEEK_API_KEY
 npm run dev
 ```
 
@@ -59,56 +62,46 @@ curl http://127.0.0.1:8787/health
 
 控制台“概览 → 账户安全”可以修改个人账户密码；修改后所有旧网页登录会话都会自动失效。
 
-控制台“Skills”会显示默认启用的系统能力。其中“微信公众号安全解析器”和“通用网页安全解析器”是真正执行的适配器；其余是模型提示规则。修改或停用只影响之后收到的新消息，不追溯旧数据。
+控制台“Nanobot Skills”会显示实际 workspace 中加载的完整原版 Skills。编辑、停用或恢复会直接更新 Nanobot workspace；其他内置提示规则用于补充收件整理偏好。修改只影响之后收到的新消息。
 
 ## Nanobot
 
-系统按 HKUDS/nanobot 的 OpenAI 兼容接口接入。先单独安装并验证 Nanobot：
+知流只调用 HKUDS/nanobot 的本机 API，不调用任何模型供应商 API。`npm run dev` 会初始化专用 workspace，并同时启动 Nanobot 与知流：
 
 ```bash
-uv tool install nanobot-ai
-nanobot webui
-nanobot plugins enable api
-nanobot serve
+uv tool install 'nanobot-ai[api,documents]==0.3.0'
+git submodule update --init --recursive
+npm run setup:nanobot
+npm run dev
 ```
 
-Nanobot 默认监听 `127.0.0.1:8900`。在控制台“AI Agent”填写：
+Nanobot 默认监听 `127.0.0.1:8900`。模型和 Key 在 `data/nanobot/config.json` 与 `.env` 中由 Nanobot 使用：
 
 ```text
-接口地址：http://127.0.0.1:8900/v1/
-模型：以 Nanobot /v1/models 返回值为准
+DEEPSEEK_API_KEY=你的测试或生产 Key
+NANOBOT_BASE_URL=http://127.0.0.1:8900/v1/
 ```
 
-本机地址不要求 API Key；若 Nanobot 监听非本机地址，务必为它配置 API Key。个人版使用固定收件箱 `session_id`。本产品不开放通用 Agent 对话，也不会把对话混入收件箱。
+本机地址不要求 Runtime API Key；Docker 内部网络必须用独立的 `NANOBOT_RUNTIME_API_KEY` 鉴权。每条收件使用隔离的任务 session。本产品不开放通用 Agent 对话，也不会把对话混入收件箱。
 
-出于 SSRF 防护，Nanobot 地址只能通过服务器的 `NANOBOT_BASE_URL` 配置；管理页面可设置模型、API Key 和处理规则。
+出于安全边界，Nanobot 地址只能通过服务器的 `NANOBOT_BASE_URL` 配置；管理页面只显示 Runtime 与底层模型状态，不保存 DeepSeek Key，也不能切换底层模型。
 
-项目附带一组经过审查、无脚本执行的场景 Skills，位于 `nanobot-skills/`。把需要的目录复制到 Nanobot workspace 的 `skills/` 后重启 Nanobot 即可加载：
+两个用户指定的上游仓库以 Git submodule 固定到明确 commit。初始化脚本会把完整文件安装到 `data/nanobot/workspace/skills/`，并安装微信公众号 Skill 的 Node.js 依赖：
 
 ```bash
-mkdir -p nanobot-workspace/skills
-cp -R nanobot-skills/* nanobot-workspace/skills/
+git submodule update --init --recursive
+npm run setup:nanobot
 ```
 
-包含收件分类、Obsidian 笔记、微信公众号公开文章和文档转 Markdown 规则。知流自己的网页适配器不依赖 Nanobot 工具调用；模型只负责理解、分类与摘要。
-
-也可以直连 DeepSeek。编辑 `.env`：
-
-```dotenv
-NANOBOT_BASE_URL=https://api.deepseek.com/v1/
-NANOBOT_API_KEY=请填写自己的密钥
-NANOBOT_MODEL=deepseek-v4-flash
-```
-
-重启后在“AI Agent”页面启用并点击“测试连接”。密钥只放在 `.env` 或后台加密存储，不要写进镜像、源码和日志。
+另外保留收件分类、Obsidian 笔记和文档整理规则。知流只向 Nanobot 提交任务契约和用户偏好；原版 Skill 的选择、读取和脚本执行均发生在 Nanobot Agent Loop 内。
 
 ## 网页 Skills 的执行语义
 
-- 两个请求的上游仓库已固定来源版本，但其脚本不会被直接执行或打包；详见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
-- 知流会校验 URL、DNS 的全部结果和每次重定向，拒绝本机、内网、保留地址、非标准端口与过大响应。
-- Clash 等本机代理使用 `198.18.0.0/15` Fake-IP 时，可在可信本机环境设置 `WEB_FETCH_ALLOW_BENCHMARK_NETWORK=true`；公网服务器不要开启。
-- 默认直接请求原网页，不会把 URL 发给 Jina、defuddle、markdown.new 等第三方 Reader。
-- 网页内容被标记为不可信资料，正文中的 Agent 指令不会改变系统规则或触发工具。
+- 两个上游仓库固定到 [THIRD_PARTY.md](./THIRD_PARTY.md) 记录的 commit；原文件不被知流修改。
+- 原版 `fetch-skill` 的默认回退链可能把 URL 发送给 Jina Reader、defuddle.md 或 markdown.new；这是原 Skill 的既有行为，使用前请理解隐私影响。
+- 原版 `fetch-skill` 还包含 FxTwitter、Camofox、WeSpy 与可选 wechat exporter 能力；相关外部服务未安装时会按其原始回退逻辑运行。
+- Skill 脚本只在独立 Nanobot Runtime 中执行。Nanobot 配置限制 workspace 文件访问；Docker 进一步把它与知流进程隔离。
+- 网页内容仍视为不可信资料，知流只接收 Nanobot 返回的严格 JSON 与指定 artifacts 目录中的派生文件。
 - 只有模型成功分类后才保存派生 Markdown；模型失败时只保留原消息。
 
 ## Obsidian 同步语义
@@ -137,7 +130,7 @@ NANOBOT_MODEL=deepseek-v4-flash
 docker compose up -d --build
 ```
 
-Compose 默认仅发布到宿主机 `127.0.0.1:8787`，数据保存在 `./data`。若要让 Nanobot 运行在另一个容器，请把两个服务放入同一 Docker 网络，并将 `NANOBOT_BASE_URL` 改为容器服务名。
+Compose 会构建两个隔离服务：`knowledge-relay` 和官方 `nanobot-ai==0.3.0` sidecar。DeepSeek Key 只注入 Nanobot 容器；知流仅持有内部 Runtime 鉴权 Key。后台仍只发布到宿主机 `127.0.0.1:8787`，Nanobot 端口不对宿主机和公网暴露。
 
 容器使用非 root 用户、健康检查、`no-new-privileges` 和受限临时目录。公网部署请在 HTTPS 反向代理后使用，并填写 `PUBLIC_BASE_URL`。升级前将数据库、媒体、派生附件和 `app-secret.key` 一起备份。
 
@@ -157,6 +150,7 @@ npm run package:plugin
 - `data/app-secret.key`：本机主加密密钥
 - `data/media/<date>/...`：按日期保存的附件
 - `data/derived/<date>/...`：安全解析出的 Markdown 附件
+- `data/nanobot/`：本机 Nanobot 配置、workspace、Skills、sessions 和 artifacts
 - `data/state.json`、`data/inbox/*.jsonl`：旧版数据，仅用于首次迁移，不再作为主存储
 
 ## 当前产品边界

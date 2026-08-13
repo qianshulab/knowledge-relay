@@ -1,0 +1,6 @@
+[submodule "external-skills/wechat-article-extractor"]
+	path = external-skills/wechat-article-extractor
+	url = https://github.com/freestylefly/wechat-article-extractor-skill.git
+[submodule "external-skills/fetch-skill"]
+	path = external-skills/fetch-skill
+	url = https://github.com/aresbit/fetch-skill.git

@@ -24,10 +24,8 @@ export type AppConfig = {
     baseUrl: string;
     apiKey?: string;
     model: string;
+    workspace: string;
     timeoutMs: number;
-  };
-  webFetch: {
-    allowBenchmarkNetwork: boolean;
   };
   sync: {
     batchSize: number;
@@ -107,11 +105,11 @@ export function loadConfig(): AppConfig {
     nanobot: {
       baseUrl: nanobotBaseUrl,
       apiKey: process.env.NANOBOT_API_KEY?.trim() || undefined,
-      model: process.env.NANOBOT_MODEL?.trim() || "",
+      model: "",
+      workspace: path.resolve(
+        process.env.NANOBOT_WORKSPACE?.trim() || path.join(process.env.DATA_DIR?.trim() || "./data", "nanobot", "workspace"),
+      ),
       timeoutMs: numberFromEnv("NANOBOT_TIMEOUT_MS", 120_000),
-    },
-    webFetch: {
-      allowBenchmarkNetwork: booleanFromEnv("WEB_FETCH_ALLOW_BENCHMARK_NETWORK", false),
     },
     sync: {
       batchSize: Math.min(numberFromEnv("SYNC_BATCH_SIZE", 100), 500),

@@ -236,12 +236,14 @@ export function createServer(
 
   app.get("/api/agent/settings", async () => {
     const settings = database.getAgentSettings(config.nanobot);
-    return { ...settings, apiKey: settings.apiKey ? "••••••••" : "" };
+    const runtime = await nanobot.runtimeInfo(settings);
+    return {
+      ...settings,
+      model: runtime.model || "",
+    };
   });
 
   app.put<{ Body: Record<string, unknown> }>("/api/agent/settings", async (request, reply) => {
-    const current = database.getAgentSettings(config.nanobot);
-    const apiKey = stringBody(request.body?.apiKey, 1_000);
     const requestedBaseUrl = new URL(
       stringBody(request.body?.baseUrl, 1_000) || config.nanobot.baseUrl,
     ).toString();
@@ -251,13 +253,8 @@ export function createServer(
     const settings = {
       enabled: booleanBody(request.body?.enabled),
       baseUrl: config.nanobot.baseUrl,
-      apiKey:
-        apiKey && apiKey !== "••••••••"
-          ? apiKey
-          : current.apiKey && current.apiKey !== config.nanobot.apiKey
-            ? current.apiKey
-            : undefined,
-      model: stringBody(request.body?.model, 120) || config.nanobot.model,
+      apiKey: config.nanobot.apiKey,
+      model: "",
       instructions: stringBody(request.body?.instructions, 10_000),
       autoReply: booleanBody(request.body?.autoReply),
       notifyOnFailure: request.body?.notifyOnFailure !== false,

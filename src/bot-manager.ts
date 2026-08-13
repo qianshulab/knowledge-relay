@@ -8,7 +8,7 @@ import { publicMessage } from "./messages.js";
 import { NanobotClient } from "./nanobot.js";
 import { defaultNote } from "./notes.js";
 import type { AppDatabase, StoredBotAccount } from "./storage/database.js";
-import { extractUrls, extractWebContent, persistExtractedMarkdown } from "./web-content.js";
+import { persistExtractedMarkdown } from "./web-content.js";
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -96,7 +96,7 @@ export class BotManager {
   private agentFailureMessage(error: unknown): { fingerprint: string; message: string } {
     const detail = error instanceof Error ? error.message : String(error);
     if (/HTTP (401|403)|api.?key|unauthorized|authentication/i.test(detail)) {
-      return { fingerprint: "auth", message: "知流提醒：AI 模型的 API Key 无效或已失效，本条已按原始内容保存。请在管理后台检查模型设置。" };
+      return { fingerprint: "auth", message: "知流提醒：Nanobot 的模型凭据无效或已失效，本条已按原始内容保存。请检查 Nanobot 配置。" };
     }
     if (/HTTP 429|quota|rate.?limit|余额|额度/i.test(detail)) {
       return { fingerprint: "quota", message: "知流提醒：AI 模型额度不足或调用受限，本条已按原始内容保存。" };
@@ -107,7 +107,7 @@ export class BotManager {
     if (/model/i.test(detail)) {
       return { fingerprint: "model", message: "知流提醒：配置的 AI 模型当前不可用，本条已按原始内容保存。" };
     }
-    return { fingerprint: "service", message: "知流提醒：AI 处理暂时不可用，本条已按原始内容保存，请检查模型配置。" };
+    return { fingerprint: "service", message: "知流提醒：Nanobot 处理暂时不可用，本条已按原始内容保存，请检查 Nanobot Runtime。" };
   }
 
   private shouldSendAgentFailure(accountId: string, fingerprint: string): boolean {
@@ -233,28 +233,13 @@ export class BotManager {
     if (settings.enabled) {
       try {
         const skills = this.database.getEnabledSkills();
-        const enabled = new Set(skills.map((skill) => skill.slug));
-        const documents = [];
-        for (const url of extractUrls(safe.text)) {
-          const hostname = new URL(url).hostname;
-          const supported = hostname === "mp.weixin.qq.com"
-            ? enabled.has("wechat-article-extractor")
-            : enabled.has("fetch-skill");
-          if (!supported) continue;
-          try {
-            documents.push(await extractWebContent(url, this.config.webFetch));
-          } catch (error) {
-            logger.warn("网页解析失败，继续按原消息处理", { messageId: id, url, ...errorDetails(error) });
-          }
-        }
         const processed = await this.nanobot.process(
           safe,
           settings,
           skills,
-          documents,
         );
         const derivedAttachments = [];
-        for (const document of documents) {
+        for (const document of processed.derivedDocuments) {
           derivedAttachments.push(await persistExtractedMarkdown(this.config, id, document));
         }
         this.database.completeProcessedMessage(id, processed.note, derivedAttachments);

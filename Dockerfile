@@ -10,11 +10,12 @@ RUN npm run build && npm run package:plugin && npm prune --omit=dev
 
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/app/data
+ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/app/data NANOBOT_MANAGED=false
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/release ./release
+COPY --from=build /app/scripts ./scripts
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node
 EXPOSE 8787

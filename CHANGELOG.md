@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 - 2026-08-13
+
+- Made the official Nanobot Runtime the only AI execution path; Knowledge Relay no longer calls DeepSeek or fetches web pages itself.
+- Installed the two requested upstream Skills at pinned revisions and made the admin UI edit the actual workspace `SKILL.md` files.
+- Added a managed local Nanobot launcher and an isolated Docker sidecar with Node/Python Skill dependencies.
+- Added derived-artifact validation, multipart upload limits, and an isolated original WeChat extractor launcher.
+- Removed legacy provider keys and model choices from Knowledge Relay storage and UI.
+
 ## 1.2.2 - 2026-08-13
 
 - Kept environment-provided model keys as runtime-only secrets instead of copying them into the encrypted database when settings are saved.

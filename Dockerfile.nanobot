@@ -1,0 +1,26 @@
+FROM node:22-bookworm-slim
+
+ARG NANOBOT_VERSION=0.3.0
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/nanobot-venv \
+    && /opt/nanobot-venv/bin/pip install --no-cache-dir "nanobot-ai[api,documents]==${NANOBOT_VERSION}"
+
+ENV PATH="/opt/nanobot-venv/bin:${PATH}"
+
+WORKDIR /opt/knowledge-relay
+COPY nanobot/config.docker.json nanobot/AGENTS.md nanobot/entrypoint.sh nanobot/run-wechat-extractor.cjs nanobot/extract-wechat-isolated.cjs ./
+COPY external-skills/wechat-article-extractor ./skills/wechat-article-extractor
+COPY external-skills/fetch-skill ./skills/fetch-skill
+RUN cd ./skills/wechat-article-extractor \
+    && npm ci --omit=dev \
+    && chmod +x /opt/knowledge-relay/entrypoint.sh \
+    && mkdir -p /nanobot \
+    && chown -R node:node /nanobot /opt/knowledge-relay
+
+USER node
+EXPOSE 8900
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=3)"
+ENTRYPOINT ["/opt/knowledge-relay/entrypoint.sh"]

@@ -5,7 +5,6 @@ data
 .git
 .github
 coverage
-external-skills
 nanobot-workspace
 .nanobot-venv
 release/*.zip

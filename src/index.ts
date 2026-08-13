@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   configureLogger(config.logLevel);
 
-  const database = await AppDatabase.open(config.dataDir);
+  const database = await AppDatabase.open(config.dataDir, config.nanobot.workspace);
   database.purgeExpired();
   database.publishPendingMessages();
 

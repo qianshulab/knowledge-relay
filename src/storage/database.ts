@@ -1,4 +1,12 @@
 import crypto from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -174,16 +182,20 @@ function mapOwner(row: SqlRow): OwnerProfile {
 export class AppDatabase {
   private constructor(
     readonly dataDir: string,
+    private readonly nanobotWorkspace: string,
     private readonly database: DatabaseSync,
     private readonly secrets: SecretBox,
   ) {}
 
-  static async open(dataDir: string): Promise<AppDatabase> {
+  static async open(
+    dataDir: string,
+    nanobotWorkspace = path.join(dataDir, "nanobot", "workspace"),
+  ): Promise<AppDatabase> {
     await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
     const secrets = await SecretBox.load(dataDir);
     const database = new DatabaseSync(path.join(dataDir, "inbox.sqlite"));
     database.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-    const result = new AppDatabase(dataDir, database, secrets);
+    const result = new AppDatabase(dataDir, path.resolve(nanobotWorkspace), database, secrets);
     result.migrate();
     result.enforceSingleOwner();
     return result;
@@ -191,6 +203,50 @@ export class AppDatabase {
 
   close(): void {
     this.database.close();
+  }
+
+  private runtimeSkillPaths(slug: string): { active: string; disabled: string; pristine: string } {
+    const skillDirectory = path.join(this.nanobotWorkspace, "skills", slug);
+    return {
+      active: path.join(skillDirectory, "SKILL.md"),
+      disabled: path.join(skillDirectory, "SKILL.md.disabled"),
+      pristine: path.join(this.nanobotWorkspace, ".upstream", slug, "SKILL.md"),
+    };
+  }
+
+  private runtimeSkillState(
+    slug: string,
+  ): { content: string; enabled: boolean; customized: boolean } | undefined {
+    const paths = this.runtimeSkillPaths(slug);
+    const source = existsSync(paths.active)
+      ? { path: paths.active, enabled: true }
+      : existsSync(paths.disabled)
+        ? { path: paths.disabled, enabled: false }
+        : undefined;
+    if (!source) return undefined;
+    const content = readFileSync(source.path, "utf8");
+    const pristine = existsSync(paths.pristine) ? readFileSync(paths.pristine, "utf8") : undefined;
+    return { content, enabled: source.enabled, customized: pristine !== undefined && content !== pristine };
+  }
+
+  private updateRuntimeSkill(slug: string, content: string, enabled: boolean): void {
+    const builtin = BUILTIN_SKILLS.find((skill) => skill.slug === slug && skill.sourceUrl);
+    if (!builtin) return;
+    const paths = this.runtimeSkillPaths(slug);
+    if (![paths.active, paths.disabled, paths.pristine].some(existsSync)) return;
+    const destination = enabled ? paths.active : paths.disabled;
+    mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+    writeFileSync(destination, content, { encoding: "utf8", mode: 0o600 });
+    const obsolete = enabled ? paths.disabled : paths.active;
+    if (existsSync(obsolete)) unlinkSync(obsolete);
+  }
+
+  private restoreRuntimeSkill(slug: string): void {
+    const paths = this.runtimeSkillPaths(slug);
+    if (!existsSync(paths.pristine)) return;
+    mkdirSync(path.dirname(paths.active), { recursive: true, mode: 0o700 });
+    copyFileSync(paths.pristine, paths.active);
+    if (existsSync(paths.disabled)) unlinkSync(paths.disabled);
   }
 
   private migrate(): void {
@@ -353,6 +409,9 @@ export class AppDatabase {
     } catch (error) {
       if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
     }
+    // Older releases stored a model-provider key and model choice here. The official
+    // Nanobot Runtime owns both now, so purge those legacy values during migration.
+    this.database.exec("UPDATE tenant_settings SET nanobot_api_key_enc=NULL,nanobot_model=''");
   }
 
   hasOwner(): boolean {
@@ -914,12 +973,11 @@ export class AppDatabase {
         notifyOnFailure: true,
       };
     }
-    const encrypted = rowOptional(row, "nanobot_api_key_enc");
     return {
       enabled: Boolean(rowNumber(row, "nanobot_enabled")),
       baseUrl: defaults.baseUrl,
-      apiKey: encrypted ? this.secrets.decrypt(encrypted) : defaults.apiKey,
-      model: rowString(row, "nanobot_model") || defaults.model,
+      apiKey: defaults.apiKey,
+      model: "",
       instructions: rowString(row, "instructions"),
       autoReply: Boolean(rowNumber(row, "auto_reply")),
       notifyOnFailure: Boolean(rowNumber(row, "notify_on_failure")),
@@ -938,8 +996,8 @@ export class AppDatabase {
       this.requireOwnerId(),
       settings.enabled ? 1 : 0,
       settings.baseUrl,
-      settings.apiKey ? this.secrets.encrypt(settings.apiKey) : null,
-      settings.model,
+      null,
+      "",
       settings.instructions,
       settings.autoReply ? 1 : 0,
       settings.notifyOnFailure ? 1 : 0,
@@ -958,15 +1016,16 @@ export class AppDatabase {
     const builtins = BUILTIN_SKILLS.map((builtin) => {
       const override = overrides.get(builtin.slug);
       if (override) overrides.delete(builtin.slug);
+      const runtime = builtin.kind === "adapter" ? this.runtimeSkillState(builtin.slug) : undefined;
       return {
         id: override ? rowString(override, "id") : `builtin:${builtin.slug}`,
         slug: builtin.slug,
         name: override ? rowString(override, "name") : builtin.name,
         description: override ? rowString(override, "description") : builtin.description,
-        content: override ? rowString(override, "content") : builtin.content,
+        content: runtime?.content || (override ? rowString(override, "content") : builtin.content),
         builtin: true,
-        enabled: override ? Boolean(rowNumber(override, "enabled")) : true,
-        customized: Boolean(override),
+        enabled: runtime?.enabled ?? (override ? Boolean(rowNumber(override, "enabled")) : true),
+        customized: runtime?.customized ?? Boolean(override),
         updatedAt: override ? rowString(override, "updated_at") : undefined,
         kind: builtin.kind,
         sourceUrl: builtin.sourceUrl,
@@ -1053,6 +1112,7 @@ export class AppDatabase {
         timestamp,
         timestamp,
       );
+      this.updateRuntimeSkill(builtin.slug, input.content.trim(), input.enabled);
       return this.listSkills().find((skill) => skill.slug === builtin.slug)!;
     }
     const result = this.run(
@@ -1082,6 +1142,7 @@ export class AppDatabase {
       const slug = identifier.startsWith("builtin:") ? identifier.slice(8) : rowString(existing!, "slug");
       if (!BUILTIN_SKILLS.some((skill) => skill.slug === slug)) throw new Error("内置 Skill 不存在");
       this.run("DELETE FROM tenant_skills WHERE tenant_id=? AND slug=? AND is_builtin=1", this.requireOwnerId(), slug);
+      this.restoreRuntimeSkill(slug);
       return "reset";
     }
     const result = this.run(

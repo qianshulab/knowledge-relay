@@ -1,4 +1,24 @@
 services:
+  nanobot:
+    build:
+      context: .
+      dockerfile: Dockerfile.nanobot
+    restart: unless-stopped
+    init: true
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?请在 .env 设置 DEEPSEEK_API_KEY}
+      NANOBOT_RUNTIME_API_KEY: ${NANOBOT_RUNTIME_API_KEY:?请在 .env 设置 NANOBOT_RUNTIME_API_KEY}
+    volumes:
+      - nanobot-data:/nanobot
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   knowledge-relay:
     build: .
     restart: unless-stopped
@@ -7,11 +27,23 @@ services:
     environment:
       HOST: 0.0.0.0
       DATA_DIR: /app/data
+      DEEPSEEK_API_KEY: ""
+      NANOBOT_MANAGED: "false"
+      NANOBOT_BASE_URL: http://nanobot:8900/v1/
+      NANOBOT_API_KEY: ${NANOBOT_RUNTIME_API_KEY:?请在 .env 设置 NANOBOT_RUNTIME_API_KEY}
+      NANOBOT_WORKSPACE: /nanobot/workspace
+    depends_on:
+      nanobot:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/app/data
+      - nanobot-data:/nanobot
     security_opt:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=64m,mode=1777
+
+volumes:
+  nanobot-data:
