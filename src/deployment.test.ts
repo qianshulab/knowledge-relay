@@ -30,4 +30,13 @@ describe("Docker deployment contract", () => {
     expect(read("src/nanobot-config.ts")).toContain("UNCONFIGURED_PROVIDER_KEY");
     expect(read("nanobot/model-catalog.py")).toContain('"not_configured"');
   });
+
+  it("initializes a bind-mounted data directory then runs the app unprivileged", () => {
+    const dockerfile = read("Dockerfile");
+    const entrypoint = read("scripts/docker-entrypoint.sh");
+    expect(dockerfile).toContain('ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]');
+    expect(dockerfile).toContain("su-exec");
+    expect(entrypoint).toContain('chown -R node:node "$data_dir"');
+    expect(entrypoint).toContain('exec su-exec node "$@"');
+  });
 });

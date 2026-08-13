@@ -16,8 +16,11 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/release ./release
 COPY --from=build /app/scripts ./scripts
-RUN mkdir -p /app/data && chown -R node:node /app
-USER node
+RUN apk add --no-cache su-exec \
+    && mkdir -p /app/data \
+    && chown -R node:node /app \
+    && chmod +x /app/scripts/docker-entrypoint.sh
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]
