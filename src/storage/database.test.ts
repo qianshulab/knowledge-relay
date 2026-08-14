@@ -38,6 +38,22 @@ async function setup(): Promise<{ directory: string; database: AppDatabase; owne
 }
 
 describe("AppDatabase", () => {
+  it("首次保存处理策略前也会携带 Nanobot Runtime 内部密钥", async () => {
+    const { database } = await setup();
+    const settings = database.getAgentSettings({
+      baseUrl: "http://nanobot:8900/v1/",
+      model: "",
+      apiKey: "runtime-internal-key",
+    });
+
+    expect(settings).toMatchObject({
+      enabled: false,
+      baseUrl: "http://nanobot:8900/v1/",
+      apiKey: "runtime-internal-key",
+    });
+    database.close();
+  });
+
   it("加密微信凭据并使用哈希会话令牌", async () => {
     const { directory, database, ownerId } = await setup();
     const session = database.createSession(30);

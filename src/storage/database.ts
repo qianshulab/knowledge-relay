@@ -1667,6 +1667,7 @@ export class AppDatabase {
       return {
         enabled: false,
         baseUrl: defaults.baseUrl,
+        apiKey: defaults.apiKey,
         model: defaults.model,
         instructions: "",
         autoReply: false,
