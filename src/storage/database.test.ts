@@ -128,7 +128,7 @@ describe("AppDatabase", () => {
     database.close();
   });
 
-  it("原始消息先发布，Agent 完成后以同一 ID 的新版本增量发布", async () => {
+  it("原始消息持久化后等待 Agent 完成，同步只返回最终 AI 标题", async () => {
     const { database, botId } = await setup();
     const message: PublicInboundMessage = {
       id: "bot-1:progressive-message",
@@ -143,15 +143,18 @@ describe("AppDatabase", () => {
     database.publishMessage(message.id);
     const created = database.createSyncTarget({ name: "Progressive", folder: "收件箱", primary: true });
     const pending = database.getOrCreateSyncBatch(created.target.id, 50);
-    expect(pending.items[0]?.processing.status).toBe("pending");
+    expect(pending.items).toEqual([]);
 
-    database.updateProcessedNote(message.id, fallback, "fallback");
+    const enriched = { ...fallback, title: "AI 整理后的标题", summary: "AI 整理后的摘要" };
+    database.updateProcessedNote(message.id, enriched, "completed");
     database.publishMessage(message.id);
-    database.acknowledgeSyncBatch(created.target.id, pending.batchId!);
-    const fallbackBatch = database.getOrCreateSyncBatch(created.target.id, 50);
-    expect(fallbackBatch.items[0]?.id).toBe(pending.items[0]?.id);
-    expect(fallbackBatch.items[0]?.version).not.toBe(pending.items[0]?.version);
-    expect(fallbackBatch.items[0]?.processing.status).toBe("fallback");
+    const enrichedBatch = database.getOrCreateSyncBatch(created.target.id, 50);
+    expect(enrichedBatch.items).toHaveLength(1);
+    expect(enrichedBatch.items[0]).toMatchObject({
+      id: message.id,
+      title: "AI 整理后的标题",
+      processing: { status: "enriched" },
+    });
     database.close();
   });
 
@@ -276,6 +279,7 @@ describe("AppDatabase", () => {
     };
     const note = defaultNote(message);
     database.saveMessage(botId, "message-2", message, note);
+    database.updateProcessedNote(message.id, note, "fallback");
     database.publishMessage(message.id);
     const first = database.createSyncTarget({ name: "A", folder: "Inbox", primary: true });
     const second = database.createSyncTarget({ name: "B", folder: "Inbox", primary: false });
@@ -382,6 +386,7 @@ describe("AppDatabase", () => {
     };
     const note = defaultNote(message);
     database.saveMessage(botId, "message-revoked", message, note);
+    database.updateProcessedNote(message.id, note, "fallback");
     database.publishMessage(message.id);
     const created = database.createSyncTarget({
       name: "Temporary",
@@ -470,6 +475,7 @@ describe("AppDatabase", () => {
       mimeType: "text/markdown",
     };
     expect(database.addAttachment(message.id, derived)).toBe(database.addAttachment(message.id, derived));
+    database.updateProcessedNote(message.id, defaultNote(message), "fallback");
     database.publishMessage(message.id);
     const target = database.createSyncTarget({ name: "Vault", folder: "Inbox", primary: true });
     const batch = database.getOrCreateSyncBatch(target.target.id, 10);

@@ -178,7 +178,9 @@ Runtime 内置两个执行型 Skills：
 | `ILINK_ALLOW_FROM` | 扫码者本人 | 允许发送消息的微信用户 ID |
 | `ILINK_MAX_MEDIA_MB` | `100` | 单个微信附件大小上限 |
 | `NANOBOT_RUNTIME_API_KEY` | Docker 必填 | 主服务与 Runtime 之间的内部鉴权密钥 |
-| `NANOBOT_PROCESS_TIMEOUT_MS` | `900000` | 完整整理任务的故障保护上限，包含 Skill、网页和附件处理 |
+| `NANOBOT_PROCESS_IDLE_TIMEOUT_MS` | `900000` | 连续没有新 Agent 步骤时的停滞判定时间；有进展会自动续期 |
+| `NANOBOT_PROCESS_MAX_TIMEOUT_MS` | `21600000` | 单次整理任务的灾难性安全上限（默认 6 小时） |
+| `NANOBOT_SERVE_TIMEOUT` | `28800` | Nanobot Runtime 请求上限（默认 8 小时） |
 | `DEEPSEEK_API_KEY` | 空 | 可选的初始模型凭据，也可在后台配置 |
 | `SYNC_BATCH_SIZE` | `100` | 单次 Obsidian 同步的最大消息数 |
 | `KNOWLEDGE_RELAY_IMAGE_TAG` | `latest` | 使用的成品镜像版本 |

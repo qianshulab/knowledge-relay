@@ -67,6 +67,18 @@ function isTimeoutError(error: unknown): error is Error {
   return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
 }
 
+type AgentProgress = { size: number; modifiedAt: number };
+
+async function agentProgress(workspace: string, sessionId: string): Promise<AgentProgress | undefined> {
+  const fileName = `${Buffer.from(`api:${sessionId}`).toString("base64url")}.jsonl`;
+  try {
+    const stat = await fs.stat(path.join(workspace, "sessions", fileName));
+    return { size: stat.size, modifiedAt: stat.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
 export class NanobotClient {
   constructor(private readonly config: AppConfig) {}
 
@@ -315,20 +327,65 @@ export class NanobotClient {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(payload);
     }
-    const processTimeoutMs = this.config.nanobot.processTimeoutMs;
+    const processIdleTimeoutMs = this.config.nanobot.processTimeoutMs;
+    const processMaxTimeoutMs = this.config.nanobot.processMaxTimeoutMs
+      ?? Math.max(processIdleTimeoutMs * 8, 3_600_000);
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    let lastProgressAt = startedAt;
+    let previousProgress = await agentProgress(this.config.nanobot.workspace, sessionId);
+    let timeoutReason: "idle" | "maximum" | undefined;
+    let checkingProgress = false;
+    const progressTimer = setInterval(() => {
+      if (checkingProgress) return;
+      checkingProgress = true;
+      void agentProgress(this.config.nanobot.workspace, sessionId)
+        .then((progress) => {
+          if (
+            progress
+            && (!previousProgress
+              || progress.size !== previousProgress.size
+              || progress.modifiedAt !== previousProgress.modifiedAt)
+          ) {
+            previousProgress = progress;
+            lastProgressAt = Date.now();
+          }
+          const current = Date.now();
+          if (current - startedAt >= processMaxTimeoutMs) {
+            timeoutReason = "maximum";
+            controller.abort();
+          } else if (current - lastProgressAt >= processIdleTimeoutMs) {
+            timeoutReason = "idle";
+            controller.abort();
+          }
+        })
+        .finally(() => {
+          checkingProgress = false;
+        });
+    }, Math.min(2_000, Math.max(100, Math.floor(processIdleTimeoutMs / 4))));
+    progressTimer.unref();
     let response: Response;
     try {
       response = await fetch(endpoint, {
         method: "POST",
         headers,
         body,
-        signal: AbortSignal.timeout(processTimeoutMs),
+        signal: controller.signal,
       });
     } catch (error) {
-      if (isTimeoutError(error)) {
-        throw new Error(`Nanobot 智能整理任务处理超时：${Math.ceil(processTimeoutMs / 1_000)} 秒内未完成`);
+      if (isTimeoutError(error) && timeoutReason === "idle") {
+        throw new Error(
+          `Nanobot 智能整理任务无进展超时：连续 ${Math.ceil(processIdleTimeoutMs / 1_000)} 秒没有产生新的 Agent 步骤`,
+        );
+      }
+      if (isTimeoutError(error) && timeoutReason === "maximum") {
+        throw new Error(
+          `Nanobot 智能整理任务达到安全上限：${Math.ceil(processMaxTimeoutMs / 3_600_000)} 小时后停止等待`,
+        );
       }
       throw error;
+    } finally {
+      clearInterval(progressTimer);
     }
     const raw = await response.text();
     if (!response.ok) throw safeProviderError(response.status, raw);

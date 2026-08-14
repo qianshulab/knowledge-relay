@@ -6,7 +6,7 @@
 
 ```http
 Authorization: Bearer obsidian_xxx
-X-Knowledge-Relay-Plugin: 1.4.0
+X-Knowledge-Relay-Plugin: 1.4.1
 X-Knowledge-Relay-Schema: 1.2
 ```
 
@@ -99,7 +99,7 @@ GET /api/sync/pull?limit=50
 
 `id` 是永久远程身份；`version` 是服务端根据物化内容、处理状态和附件校验和生成的确定性哈希。相同 ID、相同 version 必须视为幂等无变化；相同 ID、新 version 更新既有笔记的托管区块。
 
-原始消息通常先以 `processing.status=pending` 发布。Nanobot 完成或降级后，服务端发布同一 ID 的 `enriched` 或 `fallback` 新版本。没有新数据时不创建批次，并省略 `batchId`/`syncId`；未确认批次会原样重放。
+原始消息入库后会保留 `processing.status=pending` 修订用于恢复与审计，但同步批次只会返回 Nanobot 完成或降级后同一 ID 的 `enriched` / `fallback` 最终修订，避免客户端先用临时标题创建笔记。没有新数据时不创建批次，并省略 `batchId`/`syncId`；未确认批次会原样重放。
 
 ## 下载附件
 

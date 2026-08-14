@@ -31,7 +31,10 @@ export type AppConfig = {
     managed: boolean;
     autoReload: boolean;
     timeoutMs: number;
+    /** Maximum inactivity between observable Agent steps. */
     processTimeoutMs: number;
+    /** Disaster ceiling for one request, even when it continues producing activity. */
+    processMaxTimeoutMs?: number;
   };
   sync: {
     batchSize: number;
@@ -130,7 +133,11 @@ export function loadConfig(): AppConfig {
         booleanFromEnv("NANOBOT_MANAGED", true),
       ),
       timeoutMs: numberFromEnv("NANOBOT_TIMEOUT_MS", 120_000),
-      processTimeoutMs: numberFromEnv("NANOBOT_PROCESS_TIMEOUT_MS", 900_000),
+      processTimeoutMs: numberFromEnv(
+        "NANOBOT_PROCESS_IDLE_TIMEOUT_MS",
+        numberFromEnv("NANOBOT_PROCESS_TIMEOUT_MS", 900_000),
+      ),
+      processMaxTimeoutMs: numberFromEnv("NANOBOT_PROCESS_MAX_TIMEOUT_MS", 21_600_000),
     },
     sync: {
       batchSize: Math.min(numberFromEnv("SYNC_BATCH_SIZE", 100), 500),

@@ -1924,9 +1924,17 @@ export class AppDatabase {
     const fromSeq = rowNumber(target, "last_ack_seq");
     const events = this.all(
       `SELECT e.* FROM sync_events e
-       JOIN (SELECT message_id,MAX(revision) AS revision FROM sync_events WHERE tenant_id=? AND seq>? GROUP BY message_id) latest
+       JOIN (
+         SELECT message_id,MAX(revision) AS revision
+         FROM sync_events
+         WHERE tenant_id=? AND seq>?
+           AND COALESCE(json_extract(snapshot_json,'$.processing.status'),'fallback')<>'pending'
+         GROUP BY message_id
+       ) latest
        ON latest.message_id=e.message_id AND latest.revision=e.revision
-       WHERE e.tenant_id=? AND e.seq>? ORDER BY e.seq LIMIT ?`,
+       WHERE e.tenant_id=? AND e.seq>?
+         AND COALESCE(json_extract(e.snapshot_json,'$.processing.status'),'fallback')<>'pending'
+       ORDER BY e.seq LIMIT ?`,
       tenantId,
       fromSeq,
       tenantId,
@@ -1944,7 +1952,13 @@ export class AppDatabase {
       };
     }
     const remaining = rowNumber(
-      this.one("SELECT COUNT(*) AS count FROM sync_events WHERE tenant_id=? AND seq>?", tenantId, nextCursor),
+      this.one(
+        `SELECT COUNT(*) AS count FROM sync_events
+         WHERE tenant_id=? AND seq>?
+           AND COALESCE(json_extract(snapshot_json,'$.processing.status'),'fallback')<>'pending'`,
+        tenantId,
+        nextCursor,
+      ),
       "count",
     );
     const id = crypto.randomUUID();

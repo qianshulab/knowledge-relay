@@ -5,7 +5,7 @@
 ## 原版 Skill 路径
 
 - `fetch-skill`：先读取 `skills/fetch-skill/SKILL.md`。实际脚本位于 `skills/fetch-skill/scripts/fetch.py`，从 workspace 根目录用相对路径运行。
-- `wechat-article-extractor`：先读取 `skills/wechat-article-extractor/SKILL.md`，然后从 workspace 根目录执行 `node nanobot-bin/run-wechat-extractor.cjs '<公众号 URL>'`。这个固定启动器会在无模型密钥、无网络、只读 Skill 目录的子进程中调用原版 `skills/wechat-article-extractor/scripts/extract.js`。
+- `wechat-article-extractor`：先读取 `skills/wechat-article-extractor/SKILL.md`，然后从 workspace 根目录执行 `node nanobot-bin/run-wechat-extractor.cjs '<公众号 URL>' --markdown-output 'artifacts/<任务 run-id>/article.md'`。这个固定启动器会在无模型密钥、无网络、只读 Skill 目录的子进程中调用原版 `skills/wechat-article-extractor/scripts/extract.js`，并确定性生成干净 Markdown；成功后直接读取该 Markdown，不要再写转换脚本或安装依赖。
 
 ## URL 路由顺序
 

@@ -291,20 +291,29 @@ describe("NanobotClient", () => {
     });
   });
 
-  it("真实整理任务使用独立长时限并明确报告任务超时", async () => {
-    const timeout = Object.assign(new Error("The operation was aborted due to timeout"), {
-      name: "TimeoutError",
+  it("只在 Agent 长时间没有产生新步骤时中止整理", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-idle-"));
+    vi.stubGlobal("fetch", vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      }, { once: true });
+    })));
+    const client = new NanobotClient({
+      ...config,
+      nanobot: {
+        ...config.nanobot,
+        workspace,
+        processTimeoutMs: 120,
+        processMaxTimeoutMs: 2_000,
+      },
     });
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
-    const client = new NanobotClient(config);
 
     await expect(client.process({
-      id: "bot:slow-task",
+      id: "bot:stalled-task",
       senderId: "sender",
       botId: "bot",
       receivedAt: new Date().toISOString(),
-      text: "https://mp.weixin.qq.com/s/slow",
+      text: "https://mp.weixin.qq.com/s/stalled",
       attachments: [],
     }, {
       enabled: true,
@@ -313,7 +322,54 @@ describe("NanobotClient", () => {
       instructions: "",
       autoReply: false,
       notifyOnFailure: true,
-    })).rejects.toThrow("Nanobot 智能整理任务处理超时：900 秒内未完成");
-    expect(timeoutSpy).toHaveBeenCalledWith(900_000);
+    })).rejects.toThrow("Nanobot 智能整理任务无进展超时");
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it("Agent 会话持续产生新步骤时自动续期", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-progress-"));
+    const sessions = path.join(workspace, "sessions");
+    await fs.mkdir(sessions, { recursive: true });
+    const messageId = "bot:progress-task";
+    const runId = crypto.createHash("sha256").update(messageId).digest("hex").slice(0, 20);
+    const sessionId = `knowledge-relay:inbox:${runId}`;
+    const sessionFile = path.join(
+      sessions,
+      `${Buffer.from(`api:${sessionId}`).toString("base64url")}.jsonl`,
+    );
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      setTimeout(() => void fs.appendFile(sessionFile, '{"role":"user"}\n'), 80);
+      setTimeout(() => void fs.appendFile(sessionFile, '{"role":"assistant","tool":"read_file"}\n'), 280);
+      setTimeout(() => void fs.appendFile(sessionFile, '{"role":"tool","name":"exec"}\n'), 480);
+      setTimeout(() => resolve(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ title: "持续整理成功", summary: "有效进展会自动续期。" }) } }],
+      }), { status: 200 })), 620);
+    })));
+    const client = new NanobotClient({
+      ...config,
+      nanobot: {
+        ...config.nanobot,
+        workspace,
+        processTimeoutMs: 250,
+        processMaxTimeoutMs: 2_000,
+      },
+    });
+
+    await expect(client.process({
+      id: messageId,
+      senderId: "sender",
+      botId: "bot",
+      receivedAt: new Date().toISOString(),
+      text: "请持续处理",
+      attachments: [],
+    }, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    })).resolves.toMatchObject({ note: { title: "持续整理成功" } });
+    await fs.rm(workspace, { recursive: true, force: true });
   });
 });

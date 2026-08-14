@@ -9,6 +9,7 @@ services:
     environment:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       NANOBOT_RUNTIME_API_KEY: ${NANOBOT_RUNTIME_API_KEY:?请在 .env 设置 NANOBOT_RUNTIME_API_KEY}
+      NANOBOT_SERVE_TIMEOUT: ${NANOBOT_SERVE_TIMEOUT:-28800}
     volumes:
       - nanobot-data:/nanobot
     security_opt:

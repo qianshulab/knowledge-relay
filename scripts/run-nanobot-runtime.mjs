@@ -8,7 +8,10 @@ const configPath = path.resolve(process.env.NANOBOT_CONFIG || "./data/nanobot/co
 const workspace = path.resolve(process.env.NANOBOT_WORKSPACE || "./data/nanobot/workspace");
 const host = process.env.NANOBOT_SERVE_HOST || "127.0.0.1";
 const port = process.env.NANOBOT_SERVE_PORT || "8900";
-const timeout = process.env.NANOBOT_SERVE_TIMEOUT || "900";
+// The application enforces progress-aware idle/maximum limits. Keep the
+// Runtime ceiling high enough that a healthy multi-step Skill workflow is not
+// cut off merely because its total wall time is long.
+const timeout = process.env.NANOBOT_SERVE_TIMEOUT || "28800";
 const searchWorkspace = path.resolve(
   process.env.NANOBOT_SEARCH_WORKSPACE || path.join(path.dirname(workspace), "search-workspace"),
 );

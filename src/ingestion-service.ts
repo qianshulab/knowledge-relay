@@ -36,7 +36,9 @@ export class IngestionService {
     if (!this.database.saveCapture(capture, fallback)) {
       return { accepted: false, notifyOnFailure: false };
     }
-    // Raw capture is authoritative and reaches Obsidian even when AI is slow.
+    // Persist the raw revision immediately for recovery and audit. Sync batches
+    // expose only the later enriched/fallback revision, so clients never create
+    // a note from a temporary generic title while the Agent is still working.
     this.database.publishMessage(capture.id);
     const settings = this.database.getAgentSettings(this.config.nanobot);
     if (!settings.enabled) {
