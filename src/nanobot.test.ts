@@ -262,4 +262,31 @@ describe("NanobotClient", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/v1/chat/completions");
     expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe("POST");
   });
+
+  it("连接测试沿用 Runtime 时限并返回可操作的超时提示", async () => {
+    const timeout = Object.assign(new Error("The operation was aborted due to timeout"), {
+      name: "TimeoutError",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok" }), { status: 200 }))
+      .mockRejectedValueOnce(timeout);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient({
+      ...config,
+      nanobot: { ...config.nanobot, timeoutMs: 120_000 },
+    });
+
+    await expect(client.health({
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    })).resolves.toEqual({
+      ok: false,
+      error: "模型在 120 秒内没有完成连接测试，请检查模型服务网络与运行日志",
+    });
+  });
 });

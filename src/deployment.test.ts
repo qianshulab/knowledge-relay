@@ -39,4 +39,12 @@ describe("Docker deployment contract", () => {
     expect(entrypoint).toContain('chown -R node:node "$data_dir"');
     expect(entrypoint).toContain('exec su-exec node "$@"');
   });
+
+  it("does not mistake an expected forced Runtime reload for a process crash", () => {
+    const supervisor = read("scripts/run-nanobot-runtime.mjs");
+    expect(supervisor).toContain("const expectedStops = new WeakSet()");
+    expect(supervisor).toContain("expectedStops.add(child)");
+    expect(supervisor).toContain("expectedStops.has(child)");
+    expect(supervisor).toContain("child.signalCode === null");
+  });
 });

@@ -82,6 +82,7 @@ export class NanobotClient {
   }
 
   async health(settings: AgentSettings): Promise<{ ok: boolean; error?: string }> {
+    let stage: "runtime" | "model" = "runtime";
     try {
       const baseUrl = validatedBaseUrl(settings.baseUrl);
       const headers: Record<string, string> = settings.apiKey
@@ -94,6 +95,8 @@ export class NanobotClient {
       if (!runtimeHealth.ok) {
         return { ok: false, error: `Nanobot 健康检查返回 HTTP ${runtimeHealth.status}` };
       }
+      stage = "model";
+      const completionTimeoutMs = Math.min(this.config.nanobot.timeoutMs, 120_000);
       const response = await fetch(new URL("chat/completions", baseUrl), {
         method: "POST",
         headers: {
@@ -104,13 +107,24 @@ export class NanobotClient {
           messages: [{ role: "user", content: "这是知流运行状态检查。不要调用工具，只回复：连接成功" }],
           session_id: "wechat-inbox:connection-test",
         }),
-        signal: AbortSignal.timeout(Math.min(this.config.nanobot.timeoutMs, 30_000)),
+        signal: AbortSignal.timeout(completionTimeoutMs),
       });
       const raw = await response.text();
       return response.ok
         ? { ok: true }
         : { ok: false, error: `HTTP ${response.status}: ${raw.slice(0, 200)}` };
     } catch (error) {
+      if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+        const seconds = stage === "runtime"
+          ? Math.ceil(Math.min(this.config.nanobot.timeoutMs, 10_000) / 1_000)
+          : Math.ceil(Math.min(this.config.nanobot.timeoutMs, 120_000) / 1_000);
+        return {
+          ok: false,
+          error: stage === "runtime"
+            ? `Nanobot Runtime 在 ${seconds} 秒内没有响应`
+            : `模型在 ${seconds} 秒内没有完成连接测试，请检查模型服务网络与运行日志`,
+        };
+      }
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }

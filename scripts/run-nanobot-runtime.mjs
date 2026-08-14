@@ -49,6 +49,11 @@ let restarting = false;
 let stopping = false;
 let restartTimer;
 let watcher;
+const expectedStops = new WeakSet();
+
+function isRunning(child) {
+  return Boolean(child && child.exitCode === null && child.signalCode === null);
+}
 
 function catalogJson(response, status, value) {
   const body = JSON.stringify(value);
@@ -111,10 +116,10 @@ function watchRuntime(child, label) {
     process.exitCode = 1;
   });
   child.once("exit", (code, signal) => {
-    if (stopping || restarting) return;
+    if (stopping || restarting || expectedStops.has(child)) return;
     console.error(`${label} 意外退出（${signal || code || "unknown"}）`);
-    if (runtime && runtime.exitCode === null) runtime.kill("SIGTERM");
-    if (searchRuntime && searchRuntime.exitCode === null) searchRuntime.kill("SIGTERM");
+    if (isRunning(runtime)) runtime.kill("SIGTERM");
+    if (isRunning(searchRuntime)) searchRuntime.kill("SIGTERM");
     process.exit(code || 1);
   });
   return child;
@@ -141,14 +146,23 @@ function start() {
 }
 
 async function stopRuntimes(signal) {
-  const active = [runtime, searchRuntime].filter((child) => child && child.exitCode === null);
-  for (const child of active) child.kill(signal);
-  await Promise.all(active.map((child) => Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ])));
+  const active = [runtime, searchRuntime].filter(isRunning);
+  const exits = active.map((child) => new Promise((resolve) => child.once("exit", resolve)));
   for (const child of active) {
-    if (child.exitCode === null) child.kill("SIGKILL");
+    expectedStops.add(child);
+    child.kill(signal);
+  }
+  await Promise.race([
+    Promise.all(exits),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+  const forced = active.filter(isRunning);
+  for (const child of forced) child.kill("SIGKILL");
+  if (forced.length) {
+    await Promise.race([
+      Promise.all(exits),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ]);
   }
 }
 
