@@ -59,4 +59,20 @@ describe("note generation", () => {
     expect(note.category).toBe("task");
     expect(note.markdown).toContain('category: "task"');
   });
+
+  it("不把定义和摘要整句当作知识点", () => {
+    const note = normalizeAgentNote({
+      title: "红队框架",
+      category: "reference",
+      knowledge_points: [
+        "Agentic Red Teaming（自主红队）：由 AI 智能体自动执行攻击链各阶段。",
+        "Neo4j 知识图谱用于攻击面建模并支持自然语言查询",
+      ],
+    }, message);
+
+    expect(note.knowledgePoints).toEqual([
+      "Agentic Red Teaming(自主红队)",
+      "Neo4j 知识图谱",
+    ]);
+  });
 });

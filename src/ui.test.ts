@@ -15,7 +15,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.8.7"');
+    expect(adminPage).toContain('const UI_BUILD = "1.8.8"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
     expect(adminPage).toContain("每页显示 10 条");
     expect(adminPage).toContain('id="previousMessages"');
@@ -115,6 +115,8 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
     expect(adminPage).toContain("AI 智能整理");
     expect(adminPage).toContain("await loadAgent();notice('整理设置已保存");
+    expect(adminPage).toContain("grid-template-columns:minmax(0,1fr);gap:10px;min-width:0;width:100%");
+    expect(adminPage).toContain(".message { cursor:pointer;overflow:hidden; }");
     expect(adminPage).toContain("选择模型服务并设置整理偏好");
     expect(adminPage).not.toContain("不会绕过 Runtime 直连模型");
     expect(adminPage).not.toContain("Agent Runtime / Control Plane");

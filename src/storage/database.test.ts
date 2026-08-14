@@ -195,6 +195,30 @@ describe("AppDatabase", () => {
     database.close();
   });
 
+  it("历史长知识点在列表和聚合视图中显示为简洁概念", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:legacy-knowledge-point",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "红队知识收藏",
+      attachments: [],
+    };
+    const note = {
+      ...defaultNote(message),
+      knowledgePoints: ["Agentic Red Teaming(自主红队): 由 AI 智能体自动执行攻击链。"],
+    };
+    database.saveMessage(botId, "legacy-knowledge-point", message, defaultNote(message));
+    database.updateProcessedNote(message.id, note, "completed");
+
+    expect(database.listMessages()[0]?.knowledgePoints).toEqual(["Agentic Red Teaming(自主红队)"]);
+    expect(database.knowledgeFacets().knowledgePoints).toEqual([
+      { name: "Agentic Red Teaming(自主红队)", count: 1 },
+    ]);
+    database.close();
+  });
+
   it("把 Agent 语义建议确定性映射到同步 DTO 而不接收本地操作", async () => {
     const { database, botId } = await setup();
     const message: PublicInboundMessage = {

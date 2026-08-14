@@ -21,6 +21,7 @@ import {
 } from "../capture.js";
 import type { IlinkAccount } from "../ilink/types.js";
 import type { PublicInboundMessage } from "../messages.js";
+import { compactKnowledgePoint } from "../semantic-labels.js";
 import {
   hashPassword,
   randomToken,
@@ -1482,7 +1483,9 @@ export class AppDatabase {
     for (const row of rows) {
       count(categories, rowString(row, "category"));
       for (const value of safeJson<unknown[]>(rowString(row, "domains_json"), [])) count(domains, value);
-      for (const value of safeJson<unknown[]>(rowString(row, "knowledge_points_json"), [])) count(knowledgePoints, value);
+      for (const value of safeJson<unknown[]>(rowString(row, "knowledge_points_json"), [])) {
+        count(knowledgePoints, compactKnowledgePoint(value));
+      }
       for (const value of safeJson<unknown[]>(rowString(row, "tools_json"), [])) count(tools, value);
     }
     const top = (values: Map<string, number>, limit: number): KnowledgeFacet[] => Array.from(values)
@@ -2106,7 +2109,9 @@ export class AppDatabase {
       category: rowString(row, "category"),
       tags: safeJson<string[]>(rowString(row, "tags_json"), []),
       summary: rowString(row, "summary"),
-      knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), []),
+      knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), [])
+        .map(compactKnowledgePoint)
+        .filter(Boolean),
       domains: safeJson<string[]>(rowString(row, "domains_json"), []),
       tools: safeJson<string[]>(rowString(row, "tools_json"), []),
       title: rowString(row, "note_title"),

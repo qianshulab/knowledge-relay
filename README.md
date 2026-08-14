@@ -202,7 +202,7 @@ docker compose up -d --no-build
 固定镜像版本：
 
 ```dotenv
-KNOWLEDGE_RELAY_IMAGE_TAG=1.8.7
+KNOWLEDGE_RELAY_IMAGE_TAG=1.8.8
 ```
 
 ### 备份

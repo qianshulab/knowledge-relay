@@ -1,5 +1,6 @@
 import type { CaptureInput } from "./capture.js";
 import type { PublicInboundMessage } from "./messages.js";
+import { compactKnowledgePoint } from "./semantic-labels.js";
 import type { ProcessedNote } from "./storage/database.js";
 
 type NoteInput = CaptureInput | PublicInboundMessage;
@@ -186,7 +187,11 @@ export function normalizeAgentNote(
       ? object.summary.replace(/[\r\n]+/g, " ").trim().slice(0, 500)
       : undefined;
   const keyPoints = cleanList(object.key_points, 8);
-  const knowledgePoints = cleanList(object.knowledge_points, 8);
+  const knowledgePoints = cleanList(object.knowledge_points, 8)
+    .map(compactKnowledgePoint)
+    .filter(Boolean)
+    .filter((item, index, values) => values.indexOf(item) === index)
+    .slice(0, 8);
   const domains = cleanList(object.domains, 4);
   const tools = cleanList(object.tools, 8);
   const reason =
