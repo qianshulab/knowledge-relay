@@ -23,7 +23,7 @@
   "api": {
     "host": "0.0.0.0",
     "port": 8900,
-    "timeout": 120,
+    "timeout": 900,
     "apiKey": "${NANOBOT_RUNTIME_API_KEY}"
   },
   "channels": { "websocket": { "enabled": false } },

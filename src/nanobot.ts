@@ -63,6 +63,10 @@ function safeProviderError(status: number, raw: string): Error {
   return new Error(`AI 服务返回 HTTP ${status}${message ? `：${message}` : ""}`);
 }
 
+function isTimeoutError(error: unknown): error is Error {
+  return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
+}
+
 export class NanobotClient {
   constructor(private readonly config: AppConfig) {}
 
@@ -114,7 +118,7 @@ export class NanobotClient {
         ? { ok: true }
         : { ok: false, error: `HTTP ${response.status}: ${raw.slice(0, 200)}` };
     } catch (error) {
-      if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) {
+      if (isTimeoutError(error)) {
         const seconds = stage === "runtime"
           ? Math.ceil(Math.min(this.config.nanobot.timeoutMs, 10_000) / 1_000)
           : Math.ceil(Math.min(this.config.nanobot.timeoutMs, 120_000) / 1_000);
@@ -310,12 +314,21 @@ export class NanobotClient {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(payload);
     }
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body,
-      signal: AbortSignal.timeout(this.config.nanobot.timeoutMs),
-    });
+    const processTimeoutMs = this.config.nanobot.processTimeoutMs;
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(processTimeoutMs),
+      });
+    } catch (error) {
+      if (isTimeoutError(error)) {
+        throw new Error(`Nanobot 智能整理任务处理超时：${Math.ceil(processTimeoutMs / 1_000)} 秒内未完成`);
+      }
+      throw error;
+    }
     const raw = await response.text();
     if (!response.ok) throw safeProviderError(response.status, raw);
     const result = JSON.parse(raw) as ChatCompletionResponse;

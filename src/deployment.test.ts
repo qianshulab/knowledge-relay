@@ -47,4 +47,11 @@ describe("Docker deployment contract", () => {
     expect(supervisor).toContain("expectedStops.has(child)");
     expect(supervisor).toContain("child.signalCode === null");
   });
+
+  it("allows long Skill tasks without overstating the basic connection check", () => {
+    expect(read(".env.example")).toContain("NANOBOT_PROCESS_TIMEOUT_MS=900000");
+    expect(read("nanobot/entrypoint.sh")).toContain("NANOBOT_SERVE_TIMEOUT=900");
+    expect(read("src/ui.ts")).toContain("检查基础连接");
+    expect(read("src/bot-manager.ts")).toContain("智能整理任务处理超时");
+  });
 });

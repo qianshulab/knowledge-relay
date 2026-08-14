@@ -86,6 +86,7 @@ describe("收件箱 AI 检索链路", () => {
         managed: true,
         autoReload: true,
         timeoutMs: 1_000,
+        processTimeoutMs: 900_000,
       },
       sync: { batchSize: 100 },
       autoAck: false,

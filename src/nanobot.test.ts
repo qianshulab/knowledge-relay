@@ -31,6 +31,7 @@ const config: AppConfig = {
     managed: true,
     autoReload: true,
     timeoutMs: 30_000,
+    processTimeoutMs: 900_000,
   },
   sync: { batchSize: 100 },
   autoAck: false,
@@ -288,5 +289,31 @@ describe("NanobotClient", () => {
       ok: false,
       error: "模型在 120 秒内没有完成连接测试，请检查模型服务网络与运行日志",
     });
+  });
+
+  it("真实整理任务使用独立长时限并明确报告任务超时", async () => {
+    const timeout = Object.assign(new Error("The operation was aborted due to timeout"), {
+      name: "TimeoutError",
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const client = new NanobotClient(config);
+
+    await expect(client.process({
+      id: "bot:slow-task",
+      senderId: "sender",
+      botId: "bot",
+      receivedAt: new Date().toISOString(),
+      text: "https://mp.weixin.qq.com/s/slow",
+      attachments: [],
+    }, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    })).rejects.toThrow("Nanobot 智能整理任务处理超时：900 秒内未完成");
+    expect(timeoutSpy).toHaveBeenCalledWith(900_000);
   });
 });

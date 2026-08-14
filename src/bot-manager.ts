@@ -104,7 +104,7 @@ export class BotManager {
       return { fingerprint: "quota", message: "知流提醒：AI 模型额度不足或调用受限，本条已按原始内容保存。" };
     }
     if (/timeout|超时|abort/i.test(detail)) {
-      return { fingerprint: "timeout", message: "知流提醒：AI 模型连接超时，本条已按原始内容保存，请稍后检查服务。" };
+      return { fingerprint: "timeout", message: "知流提醒：本条智能整理任务处理超时，已按原始内容保存。基础模型连接可能仍然正常，请稍后重试或检查相关 Skill。" };
     }
     if (/model/i.test(detail)) {
       return { fingerprint: "model", message: "知流提醒：配置的 AI 模型当前不可用，本条已按原始内容保存。" };

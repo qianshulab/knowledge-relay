@@ -31,6 +31,7 @@ export type AppConfig = {
     managed: boolean;
     autoReload: boolean;
     timeoutMs: number;
+    processTimeoutMs: number;
   };
   sync: {
     batchSize: number;
@@ -129,6 +130,7 @@ export function loadConfig(): AppConfig {
         booleanFromEnv("NANOBOT_MANAGED", true),
       ),
       timeoutMs: numberFromEnv("NANOBOT_TIMEOUT_MS", 120_000),
+      processTimeoutMs: numberFromEnv("NANOBOT_PROCESS_TIMEOUT_MS", 900_000),
     },
     sync: {
       batchSize: Math.min(numberFromEnv("SYNC_BATCH_SIZE", 100), 500),

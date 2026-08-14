@@ -8,7 +8,7 @@ const configPath = path.resolve(process.env.NANOBOT_CONFIG || "./data/nanobot/co
 const workspace = path.resolve(process.env.NANOBOT_WORKSPACE || "./data/nanobot/workspace");
 const host = process.env.NANOBOT_SERVE_HOST || "127.0.0.1";
 const port = process.env.NANOBOT_SERVE_PORT || "8900";
-const timeout = process.env.NANOBOT_SERVE_TIMEOUT || "120";
+const timeout = process.env.NANOBOT_SERVE_TIMEOUT || "900";
 const searchWorkspace = path.resolve(
   process.env.NANOBOT_SEARCH_WORKSPACE || path.join(path.dirname(workspace), "search-workspace"),
 );

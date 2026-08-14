@@ -15,7 +15,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.8.6"');
+    expect(adminPage).toContain('const UI_BUILD = "1.8.7"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
     expect(adminPage).toContain("每页显示 10 条");
     expect(adminPage).toContain('id="previousMessages"');
@@ -110,6 +110,8 @@ describe("adminPage", () => {
     expect(adminPage).toContain('id="aiRecentResults"');
     expect(adminPage).toContain("renderIntelligence(loadedMessages)");
     expect(adminPage).toContain('class="secondary small runtime-test"');
+    expect(adminPage).toContain("检查基础连接");
+    expect(adminPage).toContain("Nanobot 与模型的基础连接正常。");
     expect(adminPage).not.toContain('<div class="card section"><h2>账户安全</h2>');
     expect(adminPage).toContain("AI 智能整理");
     expect(adminPage).toContain("await loadAgent();notice('整理设置已保存");

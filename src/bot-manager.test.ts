@@ -64,6 +64,7 @@ describe("BotManager interrupted work recovery", () => {
         managed: true,
         autoReload: true,
         timeoutMs: 1_000,
+        processTimeoutMs: 900_000,
       },
       sync: { batchSize: 100 },
       autoAck: false,
@@ -88,6 +89,13 @@ describe("BotManager interrupted work recovery", () => {
       derivedDocuments: [],
     });
     const manager = new BotManager(config, database);
+    const timeoutAlert = Reflect.apply(
+      Reflect.get(manager, "agentFailureMessage") as (...args: unknown[]) => unknown,
+      manager,
+      [new Error("Nanobot 智能整理任务处理超时：900 秒内未完成")],
+    ) as { message: string };
+    expect(timeoutAlert.message).toContain("智能整理任务处理超时");
+    expect(timeoutAlert.message).toContain("基础模型连接可能仍然正常");
     Reflect.set(Reflect.get(manager, "ingestion") as object, "nanobot", { process });
 
     await expect(manager.recoverPendingAgentMessages()).resolves.toBe(1);

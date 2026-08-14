@@ -39,7 +39,7 @@ async function fixture(): Promise<AppConfig> {
     sessionDays: 30,
     ilink: { apiBaseUrl: "https://example.com", cdnBaseUrl: "https://example.com", appId: "bot", botAgent: "test", longPollMs: 1_000, maxMediaBytes: 1_000, allowFrom: [] },
     webhook: { timeoutMs: 1_000 },
-    nanobot: { baseUrl: "http://127.0.0.1:8900/v1/", model: "", configPath, workspace: path.join(directory, "workspace"), managed: true, autoReload: true, timeoutMs: 30_000 },
+    nanobot: { baseUrl: "http://127.0.0.1:8900/v1/", model: "", configPath, workspace: path.join(directory, "workspace"), managed: true, autoReload: true, timeoutMs: 30_000, processTimeoutMs: 900_000 },
     sync: { batchSize: 100 },
     autoAck: false,
     autoAckText: "ok",

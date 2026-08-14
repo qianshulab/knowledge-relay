@@ -178,6 +178,7 @@ Runtime 内置两个执行型 Skills：
 | `ILINK_ALLOW_FROM` | 扫码者本人 | 允许发送消息的微信用户 ID |
 | `ILINK_MAX_MEDIA_MB` | `100` | 单个微信附件大小上限 |
 | `NANOBOT_RUNTIME_API_KEY` | Docker 必填 | 主服务与 Runtime 之间的内部鉴权密钥 |
+| `NANOBOT_PROCESS_TIMEOUT_MS` | `900000` | 完整整理任务的故障保护上限，包含 Skill、网页和附件处理 |
 | `DEEPSEEK_API_KEY` | 空 | 可选的初始模型凭据，也可在后台配置 |
 | `SYNC_BATCH_SIZE` | `100` | 单次 Obsidian 同步的最大消息数 |
 | `KNOWLEDGE_RELAY_IMAGE_TAG` | `latest` | 使用的成品镜像版本 |
@@ -201,7 +202,7 @@ docker compose up -d --no-build
 固定镜像版本：
 
 ```dotenv
-KNOWLEDGE_RELAY_IMAGE_TAG=1.8.6
+KNOWLEDGE_RELAY_IMAGE_TAG=1.8.7
 ```
 
 ### 备份
