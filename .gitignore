@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.bak
+.env.backup.*
 .env.tmp.*
 data/
 coverage/

@@ -17,6 +17,17 @@ describe("Docker deployment contract", () => {
     expect(read("README.md")).toContain("### 网络绑定");
   });
 
+  it("provides a persistent, health-checked Docker update path", () => {
+    const updater = read("scripts/update-docker.sh");
+    expect(read(".env.example")).toContain("KNOWLEDGE_RELAY_IMAGE_TAG=latest");
+    expect(updater).toContain('KNOWLEDGE_RELAY_IMAGE_TAG=" image_tag');
+    expect(updater).toContain("docker compose pull");
+    expect(updater).toContain("docker compose up -d --no-build --remove-orphans");
+    expect(updater).toContain("http://127.0.0.1:8787/health");
+    expect(updater).toContain("http://127.0.0.1:8900/health");
+    expect(read("README.md")).toContain("./scripts/update-docker.sh 1.8.9");
+  });
+
   it("starts published images before creating a release", () => {
     const workflow = read(".github/workflows/release.yml");
     expect(workflow).toContain("smoke-test:");
