@@ -136,7 +136,7 @@ export const adminPage = `<!doctype html>
     const validPages=['messages','wechat','sync','agent','skills','settings'];
     function pageFromLocation(){const page=location.hash.replace(/^#/,'');if(page==='home'){history.replaceState(null,'','#messages');return'messages'}return validPages.includes(page)?page:'messages';}
     function renderOwner(){const initial=(owner.displayName||'知').trim().slice(0,1);$('#topAccountInitial').textContent=initial;$('#settingsAccountInitial').textContent=initial;$('#accountMenuIdentity').textContent=owner.displayName+' · 个人版';$('#profileDisplayName').value=owner.displayName;}
-    async function showApp(){$('#app').classList.remove('hidden');renderOwner();await refreshAll();go(pageFromLocation(),false); }
+    async function showApp(){const initialPage=pageFromLocation();go(initialPage,false);$('#app').classList.remove('hidden');renderOwner();await refreshAll(); }
     async function refreshAll(){ try{dashboard=await api('/api/dashboard');$('#mMessages').textContent=dashboard.messages;$('#mPending').textContent=dashboard.pendingSync;$('#mBots').textContent=dashboard.botAccounts;$('#mTargets').textContent=dashboard.syncTargets.length;renderAccounts();renderTargets();await loadMessages(true);await Promise.all([loadFacets(),loadAgent(),loadProvider(),loadSkills(),loadPluginRelease()]);}catch(error){notice(error.message,true)} }
     function go(page,updateLocation=true){
       if(page==='home')page='messages';

@@ -35,6 +35,12 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("background:#102d23;color:#7ae7ba");
     expect(adminPage).toContain("history.pushState");
     expect(adminPage).toContain("pageFromLocation");
+    const initialRoute = adminPage.indexOf("const initialPage=pageFromLocation();go(initialPage,false)");
+    const revealApp = adminPage.indexOf("$('#app').classList.remove('hidden')", initialRoute);
+    const initialRefresh = adminPage.indexOf("await refreshAll()", revealApp);
+    expect(initialRoute).toBeGreaterThan(-1);
+    expect(revealApp).toBeGreaterThan(initialRoute);
+    expect(initialRefresh).toBeGreaterThan(revealApp);
     expect(adminPage).toContain("if(changed)window.scrollTo(0,0)");
     expect(adminPage).toContain("document.startViewTransition(()=>{render();finish()})");
     expect(adminPage).toContain("pageTransition.skipTransition()");
