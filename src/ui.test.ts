@@ -23,6 +23,7 @@ describe("adminPage", () => {
     expect(adminPage).toContain("/api/messages?limit=10");
     expect(adminPage).toContain("收件箱检索助手");
     expect(adminPage).toContain("Nanobot 正在理解检索需求");
+    expect(adminPage).toContain("正在匹配该分类下的收件内容");
     expect(adminPage).toContain("nanobot_planned_search");
     expect(adminPage).toContain("按出现频次稳定展示每类前 10 项");
     expect(adminPage).toContain("count.textContent=actualTotal>facets.length?'高频 '");

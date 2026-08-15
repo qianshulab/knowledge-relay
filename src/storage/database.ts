@@ -417,6 +417,7 @@ export class AppDatabase {
     const secrets = await SecretBox.load(dataDir);
     const database = new DatabaseSync(path.join(dataDir, "inbox.sqlite"));
     database.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+    database.function("compact_knowledge_point", (value) => compactKnowledgePoint(value));
     const result = new AppDatabase(dataDir, path.resolve(nanobotWorkspace), database, secrets);
     result.migrate();
     result.enforceSingleOwner();
@@ -1526,12 +1527,18 @@ export class AppDatabase {
     }
     for (const [field, value] of [
       ["domains_json", options.domain],
-      ["knowledge_points_json", options.knowledgePoint],
       ["tools_json", options.tool],
     ] as const) {
       if (!value) continue;
       where.push(`EXISTS(SELECT 1 FROM json_each(m.${field}) WHERE lower(value)=lower(?))`);
       values.push(value);
+    }
+    if (options.knowledgePoint) {
+      const knowledgePoint = compactKnowledgePoint(options.knowledgePoint);
+      if (!knowledgePoint) return [];
+      where.push(`EXISTS(SELECT 1 FROM json_each(m.knowledge_points_json)
+        WHERE lower(compact_knowledge_point(value))=lower(?))`);
+      values.push(knowledgePoint);
     }
     if (options.receivedAfter) {
       where.push("m.received_at>=?");

@@ -219,6 +219,9 @@ describe("AppDatabase", () => {
     expect(database.knowledgeFacets().knowledgePoints).toEqual([
       { name: "Agentic Red Teaming(自主红队)", count: 1 },
     ]);
+    expect(database.searchInbox("", {
+      knowledgePoint: "Agentic Red Teaming(自主红队)",
+    })[0]?.id).toBe(message.id);
     database.close();
   });
 
