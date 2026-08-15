@@ -15,7 +15,7 @@ describe("adminPage", () => {
     expect(adminPage).not.toContain("/api/admin/");
     expect(adminPage).toContain("刷新中…");
     expect(adminPage).toContain("已是最新，没有发现新消息。");
-    expect(adminPage).toContain('const UI_BUILD = "1.8.9"');
+    expect(adminPage).toContain('const UI_BUILD = "1.8.10"');
     expect(adminPage).toContain("x-knowledge-relay-ui");
     expect(adminPage).toContain("每页显示 10 条");
     expect(adminPage).toContain('id="previousMessages"');

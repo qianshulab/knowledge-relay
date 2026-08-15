@@ -26,7 +26,7 @@ describe("Docker deployment contract", () => {
     expect(updater).toContain("run_docker compose up -d --no-build --remove-orphans");
     expect(updater).toContain("http://127.0.0.1:8787/health");
     expect(updater).toContain("http://127.0.0.1:8900/health");
-    expect(read("README.md")).toContain("./scripts/update-docker.sh 1.8.9");
+    expect(read("README.md")).toContain("./scripts/update-docker.sh 1.8.10");
   });
 
   it("starts published images before creating a release", () => {

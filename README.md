@@ -197,12 +197,12 @@ docker compose logs -f --tail=200
 
 推荐固定到明确的发行版本。升级脚本会备份 `.env`、写入目标镜像版本、拉取两个镜像、重建容器，并检查知流与 Nanobot Runtime 是否就绪。它不会删除 `data/` 或 `nanobot-data`。
 
-以升级到 `1.8.9` 为例：
+以升级到 `1.8.10` 为例：
 
 ```bash
 cd /你的部署目录/knowledge-relay
 git pull --ff-only
-./scripts/update-docker.sh 1.8.9
+./scripts/update-docker.sh 1.8.10
 ```
 
 请使用普通部署账号运行脚本。若该账号需要 `sudo` 才能访问 Docker，脚本只会对 Docker 命令自动提权，不会改变 `.env` 的文件所有者。
@@ -210,7 +210,7 @@ git pull --ff-only
 也可以使用带 `v` 的版本号：
 
 ```bash
-./scripts/update-docker.sh v1.8.9
+./scripts/update-docker.sh v1.8.10
 ```
 
 脚本完成后应看到 `knowledge-relay` 与 `nanobot` 正常运行。进一步检查：
@@ -227,7 +227,7 @@ cd /你的部署目录/knowledge-relay
 git pull --ff-only
 cp .env ".env.backup.$(date -u '+%Y%m%dT%H%M%SZ')"
 
-RELEASE_VERSION=1.8.9
+RELEASE_VERSION=1.8.10
 if grep -q '^KNOWLEDGE_RELAY_IMAGE_TAG=' .env; then
   sed -i.bak "s/^KNOWLEDGE_RELAY_IMAGE_TAG=.*/KNOWLEDGE_RELAY_IMAGE_TAG=$RELEASE_VERSION/" .env
 else
@@ -257,7 +257,7 @@ docker compose exec -T nanobot python -c \
 镜像版本会持久写入 `.env`：
 
 ```dotenv
-KNOWLEDGE_RELAY_IMAGE_TAG=1.8.9
+KNOWLEDGE_RELAY_IMAGE_TAG=1.8.10
 ```
 
 ### 备份
