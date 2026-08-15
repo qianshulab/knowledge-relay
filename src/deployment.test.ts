@@ -21,8 +21,9 @@ describe("Docker deployment contract", () => {
     const updater = read("scripts/update-docker.sh");
     expect(read(".env.example")).toContain("KNOWLEDGE_RELAY_IMAGE_TAG=latest");
     expect(updater).toContain('KNOWLEDGE_RELAY_IMAGE_TAG=" image_tag');
-    expect(updater).toContain("docker compose pull");
-    expect(updater).toContain("docker compose up -d --no-build --remove-orphans");
+    expect(updater).toContain("sudo docker info");
+    expect(updater).toContain("run_docker compose pull");
+    expect(updater).toContain("run_docker compose up -d --no-build --remove-orphans");
     expect(updater).toContain("http://127.0.0.1:8787/health");
     expect(updater).toContain("http://127.0.0.1:8900/health");
     expect(read("README.md")).toContain("./scripts/update-docker.sh 1.8.9");

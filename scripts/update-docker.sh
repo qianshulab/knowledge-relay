@@ -21,7 +21,26 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "未找到 Docker。" >&2
   exit 1
 fi
-if ! docker compose version >/dev/null 2>&1; then
+
+docker_needs_sudo=0
+if docker info >/dev/null 2>&1; then
+  docker_needs_sudo=0
+elif command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+  docker_needs_sudo=1
+else
+  echo "当前账号无法访问 Docker daemon。请配置 Docker 权限或确认 sudo 可用。" >&2
+  exit 1
+fi
+
+run_docker() {
+  if [ "$docker_needs_sudo" = "1" ]; then
+    sudo docker "$@"
+  else
+    docker "$@"
+  fi
+}
+
+if ! run_docker compose version >/dev/null 2>&1; then
   echo "当前 Docker 未安装 Compose v2。" >&2
   exit 1
 fi
@@ -58,18 +77,18 @@ chmod 600 "$env_temp_file"
 mv "$env_temp_file" .env
 
 echo "正在更新知流到 $image_tag（配置备份：$env_backup）…"
-docker compose config --quiet
-docker compose pull
-docker compose up -d --no-build --remove-orphans
+run_docker compose config --quiet
+run_docker compose pull
+run_docker compose up -d --no-build --remove-orphans
 
 attempt=0
 while [ "$attempt" -lt 60 ]; do
-  if docker compose exec -T knowledge-relay node -e \
+  if run_docker compose exec -T knowledge-relay node -e \
     'fetch("http://127.0.0.1:8787/health").then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));' >/dev/null 2>&1 \
-    && docker compose exec -T nanobot python -c \
+    && run_docker compose exec -T nanobot python -c \
     "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=3).read()" >/dev/null 2>&1; then
     echo "知流 $image_tag 更新完成，主服务与 Nanobot Runtime 均已就绪。"
-    docker compose ps
+    run_docker compose ps
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -79,5 +98,5 @@ done
 echo "更新后的服务未在 120 秒内就绪。请检查日志：" >&2
 echo "  docker compose logs --tail=200 knowledge-relay nanobot" >&2
 echo "原 .env 已保存在 $env_backup。" >&2
-docker compose ps >&2
+run_docker compose ps >&2
 exit 1

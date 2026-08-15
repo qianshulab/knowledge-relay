@@ -205,6 +205,8 @@ git pull --ff-only
 ./scripts/update-docker.sh 1.8.9
 ```
 
+请使用普通部署账号运行脚本。若该账号需要 `sudo` 才能访问 Docker，脚本只会对 Docker 命令自动提权，不会改变 `.env` 的文件所有者。
+
 也可以使用带 `v` 的版本号：
 
 ```bash
@@ -241,6 +243,8 @@ docker compose exec -T knowledge-relay node -e \
 docker compose exec -T nanobot python -c \
   "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8900/health', timeout=5).read().decode())"
 ```
+
+当前账号无权访问 Docker daemon 时，为上述每一条 `docker` 命令添加 `sudo`。
 
 升级不需要先执行 `docker compose down`。避免使用 `docker compose down -v`，该命令会删除 Nanobot 的持久化 volume。
 
