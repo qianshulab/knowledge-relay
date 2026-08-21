@@ -35,7 +35,7 @@ describe("Docker deployment contract", () => {
     expect(updater).toContain("http://127.0.0.1:8787/health");
     expect(updater).toContain("http://127.0.0.1:8900/health");
     expect(updater).toContain('"$project_dir/scripts/backup-docker.sh"');
-    expect(read("README.md")).toContain("./scripts/update-docker.sh 1.9.0");
+    expect(read("README.md")).toContain("./scripts/update-docker.sh <目标版本号>");
   });
 
   it("provides consistent backups and a read-only deployment doctor", () => {
