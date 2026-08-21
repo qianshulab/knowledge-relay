@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 重构项目 README，补全部署、初始化、模型、Skills、多用户、API、Obsidian、配置、数据、运维和故障排查说明。
+- Docker 首次部署脚本支持自动判断普通 Docker 权限或 `sudo`，避免以 root 身份改写项目配置文件。
+
 ## 1.9.0 - 2026-08-21
 
 - 新增邀请制多用户、租户级数据访问控制，以及按用户隔离的 Nanobot 整理与检索 Runtime。

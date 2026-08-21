@@ -12,6 +12,14 @@ describe("Docker deployment contract", () => {
     expect(compose).toContain("PORT: 8787");
   });
 
+  it("supports Docker hosts that require sudo without changing project file ownership", () => {
+    const deployer = read("scripts/deploy-docker.sh");
+    expect(deployer).toContain("sudo docker info");
+    expect(deployer).toContain("run_docker compose pull");
+    expect(deployer).toContain("run_docker compose up -d --no-build");
+    expect(deployer).not.toContain("sudo cp .env.example");
+  });
+
   it("documents a configurable Docker bind address", () => {
     expect(read(".env.example")).toContain("KNOWLEDGE_RELAY_BIND_ADDRESS=0.0.0.0");
     expect(read("README.md")).toContain("### 网络绑定");

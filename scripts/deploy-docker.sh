@@ -8,7 +8,26 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "未找到 Docker。请先安装 Docker Desktop 或 Docker Engine。" >&2
   exit 1
 fi
-if ! docker compose version >/dev/null 2>&1; then
+
+docker_needs_sudo=0
+if docker info >/dev/null 2>&1; then
+  docker_needs_sudo=0
+elif command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+  docker_needs_sudo=1
+else
+  echo "当前账号无法访问 Docker daemon。请配置 Docker 权限或确认 sudo 可用。" >&2
+  exit 1
+fi
+
+run_docker() {
+  if [ "$docker_needs_sudo" = "1" ]; then
+    sudo docker "$@"
+  else
+    docker "$@"
+  fi
+}
+
+if ! run_docker compose version >/dev/null 2>&1; then
   echo "当前 Docker 未安装 Compose v2。" >&2
   exit 1
 fi
@@ -38,12 +57,12 @@ fi
 
 if [ "${KNOWLEDGE_RELAY_LOCAL_BUILD:-0}" = "1" ]; then
   git submodule update --init --recursive
-  docker compose up -d --build
+  run_docker compose up -d --build
 else
-  docker compose pull
-  docker compose up -d --no-build
+  run_docker compose pull
+  run_docker compose up -d --no-build
 fi
-docker compose ps
+run_docker compose ps
 configured_bind=$(sed -n 's/^KNOWLEDGE_RELAY_BIND_ADDRESS=//p' .env | tail -n 1)
 configured_port=$(sed -n 's/^PORT=//p' .env | tail -n 1)
 published_bind=${KNOWLEDGE_RELAY_BIND_ADDRESS:-${configured_bind:-0.0.0.0}}
