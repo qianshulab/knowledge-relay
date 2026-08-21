@@ -115,7 +115,7 @@ describe("article image security", () => {
 
 describe("WeChat image Markdown", () => {
   it("保留正文图片语义和文章封面", () => {
-    const skillRoot = path.join(process.cwd(), "data", "nanobot", "workspace", "skills", "wechat-article-extractor");
+    const skillRoot = process.cwd();
     const { markdownFromHtml } = require("../nanobot/extract-wechat-isolated.cjs") as {
       markdownFromHtml: (html: string, root: string) => string;
     };
