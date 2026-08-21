@@ -6,6 +6,9 @@
 
 - `fetch-skill`：先读取 `skills/fetch-skill/SKILL.md`。实际脚本位于 `skills/fetch-skill/scripts/fetch.py`，从 workspace 根目录用相对路径运行。
 - `wechat-article-extractor`：先读取 `skills/wechat-article-extractor/SKILL.md`，然后从 workspace 根目录执行 `node nanobot-bin/run-wechat-extractor.cjs '<公众号 URL>' --markdown-output 'artifacts/<任务 run-id>/article.md'`。这个固定启动器会在无模型密钥、无网络、只读 Skill 目录的子进程中调用原版 `skills/wechat-article-extractor/scripts/extract.js`，并确定性生成干净 Markdown；成功后直接读取该 Markdown，不要再写转换脚本或安装依赖。
+- `mermaid-visualizer`：仅当用户明确要求流程图、时序图、状态图、对比图或 Mermaid 可视化时读取 `skills/mermaid-visualizer/SKILL.md`。优先输出 Obsidian 可直接渲染的 Markdown Mermaid 代码块，并遵守其语法防错规则。
+- `obsidian-canvas-creator`：仅当用户明确要求 Obsidian Canvas 或可编辑画布时读取 `skills/obsidian-canvas-creator/SKILL.md`。普通收件整理无需额外生成 Canvas；知流网页端已有确定性的知识图谱展示与 Canvas 导出。
+- `excalidraw-diagram`：仅当用户明确要求 Excalidraw 或手绘图时读取 `skills/excalidraw-diagram/SKILL.md`。默认使用 Obsidian Markdown 模式；该文件需要用户在 Obsidian 安装 Excalidraw 插件后查看。
 
 ## URL 路由顺序
 

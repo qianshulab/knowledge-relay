@@ -1,6 +1,6 @@
 # 知流同步协议 1.2
 
-协议面向一个已经绑定 Obsidian 连接的设备令牌。服务端保存权威事件流、批次和游标；插件保存远程 ID 到本地笔记的索引。这个设计比让客户端自行提交任意 collectionId/cursor 更适合个人版，也避免伪造其他集合位置。
+协议面向一个已经绑定用户与 Obsidian 连接的设备令牌。服务端保存权威事件流、批次和游标；插件保存远程 ID 到本地笔记的索引。客户端不能自行提交租户、collectionId 或游标，因此无法读取或推进其他用户的连接。
 
 所有请求使用：
 
@@ -15,17 +15,65 @@ X-Knowledge-Relay-Schema: 1.2
 ## 管理端收件分页
 
 ```http
-GET /api/messages?limit=10&before=123
+GET /api/messages?limit=10&before=123&active=1&format=wechat_article&domain=人工智能
 ```
 
-`limit` 范围为 1–50，默认 10；`before` 是上一页最后一条消息的 `seq`。响应中的 `pagination.nextBefore` 只能在 `hasMore=true` 时用于下一页：
+`limit` 范围为 1–50，默认 10；`before` 是上一页最后一条消息的 `seq`。`active=1` 返回未归档内容，`state=archived` 返回归档内容。`format` 可选 `wechat_article`、`web_article`、`document`、`image`、`audio`、`video`、`mixed`、`text`；`domain` 与 `category` 分别用于动态主题和 AI 用途筛选。响应中的 `pagination.nextBefore` 只能在 `hasMore=true` 时用于下一页：
 
 ```json
 {
   "messages": [],
-  "pagination": { "limit": 10, "hasMore": true, "nextBefore": 103 }
+  "pagination": { "limit": 10, "total": 38, "hasMore": true, "nextBefore": 103 }
 }
 ```
+
+资源详情支持用户主动管理与重新处理：
+
+```http
+POST /api/messages/:id/reprocess
+DELETE /api/messages/:id
+PATCH /api/messages/:id/library
+Content-Type: application/json
+
+{"state":"archived","read":true}
+
+GET /api/messages/:id/diagram
+POST /api/messages/:id/diagram
+Content-Type: application/json
+
+{"force":false}
+
+GET /api/knowledge/map
+```
+
+归档是可恢复状态；`DELETE /api/messages/:id` 是永久删除，会同时清除原始消息、AI 整理、智能图解和关联附件。
+
+资源智能图解采用按需生成：`GET /api/messages/:id/diagram` 只读取已保存结果，不触发模型；首次 `POST` 生成并保存，后续请求复用。仅在显式传入 `force=true` 时重新生成。内容修订变化后缓存自动失效。`GET /api/knowledge/map` 返回当前用户已持久化的高频领域、知识点和工具关系概览，不触发模型。
+
+## API 收件
+
+登录后可通过 `POST /api/me/api-tokens` 创建用户级令牌。令牌明文只在创建响应中出现一次；列表接口只返回名称、时间和状态。撤销使用 `DELETE /api/me/api-tokens/:id`。
+
+外部应用使用该令牌提交 URL 或文本：
+
+```http
+POST /api/captures
+Authorization: Bearer capture_xxx
+Content-Type: application/json
+
+{
+  "externalId": "bookmark-2026-001",
+  "url": "https://example.com/article",
+  "text": "稍后整理",
+  "sourceName": "Browser Extension"
+}
+```
+
+至少提供 `url` 或 `text`。`url` 仅接受 HTTP(S)；`externalId` 在当前令牌的数据域内用于幂等。服务端在原文入库后返回 `202`，整理异步执行；API、微信与后续接入通道共用同一套解析、索引和输出流程。
+
+## 用户管理
+
+管理员使用 `GET /api/admin/users` 查看工作区，使用 `POST /api/admin/invitations` 生成一次性邀请。`PUT /api/admin/users/:id/status` 可停用或恢复成员；停用后该用户的登录会话、API 收件令牌和 Obsidian 同步令牌均不再通过鉴权，微信轮询同时停止，已有数据继续保留。`DELETE /api/admin/users/:id` 必须在请求体提交完全一致的 `confirmation` 用户名；确认后永久删除该成员的数据、附件和 Runtime 工作区，管理员不能删除自己。
 
 ## 知识聚合与只读检索
 

@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import QRCode from "qrcode";
 
 import type { BotManager } from "./bot-manager.js";
+import { inferCaptureType, type CaptureInput } from "./capture.js";
 import type { AppConfig } from "./config.js";
 import type { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { errorDetails, logger } from "./logger.js";
@@ -22,10 +23,29 @@ import {
   publishPluginRelease,
   resolvePluginRelease,
 } from "./plugin-release.js";
-import type { AppDatabase, InboxSearchResult, OwnerProfile } from "./storage/database.js";
+import type { AppDatabase, ContentFormat, InboxSearchResult, KnowledgeMap, OwnerProfile } from "./storage/database.js";
 import { adminPage, adminUiVersion } from "./ui.js";
 
-type OwnerRequest = FastifyRequest & { owner?: OwnerProfile; sessionToken?: string };
+type OwnerRequest = FastifyRequest & {
+  owner?: OwnerProfile;
+  sessionToken?: string;
+  tenantDatabase?: AppDatabase;
+};
+
+function tenantDatabase(request: FastifyRequest): AppDatabase {
+  const scoped = (request as OwnerRequest).tenantDatabase;
+  if (!scoped) throw new Error("请先登录");
+  return scoped;
+}
+
+function requireAdmin(request: FastifyRequest, reply: FastifyReply): OwnerProfile | undefined {
+  const owner = (request as OwnerRequest).owner;
+  if (!owner || owner.role !== "admin") {
+    void reply.code(403).send({ error: "仅系统管理员可执行此操作" });
+    return undefined;
+  }
+  return owner;
+}
 
 function bearer(request: FastifyRequest): string | undefined {
   const authorization = request.headers.authorization;
@@ -100,8 +120,10 @@ export function createServer(
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   const nanobot = new NanobotClient(config);
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  const captureLimits = new Map<string, { count: number; resetAt: number }>();
   let oauthInProgress = false;
   let pluginPublishInProgress = false;
+  const diagramGenerations = new Map<string, Promise<KnowledgeMap>>();
 
   for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed"]) {
     app.addContentTypeParser(contentType, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
@@ -110,13 +132,15 @@ export function createServer(
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("X-Knowledge-Relay-UI", adminUiVersion);
     reply.header("X-Content-Type-Options", "nosniff");
-    reply.header("X-Frame-Options", "DENY");
+    if (!reply.hasHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-    reply.header(
-      "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-    );
+    if (!reply.hasHeader("Content-Security-Policy")) {
+      reply.header(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      );
+    }
     return payload;
   });
 
@@ -135,6 +159,8 @@ export function createServer(
       url === "/api/bootstrap" ||
       url === "/api/setup" ||
       url === "/api/login" ||
+      url === "/api/register" ||
+      url === "/api/captures" ||
       url === "/downloads/knowledge-relay-obsidian.zip" ||
       url.startsWith("/api/sync/")
     ) {
@@ -145,13 +171,21 @@ export function createServer(
     if (!owner) return reply.code(401).send({ error: "请先登录" });
     (request as OwnerRequest).owner = owner;
     (request as OwnerRequest).sessionToken = token;
+    (request as OwnerRequest).tenantDatabase = database.forTenant(owner.id);
   });
 
   app.get("/", async (_request, reply) => reply
     .header("Cache-Control", "no-store, max-age=0")
     .type("text/html; charset=utf-8")
     .send(adminPage));
-  app.get("/health", async () => ({ ok: true, database: true, time: new Date().toISOString() }));
+  app.get("/health", async (_request, reply) => {
+    const databaseHealthy = database.healthCheck();
+    return reply.code(databaseHealthy ? 200 : 503).send({
+      ok: databaseHealthy,
+      database: databaseHealthy,
+      time: new Date().toISOString(),
+    });
+  });
   app.get("/downloads/knowledge-relay-obsidian.zip", async (_request, reply) => {
     const release = await resolvePluginRelease(config);
     if (!release.available || !release.archivePath) {
@@ -170,11 +204,13 @@ export function createServer(
   app.post<{ Body: Record<string, unknown> }>("/api/setup", async (request, reply) => {
     if (database.hasOwner()) return reply.code(409).send({ error: "系统已经完成初始化" });
     const owner = database.createOwner({
+      username: stringBody(request.body?.username, 32) || "owner",
       displayName: stringBody(request.body?.displayName, 60),
       password: stringBody(request.body?.password, 200),
     });
-    const migrated = await database.claimLegacyData();
-    const session = database.createSession(config.sessionDays);
+    const ownerDatabase = database.forTenant(owner.id);
+    const migrated = await ownerDatabase.claimLegacyData();
+    const session = database.createSessionFor(owner.id, config.sessionDays);
     reply.header("Set-Cookie", sessionCookie(config, session.token, config.sessionDays * 86_400));
     return { owner, migrated };
   });
@@ -187,18 +223,89 @@ export function createServer(
       reply.header("Retry-After", String(Math.ceil((attempt.resetAt - currentTime) / 1_000)));
       return reply.code(429).send({ error: "登录尝试过多，请 15 分钟后重试" });
     }
-    const owner = database.authenticateOwner(stringBody(request.body?.password, 200));
+    const owner = database.authenticate(
+      stringBody(request.body?.username, 32),
+      stringBody(request.body?.password, 200),
+    );
     if (!owner) {
       const next = attempt && attempt.resetAt > currentTime
         ? { count: attempt.count + 1, resetAt: attempt.resetAt }
         : { count: 1, resetAt: currentTime + 15 * 60 * 1_000 };
       loginAttempts.set(key, next);
-      return reply.code(401).send({ error: "密码错误" });
+      return reply.code(401).send({ error: "用户名或密码错误" });
     }
     loginAttempts.delete(key);
-    const session = database.createSession(config.sessionDays);
+    const session = database.createSessionFor(owner.id, config.sessionDays);
     reply.header("Set-Cookie", sessionCookie(config, session.token, config.sessionDays * 86_400));
     return { owner };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/register", async (request, reply) => {
+    const user = database.registerWithInvitation({
+      token: stringBody(request.body?.inviteToken, 500),
+      username: stringBody(request.body?.username, 32),
+      displayName: stringBody(request.body?.displayName, 60),
+      password: stringBody(request.body?.password, 200),
+    });
+    const session = database.createSessionFor(user.id, config.sessionDays);
+    reply.header("Set-Cookie", sessionCookie(config, session.token, config.sessionDays * 86_400));
+    return { owner: user };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/captures", async (request, reply) => {
+    const token = bearer(request);
+    const tenantId = token ? database.tenantForApiToken(token) : undefined;
+    if (!tenantId) return reply.code(401).send({ error: "API 收件令牌无效" });
+    const currentTime = Date.now();
+    const currentLimit = captureLimits.get(tenantId);
+    if (currentLimit && currentLimit.resetAt > currentTime && currentLimit.count >= 120) {
+      reply.header("Retry-After", String(Math.ceil((currentLimit.resetAt - currentTime) / 1_000)));
+      return reply.code(429).send({ error: "API 收件过于频繁，请稍后重试" });
+    }
+    captureLimits.set(tenantId, currentLimit && currentLimit.resetAt > currentTime
+      ? { ...currentLimit, count: currentLimit.count + 1 }
+      : { count: 1, resetAt: currentTime + 60_000 });
+    const text = stringBody(request.body?.text, 100_000);
+    const rawUrl = stringBody(request.body?.url, 4_000);
+    let sourceUrl = "";
+    if (rawUrl) {
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        return reply.code(400).send({ error: "链接格式不正确" });
+      }
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+        return reply.code(400).send({ error: "只支持不含账号信息的 HTTP/HTTPS 链接" });
+      }
+      sourceUrl = parsed.toString();
+    }
+    if (!text && !sourceUrl) return reply.code(400).send({ error: "请提供 text 或 url" });
+    const externalId = stringBody(request.body?.externalId, 300) || crypto.randomUUID();
+    const id = `api:${crypto.createHash("sha256").update(`${tenantId}:${externalId}`).digest("hex").slice(0, 32)}`;
+    const scoped = database.forTenant(tenantId);
+    if (scoped.getMessage(id)) return reply.code(200).send({ id, accepted: false, duplicate: true });
+    const hostname = sourceUrl ? new URL(sourceUrl).hostname.toLowerCase() : "";
+    const sourceType = hostname === "mp.weixin.qq.com" ? "wechat_article" : sourceUrl ? "web" : "manual";
+    const capture: CaptureInput = {
+      id,
+      source: {
+        channel: "api",
+        type: sourceType,
+        externalId,
+        connectionId: "capture-api",
+        name: stringBody(request.body?.sourceName, 100) || (hostname || "API 收件"),
+        ...(sourceUrl ? { url: sourceUrl } : {}),
+      },
+      captureType: inferCaptureType([text, sourceUrl].filter(Boolean).join("\n"), []),
+      actorId: stringBody(request.body?.actorId, 200) || "api",
+      receivedAt: new Date().toISOString(),
+      text: [text, sourceUrl && !text.includes(sourceUrl) ? sourceUrl : ""].filter(Boolean).join("\n"),
+      attachments: [],
+    };
+    const accepted = bots.acceptCapture(tenantId, capture);
+    if (!accepted.accepted) return reply.code(200).send({ id, accepted: false, duplicate: true });
+    return reply.code(202).send({ id, accepted: true, status: "processing" });
   });
 
   app.post("/api/logout", async (request, reply) => {
@@ -213,7 +320,7 @@ export function createServer(
   app.put<{ Body: Record<string, unknown> }>("/api/me/profile", async (request, reply) => {
     const displayName = stringBody(request.body?.displayName, 60);
     if (!displayName) return reply.code(400).send({ error: "请输入账户名称" });
-    return { owner: database.updateOwnerDisplayName(displayName) };
+    return { owner: tenantDatabase(request).updateOwnerDisplayName(displayName) };
   });
 
   app.post<{ Body: Record<string, unknown> }>("/api/me/password", async (request, reply) => {
@@ -222,38 +329,133 @@ export function createServer(
     const confirmPassword = stringBody(request.body?.confirmPassword, 200);
     if (newPassword.length < 8) return reply.code(400).send({ error: "新密码至少需要 8 个字符" });
     if (newPassword !== confirmPassword) return reply.code(400).send({ error: "两次输入的新密码不一致" });
-    if (!database.changePassword(currentPassword, newPassword)) {
+    if (!tenantDatabase(request).changePassword(currentPassword, newPassword)) {
       return reply.code(400).send({ error: "当前密码不正确" });
     }
     reply.header("Set-Cookie", sessionCookie(config, "", 0));
     return { ok: true, loginRequired: true };
   });
 
-  app.get("/api/dashboard", async () => {
+  app.get("/api/admin/users", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return { users: tenantDatabase(request).listUsers() };
+  });
+
+  app.put<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/admin/users/:id/status",
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+      const disabled = request.body?.disabled === true;
+      const user = tenantDatabase(request).setUserDisabled(request.params.id, disabled);
+      if (disabled) await bots.pauseTenant(request.params.id);
+      else await bots.resumeTenant(request.params.id);
+      return { user };
+    },
+  );
+
+  app.delete<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/admin/users/:id",
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+      const scoped = tenantDatabase(request);
+      const target = scoped.listUsers().find((user) => user.id === request.params.id);
+      if (!target) return reply.code(404).send({ error: "用户不存在" });
+      if (target.role === "admin") return reply.code(400).send({ error: "不能删除管理员账户" });
+      const confirmation = stringBody(request.body?.confirmation, 120);
+      if (confirmation.toLocaleLowerCase("zh-CN") !== target.username.toLocaleLowerCase("zh-CN")) {
+        return reply.code(400).send({ error: "请输入该用户的完整用户名进行确认" });
+      }
+      await bots.pauseTenant(target.id);
+      const deleted = scoped.deleteUser(target.id, confirmation);
+      return { ok: true, deleted };
+    },
+  );
+
+  app.get("/api/me/api-tokens", async (request) => ({
+    tokens: tenantDatabase(request).listApiTokens(),
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/me/api-tokens", async (request) =>
+    tenantDatabase(request).createApiToken(stringBody(request.body?.name, 80)));
+
+  app.delete<{ Params: { id: string } }>("/api/me/api-tokens/:id", async (request, reply) =>
+    tenantDatabase(request).revokeApiToken(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "API 令牌不存在" }));
+
+  app.get("/api/admin/invitations", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return { invitations: tenantDatabase(request).listInvitations() };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/admin/invitations", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const hours = Math.min(Math.max(Number(request.body?.hours || 72) || 72, 1), 24 * 30);
+    return tenantDatabase(request).createInvitation(hours);
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/admin/invitations/:id", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return tenantDatabase(request).revokeInvitation(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "邀请不存在或已失效" });
+  });
+
+  app.get("/api/dashboard", async (request) => {
+    const scoped = tenantDatabase(request);
     return {
-      ...database.dashboard(),
-      accounts: database.getBotAccounts().map((account) => publicAccount(account, bots.isRunning(account.id))),
-      syncTargets: database.listSyncTargets(),
+      ...scoped.dashboard(),
+      accounts: scoped.getBotAccounts().map((account) => publicAccount(account, bots.isRunning(account.id))),
+      syncTargets: scoped.listSyncTargets(),
     };
   });
 
-  app.get<{ Querystring: { limit?: string; before?: string } }>("/api/messages", async (request) => {
+  app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; format?: string; category?: string; domain?: string; organized?: string } }>("/api/messages", async (request) => {
     const limit = Math.min(Math.max(Number(request.query.limit || 10) || 10, 1), 50);
     const before = Number(request.query.before || 0) || undefined;
-    const messages = database.listMessages(limit + 1, before);
+    const requestedState = stringBody(request.query.state, 20);
+    const state = (["inbox", "library", "archived"] as const).find((value) => value === requestedState);
+    const requestedFormat = stringBody(request.query.format, 30);
+    const format = (["wechat_article", "web_article", "document", "image", "audio", "video", "mixed", "text"] as ContentFormat[])
+      .find((value) => value === requestedFormat);
+    const options = {
+      ...(state ? { state } : {}),
+      ...(request.query.active === "1" ? { active: true } : {}),
+      ...(request.query.favorite === "1" ? { favorite: true } : {}),
+      ...(format ? { format } : {}),
+      ...(stringBody(request.query.category, 40) ? { category: stringBody(request.query.category, 40) } : {}),
+      ...(stringBody(request.query.domain, 120) ? { domain: stringBody(request.query.domain, 120) } : {}),
+      ...(request.query.organized === "1" ? { organized: true } : {}),
+    };
+    const scoped = tenantDatabase(request);
+    const messages = scoped.listMessages(limit + 1, before, options);
     const hasMore = messages.length > limit;
     const page = messages.slice(0, limit);
     return {
       messages: page,
       pagination: {
         limit,
+        total: scoped.countMessages(options),
         hasMore,
         nextBefore: hasMore ? page.at(-1)?.seq : undefined,
       },
     };
   });
 
-  app.get("/api/knowledge/facets", async () => database.knowledgeFacets());
+  app.get<{ Querystring: { organized?: string; limit?: string } }>("/api/knowledge/facets", async (request) =>
+    tenantDatabase(request).knowledgeFacets(
+      request.query.organized === "1",
+      Math.max(1, Math.min(100, Number(request.query.limit) || 10)),
+    ),
+  );
+
+  app.get<{ Querystring: { messageId?: string } }>("/api/knowledge/map", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    const messageId = stringBody(request.query.messageId, 300);
+    if (!messageId) return scoped.knowledgeMap();
+    const diagram = scoped.getKnowledgeDiagram(messageId);
+    return diagram || reply.code(404).send({ error: "这条内容还没有生成智能图解" });
+  });
 
   app.post<{ Body: Record<string, unknown> }>("/api/inbox/query", async (request, reply) => {
     const question = stringBody(request.body?.question, 500);
@@ -278,14 +480,15 @@ export function createServer(
     const filterName = domain || knowledgePoint || tool || category;
     let mode = "indexed_inbox_search";
     let interpretation = "";
-    const settings = database.getAgentSettings(config.nanobot);
+    const scoped = tenantDatabase(request);
+    const settings = scoped.getAgentSettings(config.nanobot);
     let plan: Awaited<ReturnType<NanobotClient["planInboxQuery"]>> | undefined;
     if (question && settings.enabled) {
       try {
         plan = await nanobot.planInboxQuery(question, {
           ...settings,
           baseUrl: config.nanobot.searchBaseUrl || settings.baseUrl,
-        });
+        }, { tenantId: scoped.currentTenantId() });
         interpretation = plan.intent;
         mode = "nanobot_planned_search";
       } catch (error) {
@@ -314,30 +517,30 @@ export function createServer(
       }
     };
     if (searchQuestion || category || domain || knowledgePoint || tool || Object.keys(range).length) {
-      addMatches(database.searchInbox(searchQuestion, baseOptions), 30);
+      addMatches(scoped.searchInbox(searchQuestion, baseOptions), 30);
     }
     const expandedQueries = Array.from(new Set(plan?.queries || []))
       .filter((value) => value && value !== searchQuestion)
       .slice(0, 6);
     expandedQueries.forEach((query, index) => {
-      addMatches(database.searchInbox(query, baseOptions), 22 - index * 2);
+      addMatches(scoped.searchInbox(query, baseOptions), 22 - index * 2);
     });
     if (plan?.category && !category) {
-      addMatches(database.searchInbox("", { ...baseOptions, category: plan.category }), 12);
+      addMatches(scoped.searchInbox("", { ...baseOptions, category: plan.category }), 12);
     }
     if (!domain) {
       plan?.domains.forEach((value) => {
-        addMatches(database.searchInbox("", { ...baseOptions, domain: value }), 12);
+        addMatches(scoped.searchInbox("", { ...baseOptions, domain: value }), 12);
       });
     }
     if (!knowledgePoint) {
       plan?.knowledgePoints.forEach((value) => {
-        addMatches(database.searchInbox("", { ...baseOptions, knowledgePoint: value }), 12);
+        addMatches(scoped.searchInbox("", { ...baseOptions, knowledgePoint: value }), 12);
       });
     }
     if (!tool) {
       plan?.tools.forEach((value) => {
-        addMatches(database.searchInbox("", { ...baseOptions, tool: value }), 12);
+        addMatches(scoped.searchInbox("", { ...baseOptions, tool: value }), 12);
       });
     }
     const matches = Array.from(ranked.values())
@@ -358,22 +561,105 @@ export function createServer(
   });
 
   app.get<{ Params: { id: string } }>("/api/messages/:id", async (request, reply) => {
-    const message = database.getMessage(request.params.id);
+    const scoped = tenantDatabase(request);
+    const message = scoped.getMessageDetail(request.params.id);
     return message
-      ? { ...message, attachments: database.attachmentsForMessageView(message.id) }
+      ? { ...message, attachments: scoped.attachmentsForMessageView(message.id) }
       : reply.code(404).send({ error: "消息不存在" });
   });
+
+  app.post<{ Params: { id: string } }>("/api/messages/:id/reprocess", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    if (!scoped.getMessage(request.params.id)) return reply.code(404).send({ error: "消息不存在" });
+    const tenantId = scoped.currentTenantId();
+    if (!tenantId) return reply.code(401).send({ error: "请先登录" });
+    const result = bots.reprocessMessage(tenantId, request.params.id);
+    return reply.code(result.accepted ? 202 : 200).send({
+      ok: true,
+      queued: result.accepted,
+      status: "processing",
+    });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/messages/:id/diagram", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    if (!scoped.getMessage(request.params.id)) return reply.code(404).send({ error: "消息不存在" });
+    const diagram = scoped.getKnowledgeDiagram(request.params.id);
+    return diagram
+      ? { status: "ready", cached: true, diagram }
+      : { status: "not_generated", cached: false };
+  });
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/messages/:id/diagram",
+    async (request, reply) => {
+      const scoped = tenantDatabase(request);
+      const message = scoped.getMessageDetail(request.params.id);
+      if (!message) return reply.code(404).send({ error: "消息不存在" });
+      const force = request.body?.force === true;
+      const cached = !force ? scoped.getKnowledgeDiagram(message.id) : undefined;
+      if (cached) return { status: "ready", cached: true, diagram: cached };
+      const settings = scoped.getAgentSettings(config.nanobot);
+      if (!settings.enabled) return reply.code(409).send({ error: "请先在系统设置中启用 AI 智能整理" });
+      const tenantId = scoped.currentTenantId();
+      if (!tenantId) return reply.code(401).send({ error: "请先登录" });
+      const generationKey = `${tenantId}:${message.id}`;
+      let generation = diagramGenerations.get(generationKey);
+      if (!generation) {
+        generation = (async () => {
+          const result = await nanobot.generateKnowledgeDiagram(
+            message,
+            settings,
+            scoped.getEnabledSkills(),
+            { tenantId },
+          );
+          return scoped.saveKnowledgeDiagram(message.id, result, message.revision);
+        })();
+        diagramGenerations.set(generationKey, generation);
+        void generation.finally(() => diagramGenerations.delete(generationKey)).catch(() => undefined);
+      }
+      const diagram = await generation;
+      return { status: "ready", cached: false, diagram };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>("/api/messages/:id", async (request, reply) => {
+    const deleted = tenantDatabase(request).deleteMessage(request.params.id);
+    return deleted
+      ? { ok: true, deleted }
+      : reply.code(404).send({ error: "消息不存在" });
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/messages/:id/library",
+    async (request, reply) => {
+      const requestedState = stringBody(request.body?.state, 20);
+      if (requestedState && !["inbox", "library", "archived"].includes(requestedState)) {
+        return reply.code(400).send({ error: "资源状态无效" });
+      }
+      return {
+        message: tenantDatabase(request).updateResourceState(request.params.id, {
+          ...(requestedState
+            ? { state: requestedState as "inbox" | "library" | "archived" }
+            : {}),
+          ...(typeof request.body?.favorite === "boolean" ? { favorite: request.body.favorite } : {}),
+          ...(typeof request.body?.read === "boolean" ? { read: request.body.read } : {}),
+        }),
+      };
+    },
+  );
 
   app.get<{ Params: { id: string }; Querystring: { download?: string } }>(
     "/api/attachments/:id",
     async (request, reply) => {
-      const attachment = database.attachmentForOwner(request.params.id);
+      const attachment = tenantDatabase(request).attachmentForOwner(request.params.id);
       if (!attachment) return reply.code(404).send({ error: "附件不存在" });
       const disposition = request.query.download === "1" ? "attachment" : "inline";
       reply.header("Content-Type", attachment.mimeType);
       reply.header("Content-Length", String(attachment.size));
       reply.header("X-Content-Type-Options", "nosniff");
       reply.header("Content-Security-Policy", "default-src 'none'; sandbox");
+      reply.header("X-Frame-Options", "SAMEORIGIN");
       reply.header(
         "Content-Disposition",
         `${disposition}; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
@@ -382,38 +668,41 @@ export function createServer(
     },
   );
 
-  app.post("/api/ilink/login/start", async () => login.start());
+  app.post("/api/ilink/login/start", async (request) => login.start(tenantDatabase(request)));
 
   app.get<{ Params: { sessionId: string } }>("/api/ilink/login/:sessionId/qr.svg", async (request, reply) => {
-    const content = login.getQrContent(request.params.sessionId);
+    const tenantId = tenantDatabase(request).currentTenantId()!;
+    const content = login.getQrContent(request.params.sessionId, tenantId);
     if (!content) return reply.code(404).send({ error: "二维码不存在或已过期" });
     const svg = await QRCode.toString(content, { type: "svg", margin: 1, width: 320, errorCorrectionLevel: "M" });
     return reply.type("image/svg+xml; charset=utf-8").send(svg);
   });
 
   app.get<{ Params: { sessionId: string } }>("/api/ilink/login/:sessionId/status", async (request) =>
-    login.poll(request.params.sessionId));
+    login.poll(request.params.sessionId, tenantDatabase(request).currentTenantId()!));
 
   app.post<{ Params: { sessionId: string }; Body: Record<string, unknown> }>(
     "/api/ilink/login/:sessionId/verify",
     async (request, reply) => {
       const code = stringBody(request.body?.code, 10);
       if (!/^\d{4,10}$/.test(code)) return reply.code(400).send({ error: "配对码应为 4–10 位数字" });
-      return login.poll(request.params.sessionId, code);
+      return login.poll(request.params.sessionId, tenantDatabase(request).currentTenantId()!, code);
     },
   );
 
   app.delete<{ Params: { id: string } }>("/api/ilink/accounts/:id", async (request, reply) => {
-    const account = database.getBotAccount(request.params.id);
+    const scoped = tenantDatabase(request);
+    const account = scoped.getBotAccount(request.params.id);
     if (!account) return reply.code(404).send({ error: "微信账号不存在" });
     await bots.stop(account.id);
-    database.removeBotAccount(account.id);
+    scoped.removeBotAccount(account.id);
     return { ok: true };
   });
 
-  app.get("/api/agent/settings", async () => {
-    const settings = database.getAgentSettings(config.nanobot);
-    const runtime = await nanobot.runtimeInfo(settings);
+  app.get("/api/agent/settings", async (request) => {
+    const scoped = tenantDatabase(request);
+    const settings = scoped.getAgentSettings(config.nanobot);
+    const runtime = await nanobot.runtimeInfo(settings, { tenantId: scoped.currentTenantId() });
     return {
       ...settings,
       model: runtime.model || "",
@@ -436,19 +725,29 @@ export function createServer(
       autoReply: booleanBody(request.body?.autoReply),
       notifyOnFailure: request.body?.notifyOnFailure !== false,
     };
-    database.saveAgentSettings(settings);
+    tenantDatabase(request).saveAgentSettings(settings);
     return { ok: true };
   });
 
-  app.post("/api/agent/test", async () => nanobot.health(database.getAgentSettings(config.nanobot)));
+  app.post("/api/agent/test", async (request) => {
+    const scoped = tenantDatabase(request);
+    return nanobot.health(scoped.getAgentSettings(config.nanobot), {
+      tenantId: scoped.currentTenantId(),
+    });
+  });
 
-  app.get("/api/nanobot/provider", async () => getNanobotProviderSettings(config));
+  app.get("/api/nanobot/provider", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return getNanobotProviderSettings(config);
+  });
 
   app.get<{ Querystring: { provider?: string } }>("/api/nanobot/provider/models", async (request) => {
+    if ((request as OwnerRequest).owner?.role !== "admin") throw Object.assign(new Error("仅系统管理员可查看模型配置"), { statusCode: 403 });
     return getNanobotProviderModels(config, stringBody(request.query.provider, 80));
   });
 
-  app.put<{ Body: Record<string, unknown> }>("/api/nanobot/provider", async (request) => {
+  app.put<{ Body: Record<string, unknown> }>("/api/nanobot/provider", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
     await saveNanobotProviderSettings(config, {
       provider: stringBody(request.body?.provider, 80),
       model: stringBody(request.body?.model, 200),
@@ -460,6 +759,7 @@ export function createServer(
   });
 
   app.post<{ Body: Record<string, unknown> }>("/api/nanobot/provider/openai-oauth", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
     if (!config.nanobot.managed) {
       return reply.code(409).send({ error: "当前部署不支持从网页发起 OAuth，请在 Nanobot 容器或服务器终端完成授权" });
     }
@@ -495,7 +795,7 @@ export function createServer(
     }
   });
 
-  app.get("/api/skills", async () => ({ skills: database.listSkills() }));
+  app.get("/api/skills", async (request) => ({ skills: tenantDatabase(request).listSkills() }));
 
   app.get("/api/plugin-release", async () => getPluginReleaseInfo(config));
 
@@ -503,6 +803,7 @@ export function createServer(
     "/api/plugin-release",
     { bodyLimit: PLUGIN_MAX_ARCHIVE_BYTES },
     async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
       if (pluginPublishInProgress) return reply.code(409).send({ error: "已有插件版本正在发布，请稍后再试" });
       if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "请上传 ZIP 安装包" });
       pluginPublishInProgress = true;
@@ -516,7 +817,7 @@ export function createServer(
 
   app.post<{ Body: Record<string, unknown> }>("/api/skills", async (request) => {
     return {
-      skill: database.createSkill({
+      skill: tenantDatabase(request).createSkill({
         slug: stringBody(request.body?.slug, 60),
         name: stringBody(request.body?.name, 80),
         description: stringBody(request.body?.description, 500),
@@ -528,9 +829,12 @@ export function createServer(
 
   app.put<{ Params: { id: string }; Body: Record<string, unknown> }>(
     "/api/skills/:id",
-    async (request) => {
+    async (request, reply) => {
+      const scoped = tenantDatabase(request);
+      const current = scoped.listSkills().find((skill) => skill.id === request.params.id);
+      if (current?.kind === "adapter" && !requireAdmin(request, reply)) return;
       return {
-        skill: database.updateSkill(request.params.id, {
+        skill: scoped.updateSkill(request.params.id, {
           name: stringBody(request.body?.name, 80),
           description: stringBody(request.body?.description, 500),
           content: stringBody(request.body?.content, 20_000),
@@ -540,14 +844,18 @@ export function createServer(
     },
   );
 
-  app.delete<{ Params: { id: string } }>("/api/skills/:id", async (request) => {
-    return { ok: true, action: database.deleteOrResetSkill(request.params.id) };
+  app.delete<{ Params: { id: string } }>("/api/skills/:id", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    const current = scoped.listSkills().find((skill) =>
+      skill.id === request.params.id || `builtin:${skill.slug}` === request.params.id);
+    if (current?.kind === "adapter" && !requireAdmin(request, reply)) return;
+    return { ok: true, action: scoped.deleteOrResetSkill(request.params.id) };
   });
 
-  app.get("/api/sync-targets", async () => ({ targets: database.listSyncTargets() }));
+  app.get("/api/sync-targets", async (request) => ({ targets: tenantDatabase(request).listSyncTargets() }));
 
   app.post<{ Body: Record<string, unknown> }>("/api/sync-targets", async (request) => {
-    return database.createSyncTarget({
+    return tenantDatabase(request).createSyncTarget({
       name: stringBody(request.body?.name, 80),
       folder: stringBody(request.body?.folder, 200),
       primary: booleanBody(request.body?.primary),
@@ -555,7 +863,7 @@ export function createServer(
   });
 
   app.delete<{ Params: { id: string } }>("/api/sync-targets/:id", async (request, reply) => {
-    return database.revokeSyncTarget(request.params.id)
+    return tenantDatabase(request).revokeSyncTarget(request.params.id)
       ? { ok: true }
       : reply.code(404).send({ error: "同步设备不存在" });
   });

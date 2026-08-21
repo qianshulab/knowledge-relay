@@ -42,6 +42,61 @@ const config: AppConfig = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("NanobotClient", () => {
+  it("智能图解按需交给 Nanobot 选择图形并返回可持久化结构", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        diagram_type: "flow",
+        diagram_label: "处理流程图",
+        selection_reason: "资料包含明确步骤",
+        nodes: [
+          { id: "root", label: "资料处理", type: "root" },
+          { id: "collect", label: "收集资料", type: "point" },
+          { id: "analyze", label: "分析资料", type: "point" },
+        ],
+        edges: [
+          { source: "root", target: "collect", label: "第一步", kind: "primary" },
+          { source: "collect", target: "analyze", label: "下一步", kind: "primary" },
+        ],
+      }) } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient(config);
+    const result = await client.generateKnowledgeDiagram({
+      id: "diagram-message",
+      title: "资料处理方法",
+      summary: "先收集资料，再分析资料。",
+      keyPoints: ["先收集资料", "收集完成后进行分析"],
+      knowledgePoints: ["资料收集", "资料分析"],
+      domains: ["知识管理"],
+      tools: [],
+      detailsMarkdown: "## 步骤\n1. 收集资料\n2. 分析资料",
+      contentMarkdown: "完整正文",
+      text: "资料处理方法",
+    } as never, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    }, [{
+      id: "builtin:mermaid-visualizer",
+      slug: "mermaid-visualizer",
+      name: "Mermaid Visualizer",
+      description: "选择合适的图形",
+      content: "由 Runtime 读取",
+      builtin: true,
+      enabled: true,
+      customized: false,
+      kind: "adapter",
+    }], { tenantId: "tenant-one" });
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body.messages[0].content).toContain("先读取 workspace 中 mermaid-visualizer/SKILL.md");
+    expect(body.messages[0].content).toContain("只有明确主题层级才用 mindmap");
+    expect(result).toMatchObject({ diagramType: "flow", diagramLabel: "处理流程图" });
+    expect(result.edges).toHaveLength(2);
+  });
+
   it("默认省略 model，并使用个人收件箱 session_id", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -91,6 +146,45 @@ describe("NanobotClient", () => {
     expect(body.model).toBeUndefined();
     expect(body.session_id).toMatch(/^knowledge-relay:inbox:[a-f0-9]{20}$/);
     expect(body.messages[0].content).toContain("【Skill: 测试 Skill】");
+    expect(body.messages[0].content).toContain("这不是明确的可视化请求");
+  });
+
+  it("明确的 Canvas 请求会路由原版可视化 Skill 并约束产物目录", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ title: "知识画布", tags: [] }) } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient(config);
+    await client.process({
+      id: "canvas-request",
+      senderId: "sender",
+      botId: "bot",
+      receivedAt: new Date().toISOString(),
+      text: "把这条内容整理为可编辑的 Obsidian Canvas 画布",
+      attachments: [],
+    }, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    }, [{
+      id: "builtin:obsidian-canvas-creator",
+      slug: "obsidian-canvas-creator",
+      name: "Obsidian Canvas 创建器",
+      description: "创建 Canvas",
+      content: "完整原版内容由 Runtime 读取。",
+      builtin: true,
+      enabled: true,
+      customized: false,
+      kind: "adapter",
+    }]);
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body));
+    expect(body.messages[0].content).toContain("使用 obsidian-canvas-creator");
+    expect(body.messages[0].content).toContain("source_type=visualization");
+    expect(body.messages[0].content).toContain("artifacts/");
   });
 
   it("使用 Nanobot 先理解检索意图并生成受限的本地检索计划", async () => {
@@ -124,7 +218,7 @@ describe("NanobotClient", () => {
       instructions: "",
       autoReply: false,
       notifyOnFailure: true,
-    })).resolves.toEqual({
+    }, { tenantId: "search-tenant" })).resolves.toEqual({
       queries: ["Frida 动态插桩", "移动安全 动态分析"],
       category: "reference",
       domains: ["网络安全"],
@@ -134,19 +228,26 @@ describe("NanobotClient", () => {
     });
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body));
+    const tenantKey = crypto.createHash("sha256").update("search-tenant").digest("hex").slice(0, 16);
+    expect((request.headers as Record<string, string>)["X-Knowledge-Relay-Tenant"]).toBe(tenantKey);
     expect(body.model).toBeUndefined();
     expect(body.session_id).toMatch(/^knowledge-relay:inbox-search:/);
     expect(body.messages[0].content).toContain("理解用户真正想查找的内容");
     expect(body.messages[0].content).toContain("我收藏过哪些安全工具");
   });
 
-  it("只接收 Nanobot 指定 artifacts 目录中的派生 Markdown", async () => {
+  it("只接收 Nanobot 指定 artifacts 目录中的 Markdown 与可视化产物", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "nanobot-artifact-test-"));
     const workspace = path.join(directory, "workspace");
     const runId = crypto.createHash("sha256").update("bot:1").digest("hex").slice(0, 20);
     await fs.mkdir(path.join(workspace, "artifacts", runId), { recursive: true });
     await fs.writeFile(path.join(workspace, "artifacts", runId, "article.md"), "# 原版 Skill 结果\n");
     await fs.writeFile(path.join(workspace, "artifacts", runId, "document.md"), "# 文档解析结果\n");
+    const canvas = JSON.stringify({
+      nodes: [{ id: "root", type: "text", text: "主题", x: 0, y: 0, width: 240, height: 100 }],
+      edges: [],
+    });
+    await fs.writeFile(path.join(workspace, "artifacts", runId, "knowledge.canvas"), canvas);
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -165,6 +266,10 @@ describe("NanobotClient", () => {
                   path: "document.md",
                   title: "附件文档",
                   source_type: "document",
+                }, {
+                  path: "knowledge.canvas",
+                  title: "知识画布",
+                  source_type: "visualization",
                 }, { path: "missing.md", title: "不存在的文件" }],
               }),
             },
@@ -207,7 +312,71 @@ describe("NanobotClient", () => {
         sourceType: "document",
         markdown: "# 文档解析结果\n",
       }),
+      expect.objectContaining({
+        title: "知识画布",
+        sourceType: "visualization",
+        fileName: "knowledge.canvas",
+        mimeType: "application/json",
+        content: canvas,
+      }),
     ]);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  it("多用户请求使用独立 Runtime 标识、会话和物理产物目录", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "nanobot-tenant-artifact-test-"));
+    const workspace = path.join(directory, "workspace");
+    const tenantId = "user-tenant-1";
+    const tenantKey = crypto.createHash("sha256").update(tenantId).digest("hex").slice(0, 16);
+    const runId = crypto.createHash("sha256").update(`${tenantKey}:tenant-message`).digest("hex").slice(0, 20);
+    const artifactDirectory = path.join(
+      workspace,
+      "tenants",
+      tenantKey,
+      "workspace",
+      "artifacts",
+      runId,
+    );
+    await fs.mkdir(artifactDirectory, { recursive: true });
+    await fs.writeFile(path.join(artifactDirectory, "article.md"), "# 租户专用产物\n");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        title: "租户文章",
+        tags: [],
+        derived_files: [{ path: "article.md", title: "租户文章", source_type: "web" }],
+      }) } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient({ ...config, nanobot: { ...config.nanobot, workspace } });
+    const result = await client.process(
+      {
+        id: "tenant-message",
+        senderId: "sender",
+        botId: "bot",
+        receivedAt: new Date().toISOString(),
+        text: "hello",
+        attachments: [],
+      },
+      {
+        enabled: true,
+        baseUrl: config.nanobot.baseUrl,
+        model: "",
+        instructions: "",
+        autoReply: false,
+        notifyOnFailure: true,
+      },
+      [],
+      [],
+      { tenantId },
+    );
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body));
+    expect((request.headers as Record<string, string>)["X-Knowledge-Relay-Tenant"]).toBe(tenantKey);
+    expect(body.session_id).toBe(`knowledge-relay:tenant:${tenantKey}:inbox:${runId}`);
+    const tenantArtifact = result.derivedDocuments[0];
+    expect(tenantArtifact?.sourceType).toBe("web");
+    expect(tenantArtifact && tenantArtifact.sourceType !== "visualization" ? tenantArtifact.markdown : "")
+      .toContain("租户专用产物");
     await fs.rm(directory, { recursive: true, force: true });
   });
 

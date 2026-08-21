@@ -7,7 +7,7 @@ cd "$project_dir"
 requested_version=${1:-}
 if [ -z "$requested_version" ]; then
   echo "用法：./scripts/update-docker.sh <版本号>" >&2
-  echo "示例：./scripts/update-docker.sh 1.8.10" >&2
+  echo "示例：./scripts/update-docker.sh 1.9.0" >&2
   exit 1
 fi
 
@@ -47,6 +47,10 @@ fi
 if [ ! -f .env ]; then
   echo "未找到 .env。请先运行 ./scripts/deploy-docker.sh 完成首次部署。" >&2
   exit 1
+fi
+
+if [ "${KNOWLEDGE_RELAY_SKIP_BACKUP:-0}" != "1" ]; then
+  "$project_dir/scripts/backup-docker.sh"
 fi
 
 backup_stamp=$(date -u '+%Y%m%dT%H%M%SZ')

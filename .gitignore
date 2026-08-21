@@ -4,7 +4,10 @@ dist/
 .env.bak
 .env.backup.*
 .env.tmp.*
+.env.before-restore.*
 data/
+data.before-restore.*
+data.restore.*
 coverage/
 *.log
 .DS_Store
@@ -12,4 +15,5 @@ coverage/
 nanobot-workspace/
 release/knowledge-relay-obsidian-1.1.0.zip
 releases/
+backups/
 dist/

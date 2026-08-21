@@ -17,6 +17,9 @@ COPY scripts/run-nanobot-runtime.mjs ./
 COPY scripts/harden-nanobot-config.mjs ./
 COPY external-skills/wechat-article-extractor ./skills/wechat-article-extractor
 COPY external-skills/fetch-skill ./skills/fetch-skill
+COPY external-skills/axton-obsidian-visual-skills/mermaid-visualizer ./skills/mermaid-visualizer
+COPY external-skills/axton-obsidian-visual-skills/obsidian-canvas-creator ./skills/obsidian-canvas-creator
+COPY external-skills/axton-obsidian-visual-skills/excalidraw-diagram ./skills/excalidraw-diagram
 RUN cd ./skills/wechat-article-extractor \
     && npm ci --omit=dev \
     && node -e "require('./scripts/extract.js')" \

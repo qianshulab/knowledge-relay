@@ -251,6 +251,16 @@ describe("AppDatabase", () => {
     };
     database.saveMessage(botId, "semantic-message", message, defaultNote(message));
     database.updateProcessedNote(message.id, note, "completed");
+    const detail = database.getMessageDetail(message.id)!;
+    expect(detail.contentMarkdown).toContain("原始正文");
+    expect(detail.contentMarkdown).not.toContain("title: \"研究资料\"");
+    expect(detail.detailsMarkdown).toContain("结构化的详细整理");
+    expect(detail.reason).toBe("可作为后续研究资料。");
+    expect(detail.suggestedAction).toBe("research");
+    expect(detail.sensitivity).toBe("confidential");
+    expect(detail.confidence).toBe("high");
+    expect(detail.warnings).toEqual(["需要复核发布日期"]);
+    expect(detail.source).toMatchObject({ type: "web", url: "https://example.com/research" });
     database.publishMessage(message.id);
     const created = database.createSyncTarget({ name: "Semantic", folder: "收件箱", primary: true });
     const item = database.getOrCreateSyncBatch(created.target.id, 50).items[0]!;
@@ -354,25 +364,52 @@ describe("AppDatabase", () => {
     check.close();
   });
 
-  it("升级时合并旧附加账户的数据并移除多用户表", async () => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ilink-single-owner-test-"));
+  it("通过一次性邀请创建独立用户并持久保留租户边界", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-multi-tenant-test-"));
     temporaryDirectories.push(directory);
     const database = await AppDatabase.open(directory);
     const owner = database.createOwner({ displayName: "Owner", password: "test-password" });
+    const ownerDatabase = database.forTenant(owner.id);
+    const invitation = ownerDatabase.createInvitation(24);
+    const member = database.registerWithInvitation({
+      token: invitation.token,
+      username: "member",
+      displayName: "Member",
+      password: "member-password",
+    });
+    expect(() => database.registerWithInvitation({
+      token: invitation.token,
+      username: "second",
+      displayName: "Second",
+      password: "second-password",
+    })).toThrow("无效或已过期");
+    const memberDatabase = database.forTenant(member.id);
+    ownerDatabase.addBotAccount({
+      botToken: "owner-secret",
+      botId: "owner-bot",
+      baseUrl: "https://example.weixin.qq.com/",
+      connectedAt: new Date().toISOString(),
+    });
+    memberDatabase.addBotAccount({
+      botToken: "member-secret",
+      botId: "member-bot",
+      baseUrl: "https://example.weixin.qq.com/",
+      connectedAt: new Date().toISOString(),
+    });
+    expect(ownerDatabase.getBotAccounts().map((item) => item.botId)).toEqual(["owner-bot"]);
+    expect(memberDatabase.getBotAccounts().map((item) => item.botId)).toEqual(["member-bot"]);
+    expect(ownerDatabase.getBotAccount(memberDatabase.getBotAccounts()[0]!.id)).toBeUndefined();
+    expect(database.authenticate("member", "member-password")?.id).toBe(member.id);
+    expect(ownerDatabase.listUsers()).toHaveLength(2);
     database.close();
-    const { DatabaseSync } = await import("node:sqlite");
-    const raw = new DatabaseSync(path.join(directory, "inbox.sqlite"));
-    raw.prepare(
-      "INSERT INTO users(id,username,display_name,password_hash,role,created_at) SELECT ?,?,?,password_hash,'member',? FROM users WHERE id=?",
-    ).run("member-id", "member", "Member", new Date().toISOString(), owner.id);
-    raw.exec("CREATE TABLE invitations(id TEXT PRIMARY KEY)");
-    raw.prepare("DELETE FROM metadata WHERE key='single_owner_schema'").run();
-    raw.close();
+
     const reopened = await AppDatabase.open(directory);
-    expect(reopened.ownerId()).toBe(owner.id);
+    expect(reopened.forTenant(owner.id).getBotAccounts()).toHaveLength(1);
+    expect(reopened.forTenant(member.id).getBotAccounts()).toHaveLength(1);
+    const { DatabaseSync } = await import("node:sqlite");
     const check = new DatabaseSync(path.join(directory, "inbox.sqlite"));
-    expect(check.prepare("SELECT COUNT(*) count FROM users").get()!.count).toBe(1);
-    expect(check.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name='invitations'").get()!.count).toBe(0);
+    expect(check.prepare("SELECT COUNT(*) count FROM users").get()!.count).toBe(2);
+    expect(check.prepare("SELECT COUNT(*) count FROM invitations WHERE consumed_by IS NOT NULL").get()!.count).toBe(1);
     check.close();
     reopened.close();
   });
@@ -529,6 +566,27 @@ describe("AppDatabase", () => {
       domains: [{ name: "网络安全", count: 1 }],
       tools: [{ name: "Frida", count: 1 }],
     });
+    const fallbackMessage: PublicInboundMessage = {
+      id: "bot-1:unorganized-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T05:01:00.000Z",
+      text: "尚未完成智能整理的原始收藏。",
+      attachments: [],
+    };
+    database.saveMessage(botId, "unorganized-message", fallbackMessage, defaultNote(fallbackMessage));
+    database.updateProcessedNote(fallbackMessage.id, defaultNote(fallbackMessage), "fallback");
+    expect(database.listMessages(10, undefined, { organized: true }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.listMessages(10, undefined, { organized: true, domain: "网络安全" }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.listMessages(10, undefined, { organized: true, format: "text" }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.listMessages(10, undefined, { organized: true, format: "wechat_article" })).toEqual([]);
+    expect(database.listMessages(10, undefined, { organized: true, domain: "不存在的主题" })).toEqual([]);
+    expect(database.countMessages({ organized: true })).toBe(1);
+    expect(database.knowledgeFacets(true)).toMatchObject({
+      total: 1,
+      enriched: 1,
+      categories: [{ name: "text", count: 1 }],
+    });
     database.close();
   });
 
@@ -590,6 +648,98 @@ describe("AppDatabase", () => {
     expect(third).toHaveLength(5);
     expect(new Set([...first, ...second, ...third].map((item) => item.id)).size).toBe(25);
     expect(Math.max(...second.map((item) => item.seq))).toBeLessThan(first.at(-1)!.seq);
+    database.close();
+  });
+
+  it("智能图解按内容版本持久化复用，内容更新和永久删除会同步清理", async () => {
+    const { directory, database, botId } = await setup();
+    const filePath = path.join(directory, "diagram-source.txt");
+    await fs.writeFile(filePath, "diagram attachment");
+    const message: PublicInboundMessage = {
+      id: "bot-1:diagram-message",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: new Date().toISOString(),
+      text: "先收集资料，再分析并输出结论。",
+      attachments: [{
+        kind: "file",
+        fileName: "diagram-source.txt",
+        path: filePath,
+        size: 18,
+        mimeType: "text/plain",
+      }],
+    };
+    const note = defaultNote(message);
+    database.saveMessage(botId, "diagram-message", message, note);
+    database.updateProcessedNote(message.id, note, "completed");
+    const revision = database.getMessage(message.id)!.revision;
+    const stored = database.saveKnowledgeDiagram(message.id, {
+      scope: "resource",
+      diagramType: "flow",
+      diagramLabel: "处理流程图",
+      selectionReason: "资料包含明确步骤",
+      generatedAt: new Date().toISOString(),
+      truncated: false,
+      nodes: [
+        { id: "root", label: "资料处理", type: "root" },
+        { id: "collect", label: "收集资料", type: "point" },
+      ],
+      edges: [{ source: "root", target: "collect", label: "第一步", kind: "primary" }],
+    }, revision);
+    expect(stored).toMatchObject({ messageId: message.id, noteRevision: revision, diagramType: "flow" });
+    expect(database.getKnowledgeDiagram(message.id)).toMatchObject({ diagramLabel: "处理流程图" });
+
+    database.updateProcessedNote(message.id, { ...note, title: "更新后的资料处理" }, "completed");
+    expect(database.getKnowledgeDiagram(message.id)).toBeUndefined();
+
+    const deleted = database.deleteMessage(message.id);
+    expect(deleted).toEqual({ attachmentCount: 1 });
+    expect(database.getMessage(message.id)).toBeUndefined();
+    await expect(fs.access(filePath)).rejects.toThrow();
+    database.close();
+  });
+
+  it("管理员删除成员时要求用户名确认并清理成员工作区数据", async () => {
+    const { directory, database } = await setup();
+    const invitation = database.createInvitation(1);
+    const member = database.registerWithInvitation({
+      token: invitation.token,
+      username: "member-delete",
+      displayName: "待删除成员",
+      password: "member-password",
+    });
+    const memberDatabase = database.forTenant(member.id);
+    const filePath = path.join(directory, "member-attachment.txt");
+    await fs.writeFile(filePath, "member data");
+    const capture: CaptureInput = {
+      id: "api:member-delete-message",
+      source: {
+        channel: "api",
+        type: "api",
+        externalId: "member-delete-message",
+        connectionId: "member-api",
+        name: "API 收件",
+      },
+      captureType: "file",
+      actorId: "member",
+      receivedAt: new Date().toISOString(),
+      text: "成员资料",
+      attachments: [{
+        kind: "file",
+        fileName: "member-attachment.txt",
+        path: filePath,
+        size: 11,
+        mimeType: "text/plain",
+      }],
+    };
+    memberDatabase.saveCapture(capture, defaultNote(capture));
+    expect(() => database.deleteUser(member.id, "wrong-name")).toThrow("确认用户名不匹配");
+    expect(database.deleteUser(member.id, "member-delete")).toEqual({
+      username: "member-delete",
+      attachmentCount: 1,
+    });
+    expect(database.authenticate("member-delete", "member-password")).toBeUndefined();
+    await expect(fs.access(filePath)).rejects.toThrow();
     database.close();
   });
 });

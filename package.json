@@ -1,6 +1,6 @@
 {
   "name": "knowledge-relay",
-  "version": "1.8.10",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
   "description": "Self-hosted WeChat iLink capture, safe web parsing, AI processing, and Obsidian sync.",
@@ -13,7 +13,7 @@
     "deploy:source": "sh scripts/deploy-source.sh",
     "setup:nanobot": "node scripts/setup-nanobot.mjs",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && node --check scripts/harden-nanobot-config.mjs && python3 -c \"from pathlib import Path; [compile(Path(file).read_text(), file, 'exec') for file in ('nanobot/model-catalog.py','nanobot/search-runtime.py')]\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/tests/template.verify.cjs && node obsidian-plugin/scripts/verify-bundle.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && node --check scripts/harden-nanobot-config.mjs && sh -n scripts/deploy-docker.sh scripts/deploy-source.sh scripts/update-docker.sh scripts/backup-docker.sh scripts/restore-docker.sh scripts/doctor-docker.sh scripts/docker-entrypoint.sh nanobot/entrypoint.sh && python3 -c \"from pathlib import Path; [compile(Path(file).read_text(), file, 'exec') for file in ('nanobot/model-catalog.py','nanobot/search-runtime.py')]\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/tests/template.verify.cjs && node obsidian-plugin/scripts/verify-bundle.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

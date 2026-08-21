@@ -122,7 +122,7 @@ function validateCdnUrl(url: URL, configuredBaseUrl: string): void {
   }
 }
 
-async function download(
+async function downloadOnce(
   initialUrl: URL,
   maxBytes: number,
   configuredBaseUrl: string,
@@ -162,17 +162,43 @@ async function download(
   return Buffer.concat(parts, total);
 }
 
+async function download(
+  initialUrl: URL,
+  maxBytes: number,
+  configuredBaseUrl: string,
+): Promise<Buffer> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await downloadOnce(initialUrl, maxBytes, configuredBaseUrl);
+    } catch (error) {
+      lastError = error;
+      const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+      const retryable = /timeout|abort|fetch failed|socket|ECONN|ENET|EAI_AGAIN|HTTP (408|425|429|5\d\d)/i.test(detail);
+      if (!retryable || attempt === 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+  }
+  throw lastError;
+}
+
 export async function downloadAttachments(
   items: MessageItem[],
   messageId: string,
   senderId: string,
   config: AppConfig,
+  tenantId?: string,
 ): Promise<InboundAttachment[]> {
   const attachments: InboundAttachment[] = [];
   const date = new Date().toISOString().slice(0, 10);
+  const tenantDirectory = tenantId
+    ? crypto.createHash("sha256").update(tenantId).digest("hex").slice(0, 16)
+    : "legacy";
   const directory = path.join(
     config.dataDir,
     "media",
+    "tenants",
+    tenantDirectory,
     date,
     safeFileName(senderId),
   );

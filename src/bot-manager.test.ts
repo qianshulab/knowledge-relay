@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BotManager } from "./bot-manager.js";
+import type { CaptureInput } from "./capture.js";
 import type { AppConfig } from "./config.js";
 import type { PublicInboundMessage } from "./messages.js";
 import { defaultNote } from "./notes.js";
@@ -23,7 +24,7 @@ describe("BotManager interrupted work recovery", () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-recovery-"));
     temporaryDirectories.push(directory);
     const database = await AppDatabase.open(directory);
-    database.createOwner({ displayName: "Owner", password: "test-password" });
+    const owner = database.createOwner({ displayName: "Owner", password: "test-password" });
     const bot = database.addBotAccount({
       botToken: "secret",
       botId: "bot-1",
@@ -79,6 +80,38 @@ describe("BotManager interrupted work recovery", () => {
       autoReply: false,
       notifyOnFailure: true,
     });
+    const invitation = database.createInvitation();
+    const apiOnlyUser = database.registerWithInvitation({
+      token: invitation.token,
+      username: "api-only",
+      displayName: "API User",
+      password: "test-password",
+    });
+    const apiOnlyDatabase = database.forTenant(apiOnlyUser.id);
+    apiOnlyDatabase.saveAgentSettings({
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    });
+    const apiCapture: CaptureInput = {
+      id: "api:interrupted",
+      source: {
+        channel: "api",
+        type: "manual",
+        externalId: "api-interrupted",
+        connectionId: "capture-api",
+        name: "API",
+      },
+      captureType: "text",
+      actorId: "api-user",
+      receivedAt: "2026-08-13T01:03:03.000Z",
+      text: "没有微信连接的用户也需要恢复",
+      attachments: [],
+    };
+    apiOnlyDatabase.saveCapture(apiCapture, defaultNote(apiCapture));
     const process = vi.fn().mockResolvedValue({
       note: {
         title: "恢复后的智能笔记",
@@ -96,12 +129,29 @@ describe("BotManager interrupted work recovery", () => {
     ) as { message: string };
     expect(timeoutAlert.message).toContain("智能整理任务处理超时");
     expect(timeoutAlert.message).toContain("基础模型连接可能仍然正常");
-    Reflect.set(Reflect.get(manager, "ingestion") as object, "nanobot", { process });
+    const ingestion = Reflect.apply(
+      Reflect.get(manager, "ingestionFor") as (...args: unknown[]) => unknown,
+      manager,
+      [owner.id],
+    ) as object;
+    Reflect.set(ingestion, "nanobot", { process });
+    const apiIngestion = Reflect.apply(
+      Reflect.get(manager, "ingestionFor") as (...args: unknown[]) => unknown,
+      manager,
+      [apiOnlyUser.id],
+    ) as object;
+    Reflect.set(apiIngestion, "nanobot", { process });
 
-    await expect(manager.recoverPendingAgentMessages()).resolves.toBe(1);
-    expect(process).toHaveBeenCalledOnce();
+    await expect(manager.recoverPendingAgentMessages()).resolves.toBe(2);
+    expect(process).toHaveBeenCalledTimes(2);
     expect(database.listPendingAgentMessages()).toEqual([]);
     expect(database.getMessage(message.id)).toMatchObject({
+      agentStatus: "completed",
+      title: "恢复后的智能笔记",
+      revision: 2,
+    });
+    expect(apiOnlyDatabase.listPendingAgentMessages()).toEqual([]);
+    expect(apiOnlyDatabase.getMessage(apiCapture.id)).toMatchObject({
       agentStatus: "completed",
       title: "恢复后的智能笔记",
       revision: 2,

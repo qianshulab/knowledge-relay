@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -36,12 +37,16 @@ type SqlRow = Record<string, SqlValue>;
 
 export type OwnerProfile = {
   id: string;
+  username: string;
   displayName: string;
+  role: "admin" | "member";
   createdAt: string;
+  disabled: boolean;
 };
 
 export type StoredBotAccount = IlinkAccount & {
   id: string;
+  tenantId: string;
   cursor: string;
   state: string;
   lastPollAt?: string;
@@ -99,9 +104,11 @@ export type MessageListItem = {
   sentAt?: string;
   senderId: string;
   text: string;
+  contentFormat: ContentFormat;
   category: string;
   tags: string[];
   summary: string;
+  keyPoints: string[];
   knowledgePoints: string[];
   domains: string[];
   tools: string[];
@@ -110,8 +117,126 @@ export type MessageListItem = {
   revision: number;
   agentStatus: string;
   agentError?: string;
+  agentAttempts: number;
+  agentStartedAt?: string;
+  agentCompletedAt?: string;
   attachmentCount: number;
   archived: boolean;
+  libraryState: "inbox" | "library" | "archived";
+  favorite: boolean;
+  readAt?: string;
+  coverAttachmentId?: string;
+  coverMimeType?: string;
+};
+
+export type ContentFormat =
+  | "wechat_article"
+  | "web_article"
+  | "document"
+  | "image"
+  | "audio"
+  | "video"
+  | "mixed"
+  | "text";
+
+export type MessageDetail = MessageListItem & {
+  contentMarkdown: string;
+  detailsMarkdown: string;
+  reason: string;
+  suggestedAction: "none" | "knowledge" | "research" | "project" | "resource" | "practice" | "delete";
+  sensitivity: "public" | "internal" | "confidential" | "restricted";
+  confidence: "high" | "medium" | "low";
+  warnings: string[];
+  source: {
+    type: CaptureSourceType;
+    name: string;
+    url: string;
+  };
+  captureType: CaptureType;
+};
+
+export type KnowledgeMapNode = {
+  id: string;
+  label: string;
+  type: "root" | "resource" | "domain" | "concept" | "tool" | "point";
+  count?: number;
+};
+
+export type KnowledgeDiagramType = "mindmap" | "relationship" | "flow" | "timeline" | "comparison" | "sequence" | "state";
+
+export type KnowledgeMapEdge = {
+  source: string;
+  target: string;
+  label?: string;
+  kind?: "primary" | "secondary";
+};
+
+export type KnowledgeMap = {
+  scope: "library" | "resource";
+  diagramType: KnowledgeDiagramType;
+  diagramLabel: string;
+  selectionReason: string;
+  generatedAt: string;
+  truncated: boolean;
+  nodes: KnowledgeMapNode[];
+  edges: KnowledgeMapEdge[];
+};
+
+export type StoredKnowledgeDiagram = KnowledgeMap & {
+  messageId: string;
+  noteRevision: number;
+};
+
+export function selectKnowledgeDiagram(
+  item: Pick<MessageListItem, "title" | "summary" | "keyPoints" | "knowledgePoints" | "domains" | "tools">,
+): Pick<KnowledgeMap, "diagramType" | "diagramLabel" | "selectionReason"> {
+  const text = [
+    item.title,
+    item.summary,
+    ...item.keyPoints,
+    ...item.knowledgePoints,
+  ].join("\n");
+  const dateCount = (text.match(/(?:19|20)\d{2}(?:[年./-]\d{1,2})?/g) || []).length;
+  const comparison = (/(?:对比|比较|横向评测|\bvs\.?\b|versus|跑赢|胜过|不如|优劣|差异|相比)/i.test(text) ? 2 : 0)
+    + (/(?:成功率|命中率|成本|价格|性能|效率|排名|准确率|延迟|吞吐)/i.test(text) ? 1 : 0)
+    + (item.tools.length >= 2 ? 1 : 0);
+  if (comparison >= 3) {
+    return { diagramType: "comparison", diagramLabel: "对比图", selectionReason: "检测到多个比较对象和评测维度" };
+  }
+  if (dateCount >= 3 || /(?:时间线|发展史|演进|历程|沿革|年代|先后变化)/i.test(text)) {
+    return { diagramType: "timeline", diagramLabel: "时间线", selectionReason: "检测到连续时间节点或演进过程" };
+  }
+  if (/(?:状态机|状态流转|生命周期|待处理.*处理中|处理中.*完成|失败.*重试|恢复路径)/i.test(text)) {
+    return { diagramType: "state", diagramLabel: "状态图", selectionReason: "检测到明确状态及其转换关系" };
+  }
+  if (/(?:关系|依赖|影响|架构|生态|协作|关联|组成)/i.test(text)
+    && item.tools.length + item.knowledgePoints.length >= 3) {
+    return { diagramType: "relationship", diagramLabel: "关系图", selectionReason: "内容以概念、工具和影响关系为主" };
+  }
+  const sequenceScore = (/(?:请求|响应|回调|消息传递|认证交互|客户端|服务端|网关|调用链|调用.+(?:返回|响应))/i.test(text) ? 1 : 0)
+    + (item.tools.length >= 3 ? 1 : 0)
+    + (/(?:API|HTTP|Webhook|Runtime|Agent)/i.test(text) ? 1 : 0);
+  if (sequenceScore >= 3) {
+    return { diagramType: "sequence", diagramLabel: "交互图", selectionReason: "检测到多个系统组件之间的交互" };
+  }
+  const flowScore = (/(?:流程|步骤|工作流|处理链路|操作链路|部署|安装|配置过程|方法论|阶段)/i.test(text) ? 1 : 0)
+    + (/(?:首先|然后|随后|接着|最后|第一步|第二步|第\d+步)/i.test(text) ? 1 : 0)
+    + (item.keyPoints.length >= 4 ? 1 : 0);
+  if (flowScore >= 2) {
+    return { diagramType: "flow", diagramLabel: "流程图", selectionReason: "检测到可排序的步骤或处理链路" };
+  }
+  if (item.tools.length + item.knowledgePoints.length >= 5 || /(?:关系|依赖|影响|架构|生态|协作|关联|组成)/i.test(text)) {
+    return { diagramType: "relationship", diagramLabel: "关系图", selectionReason: "内容以概念、工具和影响关系为主" };
+  }
+  return { diagramType: "mindmap", diagramLabel: "思维导图", selectionReason: "内容以主题层级和概念发散为主" };
+}
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  revoked: boolean;
 };
 
 export type KnowledgeFacet = { name: string; count: number };
@@ -132,6 +257,16 @@ export type KnowledgeFacets = {
 };
 
 export type InboxSearchResult = MessageListItem & { excerpt: string };
+
+export type MessageListOptions = {
+  state?: "inbox" | "library" | "archived";
+  active?: boolean;
+  favorite?: boolean;
+  format?: ContentFormat;
+  category?: string;
+  domain?: string;
+  organized?: boolean;
+};
 
 export type InboxSearchOptions = {
   limit?: number;
@@ -226,6 +361,32 @@ function now(): string {
 function rowString(row: SqlRow, key: string): string {
   const value = row[key];
   return typeof value === "string" ? value : "";
+}
+
+function contentFormatSql(alias = "m"): string {
+  return `CASE
+    WHEN ${alias}.source_type='wechat_article' THEN 'wechat_article'
+    WHEN ${alias}.source_type='web' OR ${alias}.capture_type='link' THEN 'web_article'
+    WHEN ${alias}.capture_type='mixed' THEN 'mixed'
+    WHEN ${alias}.capture_type='image' OR ${alias}.category='image' THEN 'image'
+    WHEN ${alias}.category IN ('voice','audio') THEN 'audio'
+    WHEN ${alias}.category='video' THEN 'video'
+    WHEN ${alias}.capture_type='file' OR ${alias}.category='document' THEN 'document'
+    ELSE 'text' END`;
+}
+
+function contentFormatFromRow(row: SqlRow): ContentFormat {
+  const sourceType = rowString(row, "source_type");
+  const captureType = rowString(row, "capture_type");
+  const category = rowString(row, "category");
+  if (sourceType === "wechat_article") return "wechat_article";
+  if (sourceType === "web" || captureType === "link") return "web_article";
+  if (captureType === "mixed") return "mixed";
+  if (captureType === "image" || category === "image") return "image";
+  if (category === "voice" || category === "audio") return "audio";
+  if (category === "video") return "video";
+  if (captureType === "file" || category === "document") return "document";
+  return "text";
 }
 
 function rowOptional(row: SqlRow, key: string): string | undefined {
@@ -396,8 +557,11 @@ function processingStatus(value: string): SyncItem["processing"]["status"] {
 function mapOwner(row: SqlRow): OwnerProfile {
   return {
     id: rowString(row, "id"),
+    username: rowString(row, "username"),
     displayName: rowString(row, "display_name"),
+    role: rowString(row, "role") === "admin" ? "admin" : "member",
     createdAt: rowString(row, "created_at"),
+    disabled: Boolean(rowOptional(row, "disabled_at")),
   };
 }
 
@@ -407,6 +571,8 @@ export class AppDatabase {
     private readonly nanobotWorkspace: string,
     private readonly database: DatabaseSync,
     private readonly secrets: SecretBox,
+    private readonly tenantId?: string,
+    private readonly ownsConnection = true,
   ) {}
 
   static async open(
@@ -420,12 +586,41 @@ export class AppDatabase {
     database.function("compact_knowledge_point", (value) => compactKnowledgePoint(value));
     const result = new AppDatabase(dataDir, path.resolve(nanobotWorkspace), database, secrets);
     result.migrate();
-    result.enforceSingleOwner();
     return result;
   }
 
   close(): void {
-    this.database.close();
+    if (this.ownsConnection) this.database.close();
+  }
+
+  /**
+   * Return a lightweight request-scoped view over the same SQLite connection.
+   * Every tenant-owned query below resolves requireOwnerId() to this immutable
+   * id, preventing a route from accidentally falling back to another user.
+   */
+  forTenant(tenantId: string): AppDatabase {
+    const user = this.maybeOne("SELECT id FROM users WHERE id=?", tenantId);
+    if (!user) throw new Error("用户不存在");
+    return new AppDatabase(
+      this.dataDir,
+      this.nanobotWorkspace,
+      this.database,
+      this.secrets,
+      tenantId,
+      false,
+    );
+  }
+
+  currentTenantId(): string | undefined {
+    return this.tenantId;
+  }
+
+  healthCheck(): boolean {
+    try {
+      return rowNumber(this.one("SELECT 1 AS ok"), "ok") === 1;
+    } catch {
+      return false;
+    }
   }
 
   private runtimeSkillPaths(slug: string): { active: string; disabled: string; pristine: string } {
@@ -480,7 +675,8 @@ export class AppDatabase {
         display_name TEXT NOT NULL,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('admin','member')),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        disabled_at TEXT
       );
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -489,6 +685,27 @@ export class AppDatabase {
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS invitations (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        consumed_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_invitations_creator ON invitations(created_by, created_at DESC);
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_tokens_tenant ON api_tokens(tenant_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS bot_accounts (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -525,6 +742,9 @@ export class AppDatabase {
         text TEXT NOT NULL,
         agent_status TEXT NOT NULL DEFAULT 'pending',
         agent_error TEXT,
+        agent_attempts INTEGER NOT NULL DEFAULT 0,
+        agent_started_at TEXT,
+        agent_completed_at TEXT,
         note_revision INTEGER NOT NULL DEFAULT 1,
         note_title TEXT NOT NULL,
         note_markdown TEXT NOT NULL,
@@ -541,6 +761,9 @@ export class AppDatabase {
         sensitivity TEXT NOT NULL DEFAULT 'internal',
         confidence TEXT NOT NULL DEFAULT 'low',
         warnings_json TEXT NOT NULL DEFAULT '[]',
+        library_state TEXT NOT NULL DEFAULT 'inbox',
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        read_at TEXT,
         published_revision INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -558,6 +781,18 @@ export class AppDatabase {
         sha256 TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+      CREATE TABLE IF NOT EXISTS knowledge_diagrams (
+        message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        note_revision INTEGER NOT NULL,
+        diagram_type TEXT NOT NULL,
+        diagram_label TEXT NOT NULL,
+        selection_reason TEXT NOT NULL,
+        nodes_json TEXT NOT NULL,
+        edges_json TEXT NOT NULL,
+        generated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_knowledge_diagrams_tenant ON knowledge_diagrams(tenant_id, generated_at DESC);
       CREATE TABLE IF NOT EXISTS sync_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -650,6 +885,11 @@ export class AppDatabase {
     } catch (error) {
       if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
     }
+    try {
+      this.database.exec("ALTER TABLE users ADD COLUMN disabled_at TEXT");
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+    }
     for (const statement of [
       "ALTER TABLE messages ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE messages ADD COLUMN key_points_json TEXT NOT NULL DEFAULT '[]'",
@@ -669,6 +909,12 @@ export class AppDatabase {
       "ALTER TABLE messages ADD COLUMN source_name TEXT NOT NULL DEFAULT '微信 iLink'",
       "ALTER TABLE messages ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE messages ADD COLUMN capture_type TEXT NOT NULL DEFAULT 'text'",
+      "ALTER TABLE messages ADD COLUMN agent_attempts INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE messages ADD COLUMN agent_started_at TEXT",
+      "ALTER TABLE messages ADD COLUMN agent_completed_at TEXT",
+      "ALTER TABLE messages ADD COLUMN library_state TEXT NOT NULL DEFAULT 'inbox'",
+      "ALTER TABLE messages ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE messages ADD COLUMN read_at TEXT",
     ]) {
       try {
         this.database.exec(statement);
@@ -758,6 +1004,9 @@ export class AppDatabase {
           text TEXT NOT NULL,
           agent_status TEXT NOT NULL DEFAULT 'pending',
           agent_error TEXT,
+          agent_attempts INTEGER NOT NULL DEFAULT 0,
+          agent_started_at TEXT,
+          agent_completed_at TEXT,
           note_revision INTEGER NOT NULL DEFAULT 1,
           note_title TEXT NOT NULL,
           note_markdown TEXT NOT NULL,
@@ -774,21 +1023,24 @@ export class AppDatabase {
           sensitivity TEXT NOT NULL DEFAULT 'internal',
           confidence TEXT NOT NULL DEFAULT 'low',
           warnings_json TEXT NOT NULL DEFAULT '[]',
+          library_state TEXT NOT NULL DEFAULT 'inbox',
+          is_favorite INTEGER NOT NULL DEFAULT 0,
+          read_at TEXT,
           published_revision INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
         INSERT INTO messages_capture_migration(
           seq,id,tenant_id,bot_account_id,source_id,source_external_id,source_connection_id,
-          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,note_revision,
+          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,agent_attempts,agent_started_at,agent_completed_at,note_revision,
           note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,
-          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
+          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,library_state,is_favorite,read_at,
           published_revision,created_at,updated_at
         ) SELECT
           seq,id,tenant_id,bot_account_id,source_id,source_id,bot_account_id,
-          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,note_revision,
+          sender_id,session_id,received_at,sent_at,text,agent_status,agent_error,0,NULL,NULL,note_revision,
           note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,
-          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
+          tools_json,details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,'inbox',0,NULL,
           published_revision,created_at,updated_at
         FROM messages;
         DROP TABLE messages;
@@ -817,27 +1069,246 @@ export class AppDatabase {
   createOwner(input: {
     displayName: string;
     password: string;
+    username?: string;
   }): OwnerProfile {
     if (this.hasOwner()) throw new Error("系统已经完成初始化");
+    return this.createUser({
+      username: input.username || "owner",
+      displayName: input.displayName,
+      password: input.password,
+      role: "admin",
+    });
+  }
+
+  createUser(input: {
+    username: string;
+    displayName: string;
+    password: string;
+    role?: "admin" | "member";
+  }): OwnerProfile {
+    const username = input.username.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+      throw new Error("用户名需为 3–32 位字母、数字、点、下划线或短横线");
+    }
+    if (input.password.length < 8) throw new Error("密码至少需要 8 个字符");
     const displayName = input.displayName.trim().slice(0, 60) || "我的知流";
     const id = crypto.randomUUID();
     const createdAt = now();
     this.run(
       "INSERT INTO users(id,username,display_name,password_hash,role,created_at) VALUES(?,?,?,?,?,?)",
       id,
-      "owner",
+      username,
       displayName,
       hashPassword(input.password),
-      "admin",
+      input.role || "member",
       createdAt,
     );
-    return { id, displayName, createdAt };
+    return { id, username, displayName, role: input.role || "member", createdAt, disabled: false };
   }
 
   authenticateOwner(password: string): OwnerProfile | undefined {
     const row = this.ownerRow();
     if (!row || !verifyPassword(password, rowString(row, "password_hash"))) return undefined;
     return mapOwner(row);
+  }
+
+  authenticate(username: string, password: string): OwnerProfile | undefined {
+    const normalized = username.trim().toLowerCase();
+    const row = normalized
+      ? this.maybeOne("SELECT * FROM users WHERE username=? COLLATE NOCASE AND disabled_at IS NULL", normalized)
+      : this.ownerRow();
+    if (!row || !verifyPassword(password, rowString(row, "password_hash"))) return undefined;
+    return mapOwner(row);
+  }
+
+  listUsers(): Array<OwnerProfile & { botCount: number; messageCount: number }> {
+    this.requireAdmin();
+    return this.all(
+      `SELECT u.*,COUNT(DISTINCT b.id) AS bot_count,COUNT(DISTINCT m.id) AS message_count
+       FROM users u
+       LEFT JOIN bot_accounts b ON b.tenant_id=u.id AND b.revoked_at IS NULL
+       LEFT JOIN messages m ON m.tenant_id=u.id
+       GROUP BY u.id ORDER BY CASE WHEN u.role='admin' THEN 0 ELSE 1 END,u.created_at`,
+    ).map((row) => ({
+      ...mapOwner(row),
+      botCount: rowNumber(row, "bot_count"),
+      messageCount: rowNumber(row, "message_count"),
+    }));
+  }
+
+  setUserDisabled(userId: string, disabled: boolean): OwnerProfile {
+    const adminId = this.requireAdmin();
+    if (userId === adminId) throw new Error("不能停用当前管理员账户");
+    const user = this.maybeOne("SELECT * FROM users WHERE id=?", userId);
+    if (!user) throw new Error("用户不存在");
+    if (rowString(user, "role") === "admin") throw new Error("不能停用管理员账户");
+    this.transaction(() => {
+      this.run("UPDATE users SET disabled_at=? WHERE id=?", disabled ? now() : null, userId);
+      if (disabled) {
+        this.run("DELETE FROM sessions WHERE user_id=?", userId);
+        this.run("UPDATE bot_accounts SET state='stopped' WHERE tenant_id=? AND revoked_at IS NULL", userId);
+      }
+    });
+    return mapOwner(this.one("SELECT * FROM users WHERE id=?", userId));
+  }
+
+  deleteUser(userId: string, confirmation: string): { username: string; attachmentCount: number } {
+    const adminId = this.requireAdmin();
+    if (userId === adminId) throw new Error("不能删除当前管理员账户");
+    const user = this.maybeOne("SELECT id,username,role FROM users WHERE id=?", userId);
+    if (!user) throw new Error("用户不存在");
+    if (rowString(user, "role") === "admin") throw new Error("不能删除管理员账户");
+    const username = rowString(user, "username");
+    if (confirmation.trim().toLocaleLowerCase("zh-CN") !== username.toLocaleLowerCase("zh-CN")) {
+      throw new Error("确认用户名不匹配");
+    }
+    const paths = this.all(
+      `SELECT DISTINCT a.storage_path FROM attachments a
+       JOIN messages m ON m.id=a.message_id WHERE m.tenant_id=?`,
+      userId,
+    ).map((row) => rowString(row, "storage_path")).filter(Boolean);
+    this.transaction(() => {
+      this.run("DELETE FROM sessions WHERE user_id=?", userId);
+      this.run("DELETE FROM users WHERE id=?", userId);
+    });
+    for (const filePath of paths) {
+      try {
+        if (existsSync(filePath)) unlinkSync(filePath);
+      } catch {
+        // The database deletion is authoritative; a missing/unreadable stale file must not restore the account.
+      }
+    }
+    const tenantKey = crypto.createHash("sha256").update(userId).digest("hex").slice(0, 16);
+    const tenantWorkspace = path.join(this.nanobotWorkspace, "tenants", tenantKey);
+    try {
+      if (existsSync(tenantWorkspace)) rmSync(tenantWorkspace, { recursive: true, force: true });
+    } catch {
+      // Workspace cleanup is best effort after the tenant has been removed from SQLite.
+    }
+    return { username, attachmentCount: paths.length };
+  }
+
+  createInvitation(hours = 72): { id: string; token: string; expiresAt: string } {
+    const adminId = this.requireAdmin();
+    const id = crypto.randomUUID();
+    const token = randomToken("invite");
+    const expiresAt = new Date(Date.now() + Math.min(Math.max(hours, 1), 24 * 30) * 3_600_000).toISOString();
+    this.run(
+      "INSERT INTO invitations(id,token_hash,created_by,expires_at,created_at) VALUES(?,?,?,?,?)",
+      id,
+      tokenHash(token),
+      adminId,
+      expiresAt,
+      now(),
+    );
+    return { id, token, expiresAt };
+  }
+
+  listInvitations(): Array<{
+    id: string;
+    expiresAt: string;
+    createdAt: string;
+    consumed: boolean;
+    revoked: boolean;
+  }> {
+    const adminId = this.requireAdmin();
+    return this.all(
+      "SELECT * FROM invitations WHERE created_by=? ORDER BY created_at DESC LIMIT 100",
+      adminId,
+    ).map((row) => ({
+      id: rowString(row, "id"),
+      expiresAt: rowString(row, "expires_at"),
+      createdAt: rowString(row, "created_at"),
+      consumed: Boolean(rowOptional(row, "consumed_at")),
+      revoked: Boolean(rowOptional(row, "revoked_at")),
+    }));
+  }
+
+  revokeInvitation(id: string): boolean {
+    const adminId = this.requireAdmin();
+    return Number(this.run(
+      "UPDATE invitations SET revoked_at=? WHERE id=? AND created_by=? AND consumed_at IS NULL AND revoked_at IS NULL",
+      now(),
+      id,
+      adminId,
+    ).changes) === 1;
+  }
+
+  registerWithInvitation(input: {
+    token: string;
+    username: string;
+    displayName: string;
+    password: string;
+  }): OwnerProfile {
+    return this.transaction(() => {
+      const invitation = this.maybeOne(
+        `SELECT * FROM invitations WHERE token_hash=? AND expires_at>? AND consumed_at IS NULL AND revoked_at IS NULL`,
+        tokenHash(input.token),
+        now(),
+      );
+      if (!invitation) throw new Error("邀请链接无效或已过期");
+      const user = this.createUser({ ...input, role: "member" });
+      this.run(
+        "UPDATE invitations SET consumed_by=?,consumed_at=? WHERE id=? AND consumed_at IS NULL",
+        user.id,
+        now(),
+        rowString(invitation, "id"),
+      );
+      return user;
+    });
+  }
+
+  createApiToken(name: string): { token: string; apiToken: ApiToken } {
+    const tenantId = this.requireOwnerId();
+    const id = crypto.randomUUID();
+    const token = randomToken("capture");
+    const createdAt = now();
+    const normalizedName = name.trim().replace(/\s+/g, " ").slice(0, 80) || "API 收件";
+    this.run(
+      "INSERT INTO api_tokens(id,tenant_id,name,token_hash,created_at) VALUES(?,?,?,?,?)",
+      id,
+      tenantId,
+      normalizedName,
+      tokenHash(token),
+      createdAt,
+    );
+    return {
+      token,
+      apiToken: { id, name: normalizedName, createdAt, revoked: false },
+    };
+  }
+
+  listApiTokens(): ApiToken[] {
+    return this.all(
+      "SELECT * FROM api_tokens WHERE tenant_id=? ORDER BY created_at DESC",
+      this.requireOwnerId(),
+    ).map((row) => ({
+      id: rowString(row, "id"),
+      name: rowString(row, "name"),
+      createdAt: rowString(row, "created_at"),
+      lastUsedAt: rowOptional(row, "last_used_at"),
+      revoked: Boolean(rowOptional(row, "revoked_at")),
+    }));
+  }
+
+  revokeApiToken(id: string): boolean {
+    return Number(this.run(
+      "UPDATE api_tokens SET revoked_at=? WHERE id=? AND tenant_id=? AND revoked_at IS NULL",
+      now(),
+      id,
+      this.requireOwnerId(),
+    ).changes) === 1;
+  }
+
+  tenantForApiToken(token: string): string | undefined {
+    const row = this.maybeOne(
+      `SELECT a.id,a.tenant_id FROM api_tokens a JOIN users u ON u.id=a.tenant_id
+       WHERE a.token_hash=? AND a.revoked_at IS NULL AND u.disabled_at IS NULL`,
+      tokenHash(token),
+    );
+    if (!row) return undefined;
+    this.run("UPDATE api_tokens SET last_used_at=? WHERE id=?", now(), rowString(row, "id"));
+    return rowString(row, "tenant_id");
   }
 
   updateOwnerDisplayName(displayName: string): OwnerProfile {
@@ -862,7 +1333,13 @@ export class AppDatabase {
   }
 
   createSession(days: number): { token: string; expiresAt: string } {
-    const userId = this.requireOwnerId();
+    return this.createSessionFor(this.requireOwnerId(), days);
+  }
+
+  createSessionFor(userId: string, days: number): { token: string; expiresAt: string } {
+    if (!this.maybeOne("SELECT id FROM users WHERE id=? AND disabled_at IS NULL", userId)) {
+      throw new Error("用户不存在或已停用");
+    }
     const token = randomToken("session");
     const expiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
     this.run(
@@ -879,7 +1356,7 @@ export class AppDatabase {
   ownerForSession(token: string): OwnerProfile | undefined {
     const row = this.maybeOne(
       `SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-       WHERE s.token_hash=? AND s.expires_at>?`,
+       WHERE s.token_hash=? AND s.expires_at>? AND u.disabled_at IS NULL`,
       tokenHash(token),
       now(),
     );
@@ -895,6 +1372,7 @@ export class AppDatabase {
   }
 
   ownerId(): string | undefined {
+    if (this.tenantId) return this.tenantId;
     const row = this.ownerRow();
     return row ? rowString(row, "id") : undefined;
   }
@@ -905,12 +1383,21 @@ export class AppDatabase {
     return id;
   }
 
+  private requireAdmin(): string {
+    const userId = this.requireOwnerId();
+    const row = this.maybeOne("SELECT role FROM users WHERE id=?", userId);
+    if (!row || rowString(row, "role") !== "admin") throw new Error("仅系统管理员可执行此操作");
+    return userId;
+  }
+
   private ownerRow(): SqlRow | undefined {
+    if (this.tenantId) return this.maybeOne("SELECT * FROM users WHERE id=?", this.tenantId);
     return this.maybeOne(
       `SELECT u.* FROM users u
        LEFT JOIN bot_accounts b ON b.tenant_id=u.id AND b.revoked_at IS NULL
        LEFT JOIN messages m ON m.tenant_id=u.id
        LEFT JOIN sync_targets t ON t.tenant_id=u.id AND t.revoked_at IS NULL
+       WHERE u.disabled_at IS NULL
        GROUP BY u.id
        ORDER BY (COUNT(DISTINCT b.id)+COUNT(DISTINCT m.id)+COUNT(DISTINCT t.id)) DESC,
                 CASE WHEN u.role='admin' THEN 0 ELSE 1 END,
@@ -919,56 +1406,12 @@ export class AppDatabase {
     );
   }
 
-  private enforceSingleOwner(): void {
-    const owner = this.ownerRow();
-    if (!owner) return;
-    const ownerId = rowString(owner, "id");
-    this.transaction(() => {
-      this.database.exec("DROP TABLE IF EXISTS invitations");
-      const otherRows = this.all("SELECT id FROM users WHERE id<>?", ownerId);
-      for (const row of otherRows) {
-        const otherId = rowString(row, "id");
-        this.run("DELETE FROM sessions WHERE user_id=?", otherId);
-        if (this.maybeOne("SELECT 1 AS found FROM tenant_settings WHERE tenant_id=?", ownerId)) {
-          this.run("DELETE FROM tenant_settings WHERE tenant_id=?", otherId);
-        } else {
-          this.run("UPDATE tenant_settings SET tenant_id=? WHERE tenant_id=?", ownerId, otherId);
-        }
-        for (const skill of this.all("SELECT id,slug FROM tenant_skills WHERE tenant_id=?", otherId)) {
-          const duplicate = this.maybeOne(
-            "SELECT 1 AS found FROM tenant_skills WHERE tenant_id=? AND slug=?",
-            ownerId,
-            rowString(skill, "slug"),
-          );
-          if (duplicate) this.run("DELETE FROM tenant_skills WHERE id=?", rowString(skill, "id"));
-          else this.run("UPDATE tenant_skills SET tenant_id=? WHERE id=?", ownerId, rowString(skill, "id"));
-        }
-        this.run("UPDATE bot_accounts SET tenant_id=? WHERE tenant_id=?", ownerId, otherId);
-        this.run("UPDATE messages SET tenant_id=? WHERE tenant_id=?", ownerId, otherId);
-        this.run("UPDATE sync_events SET tenant_id=? WHERE tenant_id=?", ownerId, otherId);
-        this.run("UPDATE sync_targets SET tenant_id=?,is_primary=0 WHERE tenant_id=?", ownerId, otherId);
-        this.run("UPDATE failed_inbound_events SET tenant_id=? WHERE tenant_id=?", ownerId, otherId);
-        this.run("DELETE FROM users WHERE id=?", otherId);
-      }
-      const activePrimary = this.maybeOne(
-        "SELECT 1 AS found FROM sync_targets WHERE tenant_id=? AND is_primary=1 AND revoked_at IS NULL",
-        ownerId,
-      );
-      if (!activePrimary) {
-        const firstTarget = this.maybeOne(
-          "SELECT id FROM sync_targets WHERE tenant_id=? AND revoked_at IS NULL ORDER BY created_at LIMIT 1",
-          ownerId,
-        );
-        if (firstTarget) this.run("UPDATE sync_targets SET is_primary=1 WHERE id=?", rowString(firstTarget, "id"));
-      }
-      this.run("UPDATE users SET role='admin' WHERE id=?", ownerId);
-      this.setMetadata("single_owner_schema", "1");
-    });
-  }
-
   addBotAccount(account: IlinkAccount): StoredBotAccount {
     const ownerId = this.requireOwnerId();
-    const existing = this.maybeOne("SELECT id FROM bot_accounts WHERE bot_id=?", account.botId);
+    const existing = this.maybeOne("SELECT id,tenant_id FROM bot_accounts WHERE bot_id=?", account.botId);
+    if (existing && rowString(existing, "tenant_id") !== ownerId) {
+      throw new Error("该微信机器人已绑定到其他账户");
+    }
     const id = existing ? rowString(existing, "id") : crypto.randomUUID();
     if (existing) {
       this.run(
@@ -997,7 +1440,9 @@ export class AppDatabase {
   }
 
   getBotAccount(id: string): StoredBotAccount | undefined {
-    const row = this.maybeOne("SELECT * FROM bot_accounts WHERE id=?", id);
+    const row = this.tenantId
+      ? this.maybeOne("SELECT * FROM bot_accounts WHERE id=? AND tenant_id=?", id, this.tenantId)
+      : this.maybeOne("SELECT * FROM bot_accounts WHERE id=?", id);
     return row ? this.mapBot(row) : undefined;
   }
 
@@ -1007,6 +1452,15 @@ export class AppDatabase {
       this.requireOwnerId(),
     );
     return rows.map((row) => this.mapBot(row));
+  }
+
+  /** Internal startup view. HTTP handlers must use a tenant-scoped database. */
+  getAllBotAccounts(includeDisabled = false): StoredBotAccount[] {
+    if (this.tenantId) return this.getBotAccounts();
+    return this.all(
+      `SELECT b.* FROM bot_accounts b JOIN users u ON u.id=b.tenant_id
+       WHERE b.revoked_at IS NULL${includeDisabled ? "" : " AND u.disabled_at IS NULL"} ORDER BY b.connected_at`,
+    ).map((row) => this.mapBot(row));
   }
 
   removeBotAccount(id: string): boolean {
@@ -1110,10 +1564,10 @@ export class AppDatabase {
         capture.id,
         this.requireOwnerId(),
         capture.source.channel === "wechat" ? capture.source.connectionId || null : null,
-        capture.source.externalId,
+        capture.source.externalId || capture.id,
         capture.source.channel,
         capture.source.type,
-        capture.source.externalId,
+        capture.source.externalId || capture.id,
         capture.source.connectionId || "owner",
         capture.source.name,
         capture.source.url || "",
@@ -1202,8 +1656,45 @@ export class AppDatabase {
   ): void {
     this.transaction(() => {
       this.updateProcessedNote(messageId, note, "completed");
+      // A reprocess produces one coherent derived bundle. Keeping obsolete
+      // Markdown or images would make the reader and Obsidian show two
+      // different article versions, so replace only generated attachments.
+      this.run(
+        `DELETE FROM attachments WHERE message_id=? AND kind='derived'
+         AND EXISTS(SELECT 1 FROM messages WHERE id=? AND tenant_id=?)`,
+        messageId,
+        messageId,
+        this.requireOwnerId(),
+      );
       for (const attachment of attachments) this.addAttachment(messageId, attachment);
     });
+  }
+
+  markAgentAttempt(messageId: string): number {
+    const ownerId = this.requireOwnerId();
+    const startedAt = now();
+    const result = this.run(
+      `UPDATE messages SET agent_status='processing',agent_error=NULL,
+       agent_attempts=agent_attempts+1,agent_started_at=?,agent_completed_at=NULL,updated_at=?
+       WHERE id=? AND tenant_id=?`,
+      startedAt,
+      startedAt,
+      messageId,
+      ownerId,
+    );
+    if (Number(result.changes) !== 1) throw new Error("消息不存在");
+    const row = this.one("SELECT agent_attempts FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId);
+    return rowNumber(row, "agent_attempts");
+  }
+
+  queueMessageForReprocessing(messageId: string): boolean {
+    return Number(this.run(
+      `UPDATE messages SET agent_status='pending',agent_error=NULL,agent_completed_at=NULL,updated_at=?
+       WHERE id=? AND tenant_id=? AND agent_status<>'processing'`,
+      now(),
+      messageId,
+      this.requireOwnerId(),
+    ).changes) === 1;
   }
 
   updateProcessedNote(
@@ -1245,7 +1736,7 @@ export class AppDatabase {
     this.run(
       `UPDATE messages SET note_title=?,note_markdown=?,category=?,tags_json=?,summary=?,key_points_json=?,knowledge_points_json=?,
        domains_json=?,tools_json=?,details_markdown=?,reason=?,suggested_action=?,sensitivity=?,confidence=?,warnings_json=?,
-       note_revision=?,agent_status=?,agent_error=?,updated_at=? WHERE id=? AND tenant_id=?`,
+       note_revision=?,agent_status=?,agent_error=?,agent_completed_at=?,updated_at=? WHERE id=? AND tenant_id=?`,
       note.title,
       note.markdown,
       note.category,
@@ -1265,9 +1756,17 @@ export class AppDatabase {
       status,
       error || null,
       now(),
+      now(),
       messageId,
       this.requireOwnerId(),
     );
+    if (changed) {
+      this.run(
+        "DELETE FROM knowledge_diagrams WHERE message_id=? AND tenant_id=?",
+        messageId,
+        this.requireOwnerId(),
+      );
+    }
     this.upsertSearchIndex(messageId);
   }
 
@@ -1397,17 +1896,49 @@ export class AppDatabase {
     return this.listPendingCaptures(limit);
   }
 
+  /** Internal recovery view used during startup. Tenant HTTP handlers do not call this. */
+  tenantIdsWithPendingCaptures(): string[] {
+    if (this.tenantId) {
+      return this.listPendingCaptures(1).length ? [this.tenantId] : [];
+    }
+    return this.all(
+      `SELECT DISTINCT m.tenant_id FROM messages m
+       JOIN users u ON u.id=m.tenant_id
+       LEFT JOIN bot_accounts b ON b.id=m.bot_account_id
+       WHERE u.disabled_at IS NULL
+         AND m.agent_status IN ('pending','processing')
+         AND (m.bot_account_id IS NULL OR b.revoked_at IS NULL)
+       ORDER BY m.tenant_id`,
+    ).map((row) => rowString(row, "tenant_id"));
+  }
+
   listPendingCaptures(limit = 100): PendingAgentMessage[] {
     const rows = this.all(
       `SELECT m.* FROM messages m
        LEFT JOIN bot_accounts b ON b.id=m.bot_account_id
-       WHERE m.tenant_id=? AND m.agent_status='pending'
+       WHERE m.tenant_id=? AND m.agent_status IN ('pending','processing')
          AND (m.bot_account_id IS NULL OR b.revoked_at IS NULL)
        ORDER BY m.seq LIMIT ?`,
       this.requireOwnerId(),
       limit,
     );
-    return rows.map((row) => ({
+    return rows.map((row) => this.pendingCaptureFromRow(row));
+  }
+
+  captureForProcessing(messageId: string): PendingAgentMessage | undefined {
+    const row = this.maybeOne(
+      `SELECT m.* FROM messages m
+       LEFT JOIN bot_accounts b ON b.id=m.bot_account_id
+       WHERE m.tenant_id=? AND m.id=?
+         AND (m.bot_account_id IS NULL OR b.revoked_at IS NULL)`,
+      this.requireOwnerId(),
+      messageId,
+    );
+    return row ? this.pendingCaptureFromRow(row) : undefined;
+  }
+
+  private pendingCaptureFromRow(row: SqlRow): PendingAgentMessage {
+    return {
       capture: {
         id: rowString(row, "id"),
         source: {
@@ -1437,40 +1968,73 @@ export class AppDatabase {
             : {}),
         })),
       },
-    }));
+    };
   }
 
-  listMessages(limit = 100, beforeSeq?: number): MessageListItem[] {
+  private messageListWhere(beforeSeq?: number, options: MessageListOptions = {}): {
+    clause: string;
+    values: SqlValue[];
+  } {
     const ownerId = this.requireOwnerId();
-    const rows = beforeSeq
-      ? this.all(
-          `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
-           CASE WHEN EXISTS(SELECT 1 FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL)
-             THEN CASE WHEN COALESCE((SELECT MAX(e.seq) FROM sync_events e WHERE e.message_id=m.id),0)
-               <= COALESCE((SELECT MAX(t.last_ack_seq) FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL),0)
-               THEN 1 ELSE 0 END ELSE 0 END AS archived
-           FROM messages m WHERE m.tenant_id=? AND m.seq<? ORDER BY m.seq DESC LIMIT ?`,
-          ownerId,
-          beforeSeq,
-          limit,
-        )
-      : this.all(
-          `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
-           CASE WHEN EXISTS(SELECT 1 FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL)
-             THEN CASE WHEN COALESCE((SELECT MAX(e.seq) FROM sync_events e WHERE e.message_id=m.id),0)
-               <= COALESCE((SELECT MAX(t.last_ack_seq) FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL),0)
-               THEN 1 ELSE 0 END ELSE 0 END AS archived
-           FROM messages m WHERE m.tenant_id=? ORDER BY m.seq DESC LIMIT ?`,
-          ownerId,
-          limit,
-        );
+    const where = ["m.tenant_id=?"];
+    const values: SqlValue[] = [ownerId];
+    if (beforeSeq) {
+      where.push("m.seq<?");
+      values.push(beforeSeq);
+    }
+    if (options.state) {
+      where.push("m.library_state=?");
+      values.push(options.state);
+    }
+    if (options.active) where.push("m.library_state<>'archived'");
+    if (options.favorite) where.push("m.is_favorite=1");
+    if (options.format) {
+      where.push(`${contentFormatSql("m") }=?`);
+      values.push(options.format);
+    }
+    if (options.category) {
+      where.push("m.category=?");
+      values.push(options.category);
+    }
+    if (options.domain) {
+      where.push("EXISTS(SELECT 1 FROM json_each(m.domains_json) domain WHERE domain.value=?)");
+      values.push(options.domain);
+    }
+    if (options.organized) where.push("m.agent_status='completed'");
+    return { clause: where.join(" AND "), values };
+  }
+
+  listMessages(limit = 100, beforeSeq?: number, options: MessageListOptions = {}): MessageListItem[] {
+    const filter = this.messageListWhere(beforeSeq, options);
+    const rows = this.all(
+      `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
+       (SELECT a.id FROM attachments a WHERE a.message_id=m.id AND a.mime_type LIKE 'image/%'
+        ORDER BY CASE WHEN a.kind='derived' THEN 0 ELSE 1 END,a.rowid LIMIT 1) AS cover_attachment_id,
+       (SELECT a.mime_type FROM attachments a WHERE a.message_id=m.id AND a.mime_type LIKE 'image/%'
+        ORDER BY CASE WHEN a.kind='derived' THEN 0 ELSE 1 END,a.rowid LIMIT 1) AS cover_mime_type,
+       CASE WHEN EXISTS(SELECT 1 FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL)
+         THEN CASE WHEN COALESCE((SELECT MAX(e.seq) FROM sync_events e WHERE e.message_id=m.id),0)
+           <= COALESCE((SELECT MAX(t.last_ack_seq) FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL),0)
+           THEN 1 ELSE 0 END ELSE 0 END AS archived
+       FROM messages m WHERE ${filter.clause} ORDER BY m.seq DESC LIMIT ?`,
+      ...filter.values,
+      limit,
+    );
     return rows.map((row) => this.mapMessage(row));
   }
 
-  knowledgeFacets(): KnowledgeFacets {
+  countMessages(options: MessageListOptions = {}): number {
+    const filter = this.messageListWhere(undefined, options);
+    return rowNumber(
+      this.one(`SELECT COUNT(*) AS count FROM messages m WHERE ${filter.clause}`, ...filter.values),
+      "count",
+    );
+  }
+
+  knowledgeFacets(organizedOnly = false, facetLimit = 10): KnowledgeFacets {
     const rows = this.all(
-      `SELECT category,agent_status,domains_json,knowledge_points_json,tools_json
-       FROM messages WHERE tenant_id=? ORDER BY seq DESC`,
+      `SELECT source_type,capture_type,category,agent_status,domains_json,knowledge_points_json,tools_json
+       FROM messages WHERE tenant_id=?${organizedOnly ? " AND agent_status='completed'" : ""} ORDER BY seq DESC`,
       this.requireOwnerId(),
     );
     const categories = new Map<string, number>();
@@ -1482,13 +2046,14 @@ export class AppDatabase {
       if (value) target.set(value, (target.get(value) || 0) + 1);
     };
     for (const row of rows) {
-      count(categories, rowString(row, "category"));
+      count(categories, contentFormatFromRow(row));
       for (const value of safeJson<unknown[]>(rowString(row, "domains_json"), [])) count(domains, value);
       for (const value of safeJson<unknown[]>(rowString(row, "knowledge_points_json"), [])) {
         count(knowledgePoints, compactKnowledgePoint(value));
       }
       for (const value of safeJson<unknown[]>(rowString(row, "tools_json"), [])) count(tools, value);
     }
+    const safeFacetLimit = Math.max(1, Math.min(100, Math.floor(facetLimit) || 10));
     const top = (values: Map<string, number>, limit: number): KnowledgeFacet[] => Array.from(values)
       .map(([name, facetCount]) => ({ name, count: facetCount }))
       .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN"))
@@ -1502,10 +2067,10 @@ export class AppDatabase {
         knowledgePoints: knowledgePoints.size,
         tools: tools.size,
       },
-      categories: top(categories, 10),
-      domains: top(domains, 10),
-      knowledgePoints: top(knowledgePoints, 10),
-      tools: top(tools, 10),
+      categories: top(categories, safeFacetLimit),
+      domains: top(domains, safeFacetLimit),
+      knowledgePoints: top(knowledgePoints, safeFacetLimit),
+      tools: top(tools, safeFacetLimit),
     };
   }
 
@@ -1588,6 +2153,295 @@ export class AppDatabase {
     return row ? this.mapMessage(row) : undefined;
   }
 
+  getMessageDetail(messageId: string): MessageDetail | undefined {
+    const row = this.maybeOne(
+      `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
+       0 AS archived FROM messages m WHERE m.tenant_id=? AND m.id=?`,
+      this.requireOwnerId(),
+      messageId,
+    );
+    if (!row) return undefined;
+    const message = this.mapMessage(row);
+    const sourceUrl = rowString(row, "source_url") || firstWebUrl(message.text);
+    const storedAction = rowString(row, "suggested_action") as MessageDetail["suggestedAction"];
+    const storedSensitivity = rowString(row, "sensitivity") as MessageDetail["sensitivity"];
+    const storedConfidence = rowString(row, "confidence") as MessageDetail["confidence"];
+    return {
+      ...message,
+      contentMarkdown: stripNoteEnvelope(message.markdown),
+      detailsMarkdown: rowString(row, "details_markdown"),
+      reason: rowString(row, "reason") || noteReason(message.markdown),
+      suggestedAction: ["none", "knowledge", "research", "project", "resource", "practice", "delete"].includes(storedAction)
+        ? storedAction
+        : noteAction(message.markdown, message.category),
+      sensitivity: ["public", "internal", "confidential", "restricted"].includes(storedSensitivity)
+        ? storedSensitivity
+        : noteSensitivity(message.markdown),
+      confidence: ["high", "medium", "low"].includes(storedConfidence)
+        ? storedConfidence
+        : noteConfidence(message.markdown),
+      warnings: safeJson<string[]>(rowString(row, "warnings_json"), []).slice(0, 10),
+      source: {
+        type: (rowString(row, "source_type") || (sourceUrl ? "web" : "manual")) as CaptureSourceType,
+        name: rowString(row, "source_name") || (sourceUrl ? "网页" : "微信 iLink"),
+        url: sourceUrl,
+      },
+      captureType: (rowString(row, "capture_type") || inferCaptureType(message.text, [])) as CaptureType,
+    };
+  }
+
+  updateResourceState(
+    messageId: string,
+    input: { state?: "inbox" | "library" | "archived"; favorite?: boolean; read?: boolean },
+  ): MessageListItem {
+    const ownerId = this.requireOwnerId();
+    const existing = this.getMessage(messageId);
+    if (!existing) throw new Error("消息不存在");
+    const state = input.state || existing.libraryState;
+    const favorite = input.favorite ?? existing.favorite;
+    const readAt = input.read === undefined
+      ? existing.readAt || null
+      : input.read
+        ? now()
+        : null;
+    this.run(
+      "UPDATE messages SET library_state=?,is_favorite=?,read_at=?,updated_at=? WHERE id=? AND tenant_id=?",
+      state,
+      favorite ? 1 : 0,
+      readAt,
+      now(),
+      messageId,
+      ownerId,
+    );
+    return this.getMessage(messageId)!;
+  }
+
+  deleteMessage(messageId: string): { attachmentCount: number } | undefined {
+    const ownerId = this.requireOwnerId();
+    if (!this.maybeOne("SELECT id FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId)) {
+      return undefined;
+    }
+    const paths = this.all(
+      `SELECT DISTINCT a.storage_path FROM attachments a
+       JOIN messages m ON m.id=a.message_id WHERE m.id=? AND m.tenant_id=?`,
+      messageId,
+      ownerId,
+    ).map((row) => rowString(row, "storage_path")).filter(Boolean);
+    this.run("DELETE FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId);
+    for (const filePath of paths) {
+      try {
+        if (existsSync(filePath)) unlinkSync(filePath);
+      } catch {
+        // The resource is already gone from SQLite; stale-file cleanup remains best effort.
+      }
+    }
+    return { attachmentCount: paths.length };
+  }
+
+  getKnowledgeDiagram(messageId: string): StoredKnowledgeDiagram | undefined {
+    const ownerId = this.requireOwnerId();
+    const row = this.maybeOne(
+      `SELECT d.*,d.note_revision AS diagram_revision,m.note_revision AS message_revision FROM knowledge_diagrams d
+       JOIN messages m ON m.id=d.message_id
+       WHERE d.message_id=? AND d.tenant_id=? AND m.tenant_id=?`,
+      messageId,
+      ownerId,
+      ownerId,
+    );
+    if (!row) return undefined;
+    const diagramRevision = rowNumber(row, "diagram_revision");
+    if (diagramRevision !== rowNumber(row, "message_revision")) return undefined;
+    const allowedTypes = new Set<KnowledgeDiagramType>([
+      "mindmap", "relationship", "flow", "timeline", "comparison", "sequence", "state",
+    ]);
+    const diagramType = rowString(row, "diagram_type") as KnowledgeDiagramType;
+    if (!allowedTypes.has(diagramType)) return undefined;
+    return {
+      messageId,
+      noteRevision: diagramRevision,
+      scope: "resource",
+      diagramType,
+      diagramLabel: rowString(row, "diagram_label") || "智能图解",
+      selectionReason: rowString(row, "selection_reason"),
+      generatedAt: rowString(row, "generated_at"),
+      truncated: false,
+      nodes: safeJson<KnowledgeMapNode[]>(rowString(row, "nodes_json"), []),
+      edges: safeJson<KnowledgeMapEdge[]>(rowString(row, "edges_json"), []),
+    };
+  }
+
+  saveKnowledgeDiagram(messageId: string, diagram: KnowledgeMap, expectedRevision?: number): StoredKnowledgeDiagram {
+    const ownerId = this.requireOwnerId();
+    const message = this.maybeOne(
+      "SELECT note_revision FROM messages WHERE id=? AND tenant_id=?",
+      messageId,
+      ownerId,
+    );
+    if (!message) throw new Error("消息不存在");
+    const revision = rowNumber(message, "note_revision");
+    if (expectedRevision !== undefined && revision !== expectedRevision) {
+      throw new Error("内容在图解生成期间已更新，请基于新版本重新生成");
+    }
+    const generatedAt = now();
+    this.run(
+      `INSERT INTO knowledge_diagrams(
+        message_id,tenant_id,note_revision,diagram_type,diagram_label,selection_reason,nodes_json,edges_json,generated_at
+       ) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET
+        tenant_id=excluded.tenant_id,note_revision=excluded.note_revision,diagram_type=excluded.diagram_type,
+        diagram_label=excluded.diagram_label,selection_reason=excluded.selection_reason,
+        nodes_json=excluded.nodes_json,edges_json=excluded.edges_json,generated_at=excluded.generated_at`,
+      messageId,
+      ownerId,
+      revision,
+      diagram.diagramType,
+      diagram.diagramLabel,
+      diagram.selectionReason,
+      JSON.stringify(diagram.nodes),
+      JSON.stringify(diagram.edges),
+      generatedAt,
+    );
+    return this.getKnowledgeDiagram(messageId)!;
+  }
+
+  deleteKnowledgeDiagram(messageId: string): boolean {
+    return Number(this.run(
+      "DELETE FROM knowledge_diagrams WHERE message_id=? AND tenant_id=?",
+      messageId,
+      this.requireOwnerId(),
+    ).changes) === 1;
+  }
+
+  knowledgeMap(messageId?: string): KnowledgeMap {
+    const ownerId = this.requireOwnerId();
+    const nodeMap = new Map<string, KnowledgeMapNode>();
+    const edgeMap = new Map<string, KnowledgeMapEdge>();
+    const nodeId = (type: KnowledgeMapNode["type"], label: string): string =>
+      `${type}:${crypto.createHash("sha256").update(label).digest("hex").slice(0, 12)}`;
+    const addNode = (type: KnowledgeMapNode["type"], label: string, count?: number): string => {
+      const clean = label.replace(/\s+/g, " ").trim().slice(0, 120);
+      const id = nodeId(type, clean);
+      if (!nodeMap.has(id)) nodeMap.set(id, { id, label: clean, type, ...(count ? { count } : {}) });
+      return id;
+    };
+    const addEdge = (
+      source: string,
+      target: string,
+      label?: string,
+      kind: KnowledgeMapEdge["kind"] = "primary",
+    ): void => {
+      if (source === target) return;
+      edgeMap.set(`${source}>${target}`, { source, target, ...(label ? { label } : {}), kind });
+    };
+
+    if (messageId) {
+      const item = this.getMessage(messageId);
+      if (!item) throw new Error("消息不存在");
+      const diagram = selectKnowledgeDiagram(item);
+      const root = addNode("resource", item.title);
+      const domains = item.domains.slice(0, 4).map((label) => ({ label, id: addNode("domain", label) }));
+      const concepts = item.knowledgePoints.slice(0, 8).map((label) => ({ label, id: addNode("concept", label) }));
+      const tools = item.tools.slice(0, 8).map((label) => ({ label, id: addNode("tool", label) }));
+      const points = item.keyPoints.slice(0, 8).map((label) => ({ label, id: addNode("point", label) }));
+      const mentions = (content: string, label: string): boolean =>
+        label.trim().length >= 2 && content.toLocaleLowerCase("zh-CN").includes(label.trim().toLocaleLowerCase("zh-CN"));
+      const relatedNodes = (content: string) => [...tools, ...concepts].filter((entry) => mentions(content, entry.label));
+
+      for (const domain of domains) addEdge(root, domain.id, "领域");
+      if (diagram.diagramType === "comparison") {
+        for (const tool of tools) addEdge(root, tool.id, "比较对象");
+        for (const concept of concepts) addEdge(root, concept.id, "评测维度");
+        for (const point of points) {
+          const related = relatedNodes(point.label);
+          if (!related.length) addEdge(root, point.id, "结论");
+          else for (const entry of related) addEdge(entry.id, point.id, "证据", "secondary");
+        }
+      } else if (["flow", "timeline", "state", "sequence"].includes(diagram.diagramType)) {
+        let previous = root;
+        for (const [index, point] of points.entries()) {
+          const label = diagram.diagramType === "timeline"
+            ? (index ? "随后" : "起点")
+            : diagram.diagramType === "state"
+              ? "转换"
+              : diagram.diagramType === "sequence"
+                ? "交互"
+                : (index ? "下一步" : "开始");
+          addEdge(previous, point.id, label);
+          previous = point.id;
+          for (const entry of relatedNodes(point.label)) addEdge(entry.id, point.id, "参与", "secondary");
+        }
+        for (const tool of tools) {
+          if (!points.some((point) => mentions(point.label, tool.label))) addEdge(root, tool.id, "组件");
+        }
+        for (const concept of concepts) {
+          if (!points.some((point) => mentions(point.label, concept.label))) addEdge(root, concept.id, "概念");
+        }
+      } else {
+        for (const concept of concepts) addEdge(root, concept.id, "概念");
+        for (const tool of tools) addEdge(root, tool.id, "工具");
+        for (const point of points) {
+          const related = relatedNodes(point.label);
+          if (!related.length) addEdge(root, point.id, "要点");
+          else for (const entry of related) addEdge(entry.id, point.id, "关联", "secondary");
+        }
+      }
+      return {
+        scope: "resource",
+        ...diagram,
+        generatedAt: now(),
+        truncated: false,
+        nodes: [...nodeMap.values()],
+        edges: [...edgeMap.values()],
+      };
+    }
+
+    const total = rowNumber(this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=?", ownerId), "count");
+    const rows = this.all(
+      `SELECT id,note_title,domains_json,knowledge_points_json,tools_json
+       FROM messages WHERE tenant_id=? AND library_state<>'archived'
+       ORDER BY seq DESC LIMIT 5000`,
+      ownerId,
+    );
+    const root = addNode("root", "我的知识库", total);
+    const frequencies = (key: "domains_json" | "knowledge_points_json" | "tools_json") => {
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        for (const value of safeJson<string[]>(rowString(row, key), [])) {
+          const clean = key === "knowledge_points_json" ? compactKnowledgePoint(value) : value.trim().slice(0, 80);
+          if (clean) counts.set(clean, (counts.get(clean) || 0) + 1);
+        }
+      }
+      return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"));
+    };
+    const domains = frequencies("domains_json").slice(0, 8);
+    const concepts = frequencies("knowledge_points_json").slice(0, 24);
+    const tools = frequencies("tools_json").slice(0, 16);
+    const domainIds = new Map(domains.map(([label, count]) => {
+      const id = addNode("domain", label, count);
+      addEdge(root, id);
+      return [label, id];
+    }));
+    for (const [label, count] of concepts) {
+      const conceptId = addNode("concept", label, count);
+      const related = rows.find((row) =>
+        safeJson<string[]>(rowString(row, "knowledge_points_json"), []).map(compactKnowledgePoint).includes(label));
+      const domain = related
+        ? safeJson<string[]>(rowString(related, "domains_json"), []).find((value) => domainIds.has(value))
+        : undefined;
+      addEdge(domain ? domainIds.get(domain)! : root, conceptId);
+    }
+    for (const [label, count] of tools) addEdge(root, addNode("tool", label, count));
+    return {
+      scope: "library",
+      diagramType: "relationship",
+      diagramLabel: "知识关系图",
+      selectionReason: "聚合展示知识库中的高频领域、概念和工具关系",
+      generatedAt: now(),
+      truncated: total > rows.length || concepts.length >= 24 || tools.length >= 16,
+      nodes: [...nodeMap.values()],
+      edges: [...edgeMap.values()],
+    };
+  }
+
   attachmentsForMessageView(messageId: string): MessageAttachmentView[] {
     return this.all(
       `SELECT a.* FROM attachments a JOIN messages m ON m.id=a.message_id
@@ -1651,6 +2505,22 @@ export class AppDatabase {
     );
     return {
       messages: messageCount,
+      libraryItems: rowNumber(
+        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND library_state='library'", ownerId),
+        "count",
+      ),
+      favorites: rowNumber(
+        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND is_favorite=1", ownerId),
+        "count",
+      ),
+      processing: rowNumber(
+        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND agent_status IN ('pending','processing')", ownerId),
+        "count",
+      ),
+      fallback: rowNumber(
+        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND agent_status IN ('fallback','failed')", ownerId),
+        "count",
+      ),
       pendingSync: rowNumber(
         this.one(
           "SELECT COUNT(DISTINCT message_id) AS count FROM sync_events WHERE tenant_id=? AND seq>?",
@@ -1902,7 +2772,8 @@ export class AppDatabase {
 
   syncTargetForToken(token: string): SyncTarget | undefined {
     const row = this.maybeOne(
-      "SELECT * FROM sync_targets WHERE token_hash=? AND revoked_at IS NULL",
+      `SELECT t.* FROM sync_targets t JOIN users u ON u.id=t.tenant_id
+       WHERE t.token_hash=? AND t.revoked_at IS NULL AND u.disabled_at IS NULL`,
       tokenHash(token),
     );
     if (!row) return undefined;
@@ -2106,6 +2977,7 @@ export class AppDatabase {
   private mapBot(row: SqlRow): StoredBotAccount {
     return {
       id: rowString(row, "id"),
+      tenantId: rowString(row, "tenant_id"),
       botToken: this.secrets.decrypt(rowString(row, "bot_token_enc")),
       botId: rowString(row, "bot_id"),
       baseUrl: rowString(row, "base_url"),
@@ -2127,9 +2999,11 @@ export class AppDatabase {
       sentAt: rowOptional(row, "sent_at"),
       senderId: rowString(row, "sender_id"),
       text: rowString(row, "text"),
+      contentFormat: contentFormatFromRow(row),
       category: rowString(row, "category"),
       tags: safeJson<string[]>(rowString(row, "tags_json"), []),
       summary: rowString(row, "summary"),
+      keyPoints: safeJson<string[]>(rowString(row, "key_points_json"), []),
       knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), [])
         .map(compactKnowledgePoint)
         .filter(Boolean),
@@ -2140,8 +3014,18 @@ export class AppDatabase {
       revision: rowNumber(row, "note_revision"),
       agentStatus: rowString(row, "agent_status"),
       agentError: rowOptional(row, "agent_error"),
+      agentAttempts: rowNumber(row, "agent_attempts"),
+      agentStartedAt: rowOptional(row, "agent_started_at"),
+      agentCompletedAt: rowOptional(row, "agent_completed_at"),
       attachmentCount: rowNumber(row, "attachment_count"),
       archived: Boolean(rowNumber(row, "archived")),
+      libraryState: (["inbox", "library", "archived"].includes(rowString(row, "library_state"))
+        ? rowString(row, "library_state")
+        : "inbox") as MessageListItem["libraryState"],
+      favorite: Boolean(rowNumber(row, "is_favorite")),
+      readAt: rowOptional(row, "read_at"),
+      coverAttachmentId: rowOptional(row, "cover_attachment_id"),
+      coverMimeType: rowOptional(row, "cover_mime_type"),
     };
   }
 

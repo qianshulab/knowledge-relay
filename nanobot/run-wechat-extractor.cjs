@@ -97,6 +97,8 @@ function metadataLine(label, value) {
 
 function articleMarkdown(data, sourceUrl) {
   const title = String(data.msg_title || "微信公众号文章").replace(/[\r\n]+/g, " ").trim();
+  const rawCover = String(data.msg_cover || data.msg_cover_url || "").trim();
+  const cover = rawCover.startsWith("//") ? `https:${rawCover}` : rawCover;
   const metadata = [
     metadataLine("作者", data.msg_author),
     metadataLine("公众号", data.account_name),
@@ -110,6 +112,7 @@ function articleMarkdown(data, sourceUrl) {
     "",
     "---",
     "",
+    ...(/^https?:\/\//i.test(cover) ? [`![${title}封面](${cover})`, ""] : []),
     String(data.msg_markdown || "").trim(),
     "",
   ].join("\n").trim().slice(0, 500_000) + "\n";
@@ -152,7 +155,11 @@ async function main() {
   })}\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { articleMarkdown };

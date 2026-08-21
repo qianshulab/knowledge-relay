@@ -33,9 +33,10 @@ function markdownFromHtml(html, skillRoot) {
       return /^https?:\/\//i.test(href) ? `[${label}](${href})` : label;
     }
     if (tag === "img") {
-      const source = String($(node).attr("data-src") || $(node).attr("src") || "").trim();
+      const rawSource = String($(node).attr("data-src") || $(node).attr("src") || "").trim();
+      const source = rawSource.startsWith("//") ? `https:${rawSource}` : rawSource;
       const label = String($(node).attr("alt") || "图片").replace(/[\[\]]/g, "").trim() || "图片";
-      return /^https?:\/\//i.test(source) ? `[${label}](${source})` : "";
+      return /^https?:\/\//i.test(source) ? `![${label}](${source})` : "";
     }
     if (tag === "hr") return "\n\n---\n\n";
     return inner;
@@ -70,7 +71,11 @@ async function main() {
   if (!result?.done) process.exitCode = 2;
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { markdownFromHtml };

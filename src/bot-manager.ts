@@ -42,23 +42,69 @@ function chunks(text: string, maximum = 2_000): string[] {
 export class BotManager {
   private readonly controllers = new Map<string, AbortController>();
   private readonly monitors = new Map<string, Promise<void>>();
-  private readonly ingestion: IngestionService;
+  private readonly ingestionByTenant = new Map<string, IngestionService>();
   private readonly agentFailureAlerts = new Map<string, { fingerprint: string; sentAt: number }>();
 
   constructor(
     private readonly config: AppConfig,
     private readonly database: AppDatabase,
-  ) {
-    this.ingestion = new IngestionService(config, database);
+  ) {}
+
+  private tenantDatabase(tenantId: string): AppDatabase {
+    return this.database.forTenant(tenantId);
+  }
+
+  private ingestionFor(tenantId: string): IngestionService {
+    let ingestion = this.ingestionByTenant.get(tenantId);
+    if (!ingestion) {
+      ingestion = new IngestionService(this.config, this.tenantDatabase(tenantId));
+      this.ingestionByTenant.set(tenantId, ingestion);
+    }
+    return ingestion;
   }
 
   async startAll(): Promise<void> {
-    await this.ingestion.recoverPending();
-    for (const account of this.database.getBotAccounts()) await this.start(account.id);
+    const accounts = this.database.getAllBotAccounts();
+    await this.recoverPendingAgentMessages();
+    for (const account of accounts) await this.start(account.id);
   }
 
   async recoverPendingAgentMessages(): Promise<number> {
-    return this.ingestion.recoverPending();
+    let recovered = 0;
+    for (const tenantId of this.database.tenantIdsWithPendingCaptures()) {
+      recovered += await this.recoverTenantPending(tenantId);
+    }
+    return recovered;
+  }
+
+  private async recoverTenantPending(tenantId: string): Promise<number> {
+    let recovered = 0;
+    let batch = 0;
+    do {
+      batch = await this.ingestionFor(tenantId).recoverPending(100);
+      recovered += batch;
+    } while (batch === 100);
+    return recovered;
+  }
+
+  reprocessMessage(tenantId: string, messageId: string): { accepted: boolean } {
+    const queued = this.ingestionFor(tenantId).reprocess(messageId);
+    void queued.job.catch((error) => {
+      logger.warn("后台重新处理失败", { messageId, ...errorDetails(error) });
+    });
+    return { accepted: queued.accepted };
+  }
+
+  ingestCapture(tenantId: string, capture: CaptureInput): Promise<void> {
+    return this.ingestionFor(tenantId).ingest(capture).then(() => undefined);
+  }
+
+  acceptCapture(tenantId: string, capture: CaptureInput): { accepted: boolean } {
+    const accepted = this.ingestionFor(tenantId).accept(capture);
+    void accepted.job.catch((error) => {
+      logger.warn("API 收件后台处理失败", { captureId: capture.id, ...errorDetails(error) });
+    });
+    return { accepted: accepted.accepted };
   }
 
   async start(accountId: string): Promise<void> {
@@ -91,6 +137,20 @@ export class BotManager {
     await Promise.all([...this.monitors.keys()].map((id) => this.stop(id)));
   }
 
+  async pauseTenant(tenantId: string): Promise<void> {
+    const accountIds = this.database.getAllBotAccounts(true)
+      .filter((account) => account.tenantId === tenantId)
+      .map((account) => account.id);
+    await Promise.all(accountIds.map((id) => this.stop(id, false)));
+  }
+
+  async resumeTenant(tenantId: string): Promise<void> {
+    await this.recoverTenantPending(tenantId);
+    const accounts = this.database.getAllBotAccounts()
+      .filter((account) => account.tenantId === tenantId);
+    for (const account of accounts) await this.start(account.id);
+  }
+
   isRunning(accountId: string): boolean {
     return this.monitors.has(accountId);
   }
@@ -121,9 +181,10 @@ export class BotManager {
   }
 
   private async monitor(account: StoredBotAccount, signal: AbortSignal): Promise<void> {
+    const tenantDatabase = this.tenantDatabase(account.tenantId);
     const client = IlinkClient.forAccount(this.config, account);
     await client.notifyStart();
-    this.database.updateBotStatus(account.id, { state: "running", lastError: null });
+    tenantDatabase.updateBotStatus(account.id, { state: "running", lastError: null });
     logger.info("微信消息接收已启动", { accountId: account.botId });
     let cursor = account.cursor;
     let timeoutMs = this.config.ilink.longPollMs;
@@ -133,7 +194,7 @@ export class BotManager {
         const response = await client.getUpdates(cursor, timeoutMs, signal);
         if (signal.aborted) break;
         const pollAt = new Date().toISOString();
-        this.database.updateBotStatus(account.id, { state: "running", lastPollAt: pollAt, lastError: null });
+        tenantDatabase.updateBotStatus(account.id, { state: "running", lastPollAt: pollAt, lastError: null });
         if (response.longpolling_timeout_ms && response.longpolling_timeout_ms > 0) {
           timeoutMs = response.longpolling_timeout_ms;
         }
@@ -144,7 +205,7 @@ export class BotManager {
             const sourceId = message.message_id?.toString() || message.seq?.toString() || "unknown";
             const id = `${account.botId}:${sourceId}`;
             const detail = error instanceof Error ? error.message : String(error);
-            this.database.recordInboundFailure({
+            tenantDatabase.recordInboundFailure({
               id,
               botAccountId: account.id,
               sourceId,
@@ -164,23 +225,37 @@ export class BotManager {
               messageId: id,
               ...errorDetails(error),
             });
+            if (message.context_token && message.from_user_id) {
+              try {
+                await client.sendText(
+                  message.from_user_id,
+                  message.context_token,
+                  "知流提醒：这条消息中的内容或附件未能完整保存，系统已跳过它以继续接收后续消息。请稍后重新发送；若持续失败，请在管理页面检查服务状态。",
+                );
+              } catch (notifyError) {
+                logger.warn("微信入站失败提醒发送失败", {
+                  messageId: id,
+                  ...errorDetails(notifyError),
+                });
+              }
+            }
           }
         }
         if (response.get_updates_buf) {
           cursor = response.get_updates_buf;
-          this.database.updateBotCursor(account.id, cursor);
+          tenantDatabase.updateBotCursor(account.id, cursor);
         }
         failures = 0;
       } catch (error) {
         if (signal.aborted) break;
         if (error instanceof IlinkApiError && (error.ret === -14 || error.errcode === -14)) {
-          this.database.clearInvalidBotToken(account.id);
+          tenantDatabase.clearInvalidBotToken(account.id);
           logger.error("iLink 登录凭据已失效", { accountId: account.botId });
           return;
         }
         failures += 1;
         const message = error instanceof Error ? error.message : String(error);
-        this.database.updateBotStatus(account.id, { state: "error", lastError: message });
+        tenantDatabase.updateBotStatus(account.id, { state: "error", lastError: message });
         logger.error("微信消息轮询失败", { accountId: account.botId, failures, ...errorDetails(error) });
         await delay(Math.min(2_000 * 2 ** Math.min(failures - 1, 4), 30_000), signal);
       }
@@ -200,6 +275,7 @@ export class BotManager {
     client: IlinkClient,
     raw: WeixinMessage,
   ): Promise<void> {
+    const tenantDatabase = this.tenantDatabase(account.tenantId);
     if (raw.message_type !== undefined && raw.message_type !== MessageType.USER) return;
     const senderId = raw.from_user_id || "";
     if (!senderId || !this.isAllowed(account, senderId)) {
@@ -209,12 +285,13 @@ export class BotManager {
     const sourceId = raw.message_id?.toString() || raw.seq?.toString();
     if (!sourceId) throw new Error("收到缺少 message_id 和 seq 的微信消息");
     const id = `${account.botId}:${sourceId}`;
-    if (this.database.hasMessage(id)) return;
+    if (tenantDatabase.hasMessage(id)) return;
     const attachments = await downloadAttachments(
       raw.item_list || [],
       sourceId,
       senderId,
       this.config,
+      account.tenantId,
     );
     const text = extractText(raw);
     const capture: CaptureInput = {
@@ -228,7 +305,7 @@ export class BotManager {
       text,
       attachments,
     };
-    const result = await this.ingestion.ingest(capture);
+    const result = await this.ingestionFor(account.tenantId).ingest(capture);
     if (!result.accepted) return;
     let reply = result.reply;
     const contextToken = raw.context_token || "";
@@ -244,7 +321,7 @@ export class BotManager {
     if (reply && contextToken) {
       for (const part of chunks(reply)) await client.sendText(senderId, contextToken, part);
     }
-    this.database.updateBotStatus(account.id, { lastMessageAt: new Date().toISOString() });
+    tenantDatabase.updateBotStatus(account.id, { lastMessageAt: new Date().toISOString() });
     logger.info("微信消息处理完成", { messageId: id });
   }
 }

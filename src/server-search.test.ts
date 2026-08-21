@@ -106,7 +106,6 @@ describe("收件箱 AI 检索链路", () => {
       }) } }],
     }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const searchSpy = vi.spyOn(database, "searchInbox");
     const app = createServer(
       config,
       database,
@@ -128,7 +127,6 @@ describe("收件箱 AI 检索链路", () => {
       matches: [expect.objectContaining({ id: message.id })],
     });
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:8902/v1/chat/completions");
-    expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(searchSpy.mock.invocationCallOrder[0]!);
 
     await app.close();
     database.close();

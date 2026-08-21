@@ -14,12 +14,16 @@ reproduction, affected version, and impact.
 
 - Bind to `127.0.0.1` unless an HTTPS reverse proxy is in front of the service.
 - Never commit `.env`, `data/`, Obsidian sync tokens, iLink credentials, or API keys.
-- Obsidian plugin publishing is owner-authenticated and origin-checked. Uploaded ZIP files are never extracted on the server; structure, paths, size, version, CRC, plugin ID, and SHA-256 are validated before an atomic persistent publish.
-- Back up `data/inbox.sqlite`, `data/media`, `data/derived`, and `data/app-secret.key` together.
+- Obsidian plugin publishing is administrator-authenticated and origin-checked. Uploaded ZIP files are never extracted on the server; structure, paths, size, version, CRC, plugin ID, and SHA-256 are validated before an atomic persistent publish.
+- Back up `data/inbox.sqlite`, `data/media`, `data/derived`, and `data/app-secret.key` together. Backup archives also contain account data, tokens, provider configuration, and encrypted credentials; keep the backup directory private and protect any off-device copy with storage encryption.
 - Rotate a model key immediately if it was exposed in a terminal, issue, build log, or chat.
-- The model-provider form is an owner-only Nanobot control plane. Use it only over localhost or HTTPS; saved keys live in the mode-0600 Nanobot config and are never returned by the API.
+- The model-provider form is an administrator-only Nanobot control plane. Use it only over localhost or HTTPS; saved keys live in the mode-0600 Nanobot config and are never returned by the API.
 - Live model discovery runs inside the authenticated Nanobot sidecar and returns model metadata only; Knowledge Relay never receives the provider credential.
-- Only enable Skills you trust. The Knowledge Relay process never executes Skill scripts; the isolated official Nanobot Runtime executes the two pinned workspace Skills and has network access by design.
+- Only enable Skills you trust. The Knowledge Relay process never executes Skill scripts; an official Nanobot Runtime with a per-user Workspace executes the pinned workspace Skills and has network access by design.
+- Registration is invitation-only. Session, capture API, and Obsidian tokens are resolved to a tenant on the server; request bodies cannot select or override `tenant_id`.
+- Disabling a member deletes active login sessions and blocks capture API and Obsidian token resolution; the user's retained records are not exposed to other tenants.
+- Each active user receives a dedicated Nanobot process, Workspace, sessions directory, and artifact directory. Idle processes may be recycled, but workspaces are not shared or deleted by the scheduler.
+- The current SQLite deployment is single-node. Do not run multiple Knowledge Relay application containers against the same database file.
 - Treat every synchronized Markdown body as untrusted. Plugin 1.3 strips active HTML, dangerous URI schemes, local embeds, and automatic remote image loading before writing a managed block.
 - Sync ACK payloads contain remote ID, version, result, and a random local reference only; Vault paths, note content, model prompts, and tokens are not returned to the server.
 - `restricted` records are never written to a normal Vault. This is a delivery guard, not a replacement for filesystem encryption or device security.

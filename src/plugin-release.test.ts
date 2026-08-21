@@ -43,7 +43,7 @@ describe("plugin release", () => {
   it("validates the real packaged plugin", async () => {
     const content = await fs.readFile(path.resolve("release/knowledge-relay-obsidian.zip"));
     const info = inspectPluginArchive(content);
-    expect(info.version).toBe("1.4.1");
+    expect(info.version).toBe("1.4.2");
     expect(info.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -61,18 +61,18 @@ describe("plugin release", () => {
 
   it("publishes to the persistent data directory and prevents ambiguous replacements", async () => {
     const config = await temporaryConfig();
-    const first = archive({ version: "1.4.2" });
+    const first = archive({ version: "1.4.3" });
     const published = await publishPluginRelease(config, first);
-    expect(published).toMatchObject({ available: true, version: "1.4.2", source: "uploaded" });
+    expect(published).toMatchObject({ available: true, version: "1.4.3", source: "uploaded" });
 
     const resolved = await resolvePluginRelease(config);
     expect(resolved.archivePath).toBe(path.join(config.dataDir, "plugin-release", "knowledge-relay-obsidian.zip"));
     expect((await getPluginReleaseInfo(config)).sha256).toBe(published.sha256);
-    await expect(publishPluginRelease(config, first)).resolves.toMatchObject({ version: "1.4.2" });
-    await expect(publishPluginRelease(config, archive({ version: "1.4.2", extra: ["wechat-ilink-inbox-sync/styles.css", "changed"] })))
+    await expect(publishPluginRelease(config, first)).resolves.toMatchObject({ version: "1.4.3" });
+    await expect(publishPluginRelease(config, archive({ version: "1.4.3", extra: ["wechat-ilink-inbox-sync/styles.css", "changed"] })))
       .rejects.toMatchObject({ statusCode: 409 });
     await expect(publishPluginRelease(config, archive({ version: "1.2.9" })))
-      .rejects.toThrow("不能从 v1.4.2 降级");
+      .rejects.toThrow("不能从 v1.4.3 降级");
   });
 
   it("应用升级后优先提供比历史上传包更新的内置版本", async () => {
@@ -80,6 +80,6 @@ describe("plugin release", () => {
     const directory = path.join(config.dataDir, "plugin-release");
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(path.join(directory, "knowledge-relay-obsidian.zip"), archive({ version: "1.2.9" }));
-    await expect(resolvePluginRelease(config)).resolves.toMatchObject({ version: "1.4.1", source: "bundled" });
+    await expect(resolvePluginRelease(config)).resolves.toMatchObject({ version: "1.4.2", source: "bundled" });
   });
 });

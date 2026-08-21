@@ -27,7 +27,13 @@ async function runtimeOwnerDatabase(): Promise<{ database: AppDatabase; workspac
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ilink-runtime-skills-test-"));
   directories.push(directory);
   const workspace = path.join(directory, "workspace");
-  for (const skill of ["fetch-skill", "wechat-article-extractor"]) {
+  for (const skill of [
+    "fetch-skill",
+    "wechat-article-extractor",
+    "mermaid-visualizer",
+    "obsidian-canvas-creator",
+    "excalidraw-diagram",
+  ]) {
     await fs.mkdir(path.join(workspace, "skills", skill), { recursive: true });
     await fs.mkdir(path.join(workspace, ".upstream", skill), { recursive: true });
     const content = `---\nname: ${skill}\n---\n# ORIGINAL ${skill}\n`;
@@ -52,10 +58,13 @@ describe("Skills management", () => {
         "security-research-curator",
         "wechat-article-extractor",
         "fetch-skill",
+        "mermaid-visualizer",
+        "obsidian-canvas-creator",
+        "excalidraw-diagram",
       ]),
     );
     expect(skills.every((skill) => skill.builtin && skill.enabled)).toBe(true);
-    expect(skills.filter((skill) => skill.kind === "adapter")).toHaveLength(2);
+    expect(skills.filter((skill) => skill.kind === "adapter")).toHaveLength(5);
     expect(skills.filter((skill) => skill.kind === "prompt")).toHaveLength(5);
     const valueRule = skills.find((skill) => skill.slug === "obsidian-note-builder")!;
     expect(valueRule.name).toBe("知识价值与行动建议");
@@ -124,6 +133,18 @@ describe("Skills management", () => {
     await expect(
       fs.readFile(path.join(workspace, "skills", "fetch-skill", "SKILL.md"), "utf8"),
     ).resolves.toBe(original.content);
+    database.close();
+  });
+
+  it("从 Runtime workspace 展示完整的原版可视化 Skill", async () => {
+    const { database } = await runtimeOwnerDatabase();
+    const mermaid = database.listSkills().find((skill) => skill.slug === "mermaid-visualizer")!;
+    const canvas = database.listSkills().find((skill) => skill.slug === "obsidian-canvas-creator")!;
+    const excalidraw = database.listSkills().find((skill) => skill.slug === "excalidraw-diagram")!;
+    expect(mermaid.content).toContain("# ORIGINAL mermaid-visualizer");
+    expect(canvas.content).toContain("# ORIGINAL obsidian-canvas-creator");
+    expect(excalidraw.content).toContain("# ORIGINAL excalidraw-diagram");
+    expect(mermaid.sourceRevision).toBe("1265976d9746a84858b4b7b42fb86a215aa93de9");
     database.close();
   });
 });

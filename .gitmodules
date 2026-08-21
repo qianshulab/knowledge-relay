@@ -7,3 +7,6 @@
 [submodule "obsidian-plugin"]
 	path = obsidian-plugin
 	url = https://github.com/qianshulab/knowledge-relay-obsidian.git
+[submodule "external-skills/axton-obsidian-visual-skills"]
+	path = external-skills/axton-obsidian-visual-skills
+	url = https://github.com/axtonliu/axton-obsidian-visual-skills.git

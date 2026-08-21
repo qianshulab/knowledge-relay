@@ -13,7 +13,7 @@ fi
 cp /opt/knowledge-relay/run-wechat-extractor.cjs /nanobot/workspace/nanobot-bin/run-wechat-extractor.cjs
 cp /opt/knowledge-relay/extract-wechat-isolated.cjs /nanobot/workspace/nanobot-bin/extract-wechat-isolated.cjs
 
-for skill in wechat-article-extractor fetch-skill; do
+for skill in wechat-article-extractor fetch-skill mermaid-visualizer obsidian-canvas-creator excalidraw-diagram; do
   if [ ! -d "/nanobot/workspace/skills/$skill" ]; then
     cp -R "/opt/knowledge-relay/skills/$skill" "/nanobot/workspace/skills/$skill"
   fi

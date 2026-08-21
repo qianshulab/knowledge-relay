@@ -4,7 +4,7 @@ import { logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
 import { defaultNote } from "./notes.js";
 import type { AgentSettings, AppDatabase } from "./storage/database.js";
-import { persistExtractedMarkdown } from "./web-content.js";
+import { persistExtractedBundle, persistGeneratedVisualization } from "./web-content.js";
 
 export type IngestionResult = {
   accepted: boolean;
@@ -15,6 +15,11 @@ export type IngestionResult = {
 
 export type CaptureAgent = Pick<NanobotClient, "process">;
 
+export type AcceptedCapture = {
+  accepted: boolean;
+  job: Promise<IngestionResult>;
+};
+
 /**
  * Channel-neutral capture pipeline. Adapters own authentication, transport,
  * attachment acquisition and replies; this service owns durable ingestion,
@@ -22,6 +27,8 @@ export type CaptureAgent = Pick<NanobotClient, "process">;
  */
 export class IngestionService {
   private readonly nanobot: CaptureAgent;
+  private readonly activeJobs = new Map<string, Promise<IngestionResult>>();
+  private processingQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly config: AppConfig,
@@ -32,14 +39,36 @@ export class IngestionService {
   }
 
   async ingest(capture: CaptureInput): Promise<IngestionResult> {
+    return this.accept(capture).job;
+  }
+
+  accept(capture: CaptureInput): AcceptedCapture {
     const fallback = defaultNote(capture);
     if (!this.database.saveCapture(capture, fallback)) {
-      return { accepted: false, notifyOnFailure: false };
+      return {
+        accepted: false,
+        job: Promise.resolve({ accepted: false, notifyOnFailure: false }),
+      };
     }
     // Persist the raw revision immediately for recovery and audit. Sync batches
     // expose only the later enriched/fallback revision, so clients never create
     // a note from a temporary generic title while the Agent is still working.
     this.database.publishMessage(capture.id);
+    const job = this.enqueue(() => this.processAccepted(capture, fallback))
+      .finally(() => {
+        if (this.activeJobs.get(capture.id) === job) this.activeJobs.delete(capture.id);
+      });
+    this.activeJobs.set(capture.id, job);
+    return { accepted: true, job };
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const job = this.processingQueue.then(task, task);
+    this.processingQueue = job.then(() => undefined, () => undefined);
+    return job;
+  }
+
+  private async processAccepted(capture: CaptureInput, fallback: ReturnType<typeof defaultNote>): Promise<IngestionResult> {
     const settings = this.database.getAgentSettings(this.config.nanobot);
     if (!settings.enabled) {
       this.database.updateProcessedNote(capture.id, fallback, "fallback");
@@ -47,7 +76,7 @@ export class IngestionService {
       return { accepted: true, notifyOnFailure: false };
     }
     try {
-      const reply = await this.completeWithAgent(capture, settings);
+      const reply = await this.completeWithRetry(capture, settings);
       this.database.publishMessage(capture.id);
       return { accepted: true, reply, notifyOnFailure: settings.notifyOnFailure };
     } catch (error) {
@@ -75,8 +104,11 @@ export class IngestionService {
         if (!capture) return;
         const fallback = defaultNote(capture);
         try {
-          if (settings.enabled) await this.completeWithAgent(capture, settings);
-          else this.database.updateProcessedNote(capture.id, fallback, "fallback");
+          if (settings.enabled) {
+            await this.enqueue(() => this.completeWithRetry(capture, settings));
+          } else {
+            this.database.updateProcessedNote(capture.id, fallback, "fallback");
+          }
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           this.database.updateProcessedNote(capture.id, fallback, "fallback", detail);
@@ -93,6 +125,70 @@ export class IngestionService {
     return pending.length;
   }
 
+  reprocess(messageId: string): { accepted: boolean; job: Promise<IngestionResult> } {
+    const existing = this.activeJobs.get(messageId);
+    if (existing) return { accepted: false, job: existing };
+    const stored = this.database.captureForProcessing(messageId);
+    if (!stored) throw new Error("消息不存在");
+    if (!this.database.queueMessageForReprocessing(messageId)) {
+      throw new Error("该内容正在处理，无需重复提交");
+    }
+    const job = this.enqueue(() => this.processExisting(stored.capture))
+      .finally(() => this.activeJobs.delete(messageId));
+    this.activeJobs.set(messageId, job);
+    return { accepted: true, job };
+  }
+
+  private async processExisting(capture: CaptureInput): Promise<IngestionResult> {
+    const settings = this.database.getAgentSettings(this.config.nanobot);
+    const fallback = defaultNote(capture);
+    if (!settings.enabled) {
+      this.database.updateProcessedNote(capture.id, fallback, "fallback", "智能整理尚未启用");
+      this.database.publishMessage(capture.id);
+      return { accepted: true, notifyOnFailure: false };
+    }
+    try {
+      const reply = await this.completeWithRetry(capture, settings);
+      this.database.publishMessage(capture.id);
+      return { accepted: true, reply, notifyOnFailure: settings.notifyOnFailure };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.database.updateProcessedNote(capture.id, fallback, "fallback", detail);
+      this.database.publishMessage(capture.id);
+      return { accepted: true, agentError: error, notifyOnFailure: settings.notifyOnFailure };
+    }
+  }
+
+  private isRetryable(error: unknown): boolean {
+    const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+    return /timeout|abort|fetch failed|socket|ECONN|ENET|EAI_AGAIN|HTTP (408|425|429|5\d\d)|temporar|rate.?limit|网页解析|未生成 Markdown 产物/i.test(detail);
+  }
+
+  private async completeWithRetry(
+    capture: CaptureInput,
+    settings: AgentSettings,
+  ): Promise<string | undefined> {
+    const maximumAttempts = capture.source.url || capture.captureType === "link" ? 3 : 2;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+      this.database.markAgentAttempt(capture.id);
+      try {
+        return await this.completeWithAgent(capture, settings);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maximumAttempts || !this.isRetryable(error)) throw error;
+        logger.warn("Nanobot 处理暂时失败，将自动重试", {
+          captureId: capture.id,
+          attempt,
+          maximumAttempts,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+      }
+    }
+    throw lastError;
+  }
+
   private async completeWithAgent(
     capture: CaptureInput,
     settings: AgentSettings,
@@ -101,10 +197,39 @@ export class IngestionService {
       capture,
       settings,
       this.database.getEnabledSkills(),
+      [],
+      { tenantId: this.database.currentTenantId() || "legacy" },
     );
+    if (
+      capture.source.url
+      && ["web", "wechat_article"].includes(capture.source.type)
+      && processed.derivedDocuments.length === 0
+    ) {
+      throw new Error("网页解析未生成 Markdown 产物");
+    }
     const derivedAttachments = [];
+    const assetWarnings: string[] = [];
     for (const document of processed.derivedDocuments) {
-      derivedAttachments.push(await persistExtractedMarkdown(this.config, capture.id, document));
+      if (document.sourceType === "visualization") {
+        derivedAttachments.push(await persistGeneratedVisualization(
+          this.config,
+          capture.id,
+          document,
+          this.database.currentTenantId(),
+        ));
+        continue;
+      }
+      const bundle = await persistExtractedBundle(
+        this.config,
+        capture.id,
+        document,
+        this.database.currentTenantId(),
+      );
+      derivedAttachments.push(...bundle.attachments);
+      assetWarnings.push(...bundle.warnings);
+    }
+    if (assetWarnings.length) {
+      processed.note.warnings = [...new Set([...(processed.note.warnings || []), ...assetWarnings])].slice(0, 10);
     }
     this.database.completeProcessedMessage(capture.id, processed.note, derivedAttachments);
     return processed.reply;

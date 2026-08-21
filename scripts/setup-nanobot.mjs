@@ -14,10 +14,26 @@ const configPath = path.resolve(
   process.env.NANOBOT_CONFIG || path.join(dataDir, "nanobot", "config.json"),
 );
 const skillsRoot = path.join(workspace, "skills");
-const expectedRevisions = {
-  "wechat-article-extractor": "d8f74b8946065e64537f1ad39f962dbed86da3c7",
-  "fetch-skill": "d67a579dd4533386e41b6175e07a70c10b6a0c8e",
-};
+const skillSources = [
+  {
+    slug: "wechat-article-extractor",
+    source: path.join(root, "external-skills", "wechat-article-extractor"),
+    repository: path.join(root, "external-skills", "wechat-article-extractor"),
+    revision: "d8f74b8946065e64537f1ad39f962dbed86da3c7",
+  },
+  {
+    slug: "fetch-skill",
+    source: path.join(root, "external-skills", "fetch-skill"),
+    repository: path.join(root, "external-skills", "fetch-skill"),
+    revision: "d67a579dd4533386e41b6175e07a70c10b6a0c8e",
+  },
+  ...["mermaid-visualizer", "obsidian-canvas-creator", "excalidraw-diagram"].map((slug) => ({
+    slug,
+    source: path.join(root, "external-skills", "axton-obsidian-visual-skills", slug),
+    repository: path.join(root, "external-skills", "axton-obsidian-visual-skills"),
+    revision: "1265976d9746a84858b4b7b42fb86a215aa93de9",
+  })),
+];
 
 function copyDirectory(source, destination) {
   fs.cpSync(source, destination, {
@@ -29,15 +45,14 @@ function copyDirectory(source, destination) {
 fs.mkdirSync(skillsRoot, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.join(workspace, ".upstream"), { recursive: true, mode: 0o700 });
 
-for (const [skill, revision] of Object.entries(expectedRevisions)) {
-  const source = path.join(root, "external-skills", skill);
+for (const { slug: skill, source, repository, revision } of skillSources) {
   if (!fs.existsSync(path.join(source, "SKILL.md"))) {
     throw new Error(
       `缺少原版 Skill：${skill}。请先运行 git submodule update --init --recursive。`,
     );
   }
-  if (fs.existsSync(path.join(source, ".git"))) {
-    const actual = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (fs.existsSync(path.join(repository, ".git"))) {
+    const actual = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     if (actual !== revision) throw new Error(`${skill} 版本不匹配：${actual}`);
   }
   const destination = path.join(skillsRoot, skill);

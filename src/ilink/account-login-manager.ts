@@ -13,6 +13,7 @@ type LoginSession = {
   createdAt: number;
   apiBaseUrl: string;
   status: QrStatus;
+  tenantId: string;
   polling?: Promise<LoginPollResult>;
 };
 
@@ -40,14 +41,16 @@ export class AccountLoginManager {
     private readonly bots: BotManager,
   ) {}
 
-  async start(): Promise<{ sessionId: string }> {
+  async start(tenantDatabase: AppDatabase): Promise<{ sessionId: string }> {
     this.purge();
+    const tenantId = tenantDatabase.currentTenantId();
+    if (!tenantId) throw new Error("微信连接必须归属于已登录用户");
     const client = new IlinkClient({
       apiBaseUrl: this.config.ilink.apiBaseUrl,
       appId: this.config.ilink.appId,
       botAgent: this.config.ilink.botAgent,
     });
-    const tokens = this.database.getBotAccounts().map((account) => account.botToken);
+    const tokens = tenantDatabase.getBotAccounts().map((account) => account.botToken);
     const response = await client.fetchQrCode(tokens);
     if (!response.qrcode || !response.qrcode_img_content) throw new Error("iLink 未返回有效二维码");
     const sessionId = crypto.randomUUID();
@@ -58,18 +61,19 @@ export class AccountLoginManager {
       createdAt: Date.now(),
       apiBaseUrl: this.config.ilink.apiBaseUrl,
       status: "wait",
+      tenantId,
     });
     return { sessionId };
   }
 
-  getQrContent(sessionId: string): string | undefined {
+  getQrContent(sessionId: string, tenantId: string): string | undefined {
     const session = this.getFresh(sessionId);
-    return session?.qrContent;
+    return session?.tenantId === tenantId ? session.qrContent : undefined;
   }
 
-  async poll(sessionId: string, verifyCode?: string): Promise<LoginPollResult> {
+  async poll(sessionId: string, tenantId: string, verifyCode?: string): Promise<LoginPollResult> {
     const session = this.getFresh(sessionId);
-    if (!session) {
+    if (!session || session.tenantId !== tenantId) {
       return { status: "expired", message: "登录二维码已过期，请重新开始。", connected: false };
     }
     if (session.polling) return session.polling;
@@ -97,7 +101,7 @@ export class AccountLoginManager {
         this.sessions.delete(session.id);
         return { status: "error", message: "授权成功，但 iLink 没有返回完整凭据。", connected: false };
       }
-      const account = this.database.addBotAccount({
+      const account = this.database.forTenant(session.tenantId).addBotAccount({
         botToken: response.bot_token,
         botId: response.ilink_bot_id,
         baseUrl: validateIlinkUrl(response.baseurl || session.apiBaseUrl),

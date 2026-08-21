@@ -129,6 +129,33 @@ suggestedAction 建议：需要持续求证或形成课题用 research；可直�
     sourceUrl: "https://github.com/aresbit/fetch-skill",
     sourceRevision: "d67a579dd4533386e41b6175e07a70c10b6a0c8e",
   },
+  {
+    slug: "mermaid-visualizer",
+    name: "Mermaid 可视化",
+    description: "Nanobot 原版 Skill：根据内容结构选择流程图、思维导图、时序图、状态图或对比图，并生成兼容 Obsidian 的 Mermaid。",
+    content: `仅在用户明确要求 Mermaid、流程图、时序图、状态图、对比图或可视化时使用原版 Skill。先判断内容是层级、顺序、循环、交互、状态还是对比关系，再选择图表类型；不得把无顺序关系的知识点强行排成流程。生成结果必须通过 Mermaid 语法自检，并以 Markdown 代码块交付。`,
+    kind: "adapter",
+    sourceUrl: "https://github.com/axtonliu/axton-obsidian-visual-skills/tree/main/mermaid-visualizer",
+    sourceRevision: "1265976d9746a84858b4b7b42fb86a215aa93de9",
+  },
+  {
+    slug: "obsidian-canvas-creator",
+    name: "Obsidian Canvas 创建器",
+    description: "Nanobot 原版 Skill：把层级或自由关系内容生成可编辑的 JSON Canvas 文件。",
+    content: `仅在用户明确要求 Obsidian Canvas、可编辑画布或空间化知识图时使用原版 Skill。节点必须有稳定唯一 ID、合理尺寸和无重叠坐标，边只能引用已有节点。普通收件整理不自动生成 Canvas；网页端可从已验证的知识结构确定性导出。`,
+    kind: "adapter",
+    sourceUrl: "https://github.com/axtonliu/axton-obsidian-visual-skills/tree/main/obsidian-canvas-creator",
+    sourceRevision: "1265976d9746a84858b4b7b42fb86a215aa93de9",
+  },
+  {
+    slug: "excalidraw-diagram",
+    name: "Excalidraw 图表生成器",
+    description: "Nanobot 原版 Skill：生成 Obsidian Excalidraw、标准 Excalidraw 或动画图表。",
+    content: `仅在用户明确要求 Excalidraw、手绘图或动画图时使用原版 Skill。默认选择 Obsidian Markdown 格式，保持完整有效 JSON、可读字号和无重叠布局；同时提醒该格式需要 Obsidian Excalidraw 插件。不得在普通收件整理中自动生成大体积 Excalidraw JSON。`,
+    kind: "adapter",
+    sourceUrl: "https://github.com/axtonliu/axton-obsidian-visual-skills/tree/main/excalidraw-diagram",
+    sourceRevision: "1265976d9746a84858b4b7b42fb86a215aa93de9",
+  },
 ];
 
 export function skillSlug(value: string): string {
