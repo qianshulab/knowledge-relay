@@ -93,7 +93,7 @@ describe("收件箱 AI 检索链路", () => {
       autoAckText: "已收到",
       logLevel: "error",
     };
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({
         queries: ["NAS 冷数据归档", "家庭存储"],
         category: "reference",
@@ -126,6 +126,17 @@ describe("收件箱 AI 检索链路", () => {
       interpretation: "查找与 NAS 家庭存储有关的收藏内容",
       matches: [expect.objectContaining({ id: message.id })],
     });
+    const inboxOnlyResponse = await app.inject({
+      method: "POST",
+      url: "/api/inbox/query",
+      headers: { Authorization: `Bearer ${session.token}` },
+      payload: {
+        question: "我之前收藏过哪些和 NAS 存储有关的内容？",
+        filters: { scope: "inbox" },
+      },
+    });
+    expect(inboxOnlyResponse.statusCode).toBe(200);
+    expect(inboxOnlyResponse.json().matches).toEqual([]);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:8902/v1/chat/completions");
 
     await app.close();

@@ -554,6 +554,8 @@ describe("AppDatabase", () => {
       expect.objectContaining({ id: message.id, tools: ["Frida"], domains: ["网络安全"] }),
     ]);
     expect(database.searchInbox("", { tool: "Frida" })[0]?.id).toBe(message.id);
+    expect(database.searchInbox("移动安全", { organized: true })[0]?.id).toBe(message.id);
+    expect(database.searchInbox("移动安全", { organized: false })).toEqual([]);
     expect(database.knowledgeFacets()).toMatchObject({
       total: 1,
       enriched: 1,

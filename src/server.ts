@@ -468,6 +468,12 @@ export function createServer(
     const domain = stringBody(filters.domain, 80);
     const knowledgePoint = stringBody(filters.knowledgePoint, 80);
     const tool = stringBody(filters.tool, 80);
+    const requestedScope = stringBody(filters.scope, 20);
+    const organized = requestedScope === "knowledge"
+      ? true
+      : requestedScope === "inbox"
+        ? false
+        : undefined;
     if (!question && !category && !domain && !knowledgePoint && !tool) {
       return reply.code(400).send({ error: "请输入想查找的内容" });
     }
@@ -503,6 +509,7 @@ export function createServer(
       };
     const baseOptions = {
       limit: 12,
+      organized,
       category,
       domain,
       knowledgePoint,

@@ -221,6 +221,17 @@ DEEPSEEK_API_KEY=
 
 连接检查会验证 Runtime、提供者认证和最小模型请求。完整网页任务还包含正文抓取、脚本执行、图片缓存和内容整理，因此耗时通常更长。任务持续产生新步骤时会继续等待；长时间没有进展才会判定停滞。
 
+#### Kimi Code 与 Moonshot
+
+Kimi Code 会员 API 与 Moonshot 开放平台是两个独立的服务，密钥、接口地址和模型标识不通用。在管理页面使用 Kimi Code 时：
+
+1. 服务商选择“Kimi Code（会员 API）”。
+2. API 地址使用 `https://api.kimi.com/coding/v1`。
+3. 填写在 Kimi Code 控制台创建的 `sk-kimi-` 密钥。
+4. 从在线列表选择当前账户可用的模型；基础会员可先使用 `kimi-for-coding`。
+
+知流会把该配置写入 Nanobot 原生 `kimi_coding` 提供者，整理、检索和 Skills 均继续由 Nanobot Runtime 执行。其他 OpenAI 兼容服务可选择“自定义 OpenAI 兼容接口”，填写对应的 HTTPS 地址、模型标识和密钥。
+
 #### OpenAI 账户授权
 
 Docker 环境需要从部署终端启动 Nanobot 的账户授权流程：

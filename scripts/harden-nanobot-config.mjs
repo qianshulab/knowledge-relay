@@ -28,6 +28,27 @@ config.agents ||= {};
 config.agents.defaults ||= {};
 config.providers ||= {};
 config.providers.deepseek ||= {};
+
+// Kimi Code and Moonshot Platform use different credentials and endpoints.
+// Releases before 1.9.1 exposed only the Moonshot entry, so migrate an
+// unmistakable Kimi Code configuration to Nanobot's native kimi_coding
+// provider during startup. The old key is removed from the wrong provider.
+const moonshot = config.providers.moonshot;
+const moonshotBase = String(moonshot?.apiBase || "").trim();
+const moonshotKey = String(moonshot?.apiKey || "").trim();
+const isLegacyKimiCoding = config.agents.defaults.provider === "moonshot"
+  && (moonshotKey.startsWith("sk-kimi-") || /^https:\/\/api\.kimi\.com\/coding(?:\/|$)/i.test(moonshotBase));
+if (isLegacyKimiCoding) {
+  config.providers.kimiCoding ||= {};
+  config.providers.kimiCoding.apiBase = moonshotBase || "https://api.kimi.com/coding/v1";
+  config.providers.kimiCoding.apiKey = moonshotKey || config.providers.kimiCoding.apiKey || null;
+  config.agents.defaults.provider = "kimi_coding";
+  if (!["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"].includes(config.agents.defaults.model)) {
+    config.agents.defaults.model = "kimi-for-coding";
+  }
+  delete moonshot.apiBase;
+  delete moonshot.apiKey;
+}
 const configuredDeepseekKey = String(process.env.DEEPSEEK_API_KEY || "").trim();
 if (
   config.providers.deepseek.apiKey === "${DEEPSEEK_API_KEY}"

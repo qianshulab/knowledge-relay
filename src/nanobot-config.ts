@@ -32,7 +32,8 @@ export const NANOBOT_PROVIDERS: NanobotProviderDefinition[] = [
   { id: "openrouter", configKey: "openrouter", name: "OpenRouter", defaultModel: "openai/gpt-5.4", defaultBaseUrl: "https://openrouter.ai/api/v1", auth: "api_key" },
   { id: "gemini", configKey: "gemini", name: "Google Gemini", defaultModel: "gemini-2.5-pro", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/", auth: "api_key" },
   { id: "dashscope", configKey: "dashscope", name: "阿里云百炼", defaultModel: "qwen-max", defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", auth: "api_key" },
-  { id: "moonshot", configKey: "moonshot", name: "Moonshot / Kimi", defaultModel: "kimi-k2.5", defaultBaseUrl: "https://api.moonshot.ai/v1", auth: "api_key" },
+  { id: "kimi_coding", configKey: "kimiCoding", name: "Kimi Code（会员 API）", defaultModel: "kimi-for-coding", defaultBaseUrl: "https://api.kimi.com/coding/v1", auth: "api_key" },
+  { id: "moonshot", configKey: "moonshot", name: "Moonshot 开放平台", defaultModel: "kimi-k2.5", defaultBaseUrl: "https://api.moonshot.ai/v1", auth: "api_key" },
   { id: "zhipu", configKey: "zhipu", name: "智谱 AI", defaultModel: "glm-4.5", defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4", auth: "api_key" },
   { id: "siliconflow", configKey: "siliconflow", name: "硅基流动", defaultModel: "deepseek-ai/DeepSeek-V3", defaultBaseUrl: "https://api.siliconflow.cn/v1", auth: "api_key" },
   { id: "groq", configKey: "groq", name: "Groq", defaultModel: "openai/gpt-oss-120b", defaultBaseUrl: "https://api.groq.com/openai/v1", auth: "api_key" },
@@ -68,6 +69,13 @@ function validateProviderBaseUrl(provider: NanobotProviderDefinition, value: str
   }
   if (url.protocol === "http:" && provider.auth !== "local") {
     throw new Error("在线模型提供者必须使用 HTTPS");
+  }
+  if (provider.id === "kimi_coding"
+    && (url.hostname !== "api.kimi.com" || !url.pathname.startsWith("/coding"))) {
+    throw new Error("Kimi Code 请使用 https://api.kimi.com/coding/v1；其他 OpenAI 兼容网关请选择自定义接口");
+  }
+  if (provider.id === "moonshot" && url.hostname === "api.kimi.com") {
+    throw new Error("Kimi Code 与 Moonshot 开放平台的账号体系不通用，请选择“Kimi Code（会员 API）”");
   }
   return url.toString();
 }
@@ -150,6 +158,9 @@ export async function saveNanobotProviderSettings(
   const nextKey = input.clearApiKey ? null : input.apiKey?.trim() || providerConfig.apiKey || null;
   if (definition.auth === "api_key" && !configuredSecret(nextKey)) {
     throw new Error("这个模型提供者需要 API Key");
+  }
+  if (definition.id === "moonshot" && typeof nextKey === "string" && nextKey.startsWith("sk-kimi-")) {
+    throw new Error("sk-kimi- 密钥属于 Kimi Code，请选择“Kimi Code（会员 API）”");
   }
   defaults.provider = definition.id;
   defaults.modelPreset = null;

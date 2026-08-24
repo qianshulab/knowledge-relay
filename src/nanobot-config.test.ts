@@ -54,6 +54,15 @@ describe("Nanobot provider configuration", () => {
     expect(settings.active).toMatchObject({ provider: "deepseek", model: "deepseek-chat", apiKeyConfigured: false });
     expect(JSON.stringify(settings)).not.toContain("DEEPSEEK_API_KEY");
     expect(settings.providers.some((item) => item.id === "openai_codex" && item.auth === "oauth")).toBe(true);
+    expect(settings.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "kimi_coding",
+        name: "Kimi Code（会员 API）",
+        defaultModel: "kimi-for-coding",
+        defaultBaseUrl: "https://api.kimi.com/coding/v1",
+      }),
+      expect.objectContaining({ id: "moonshot", name: "Moonshot 开放平台" }),
+    ]));
   });
 
   it("只在 Nanobot 配置中存在真实凭据时显示已配置", async () => {
@@ -87,6 +96,33 @@ describe("Nanobot provider configuration", () => {
       apiBase: "http://example.com/v1",
       apiKey: "test-key-not-real",
     })).rejects.toThrow("必须使用 HTTPS");
+  });
+
+  it("将 Kimi Code 保存到 Nanobot 原生 kimi_coding 提供者", async () => {
+    const config = await fixture();
+    await saveNanobotProviderSettings(config, {
+      provider: "kimi_coding",
+      model: "kimi-for-coding",
+      apiBase: "https://api.kimi.com/coding/v1",
+      apiKey: "sk-kimi-test",
+    });
+    const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    expect(raw.agents.defaults).toMatchObject({ provider: "kimi_coding", model: "kimi-for-coding" });
+    expect(raw.providers.kimiCoding).toEqual({
+      apiKey: "sk-kimi-test",
+      apiBase: "https://api.kimi.com/coding/v1",
+    });
+    expect(raw.providers.moonshot).toBeUndefined();
+  });
+
+  it("拒绝把 Kimi Code 凭据误存到 Moonshot 开放平台", async () => {
+    const config = await fixture();
+    await expect(saveNanobotProviderSettings(config, {
+      provider: "moonshot",
+      model: "kimi-k2.5",
+      apiBase: "https://api.moonshot.ai/v1",
+      apiKey: "sk-kimi-test",
+    })).rejects.toThrow("属于 Kimi Code");
   });
 
   it("通过 Nanobot 内部目录读取实时模型且不接触提供者密钥", async () => {
@@ -139,5 +175,33 @@ describe("Nanobot provider configuration", () => {
     ]));
     expect(raw.agents.defaults.provider).toBe("deepseek");
     expect(raw.providers.deepseek.apiKey).toBe("__KNOWLEDGE_RELAY_PROVIDER_NOT_CONFIGURED__");
+  });
+
+  it("启动时把旧版 Moonshot 中的 Kimi Code 配置迁移到原生提供者", async () => {
+    const config = await fixture();
+    const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    raw.agents.defaults.provider = "moonshot";
+    raw.agents.defaults.model = "kimi-k2.5";
+    raw.providers.moonshot = {
+      apiKey: "sk-kimi-legacy",
+      apiBase: "https://api.kimi.com/coding/v1",
+    };
+    await fs.writeFile(config.nanobot.configPath, JSON.stringify(raw));
+
+    await execFileAsync(process.execPath, [
+      path.resolve("scripts/harden-nanobot-config.mjs"),
+      config.nanobot.configPath,
+    ], { env: { ...process.env, DEEPSEEK_API_KEY: "" } });
+
+    const migrated = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    expect(migrated.agents.defaults).toMatchObject({
+      provider: "kimi_coding",
+      model: "kimi-for-coding",
+    });
+    expect(migrated.providers.kimiCoding).toMatchObject({
+      apiKey: "sk-kimi-legacy",
+      apiBase: "https://api.kimi.com/coding/v1",
+    });
+    expect(migrated.providers.moonshot).toEqual({});
   });
 });

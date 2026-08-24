@@ -270,6 +270,7 @@ export type MessageListOptions = {
 
 export type InboxSearchOptions = {
   limit?: number;
+  organized?: boolean;
   category?: string;
   domain?: string;
   knowledgePoint?: string;
@@ -2086,6 +2087,8 @@ export class AppDatabase {
       where.push("message_search.all_text LIKE ? ESCAPE '\\'");
       values.push(likeValue(term));
     }
+    if (options.organized === true) where.push("m.agent_status='completed'");
+    if (options.organized === false) where.push("m.agent_status<>'completed'");
     if (options.category) {
       where.push("m.category=?");
       values.push(options.category);
