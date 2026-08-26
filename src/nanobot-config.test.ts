@@ -98,6 +98,20 @@ describe("Nanobot provider configuration", () => {
     })).rejects.toThrow("必须使用 HTTPS");
   });
 
+  it("允许无密钥或带密钥的本地 OpenAI 兼容接口", async () => {
+    const config = await fixture();
+    await saveNanobotProviderSettings(config, {
+      provider: "custom",
+      model: "local-model",
+      apiBase: "http://192.168.100.141:8000/v1",
+    });
+    const raw = JSON.parse(await fs.readFile(config.nanobot.configPath, "utf8"));
+    expect(raw.agents.defaults).toMatchObject({ provider: "custom", model: "local-model" });
+    expect(raw.providers.custom).toEqual({ apiKey: null, apiBase: "http://192.168.100.141:8000/v1" });
+    const settings = await getNanobotProviderSettings(config);
+    expect(settings.active).toMatchObject({ provider: "custom", apiKeyConfigured: false, auth: "optional_key" });
+  });
+
   it("将 Kimi Code 保存到 Nanobot 原生 kimi_coding 提供者", async () => {
     const config = await fixture();
     await saveNanobotProviderSettings(config, {

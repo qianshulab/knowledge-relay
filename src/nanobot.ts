@@ -57,6 +57,61 @@ function stripFence(value: string): string {
   return fenced?.[1]?.trim() || trimmed;
 }
 
+export class NanobotOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NanobotOutputError";
+  }
+}
+
+function parsedObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Providers do not all obey the "JSON only" instruction equally. Accept a
+ * valid object wrapped in a Markdown fence or bounded explanatory text, while
+ * still rejecting fragments and arrays instead of guessing their meaning.
+ */
+function parseModelObject(value: string, purpose: string): Record<string, unknown> {
+  const normalized = stripFence(value);
+  const direct = parsedObject(normalized);
+  if (direct) return direct;
+
+  for (let start = normalized.indexOf("{"); start >= 0; start = normalized.indexOf("{", start + 1)) {
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let index = start; index < normalized.length; index += 1) {
+      const character = normalized[index]!;
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = parsedObject(normalized.slice(start, index + 1));
+          if (candidate) return candidate;
+          break;
+        }
+      }
+    }
+  }
+  throw new NanobotOutputError(`模型返回的${purpose}格式不完整，未找到有效 JSON 对象`);
+}
+
 function safeProviderError(status: number, raw: string): Error {
   let message = raw;
   try {
@@ -117,7 +172,16 @@ export class NanobotClient {
   async health(
     settings: AgentSettings,
     context: { tenantId?: string } = {},
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{
+    ok: boolean;
+    stage: "runtime" | "model" | "complete";
+    elapsedMs: number;
+    runtimeMs?: number;
+    modelMs?: number;
+    error?: string;
+  }> {
+    const startedAt = Date.now();
+    let runtimeMs: number | undefined;
     let stage: "runtime" | "model" = "runtime";
     try {
       const baseUrl = validatedBaseUrl(settings.baseUrl);
@@ -130,10 +194,18 @@ export class NanobotClient {
         headers,
         signal: AbortSignal.timeout(Math.min(this.config.nanobot.timeoutMs, 10_000)),
       });
+      runtimeMs = Date.now() - startedAt;
       if (!runtimeHealth.ok) {
-        return { ok: false, error: `Nanobot 健康检查返回 HTTP ${runtimeHealth.status}` };
+        return {
+          ok: false,
+          stage: "runtime",
+          elapsedMs: Date.now() - startedAt,
+          runtimeMs,
+          error: `Nanobot 健康检查返回 HTTP ${runtimeHealth.status}`,
+        };
       }
       stage = "model";
+      const modelStartedAt = Date.now();
       const completionTimeoutMs = Math.min(this.config.nanobot.timeoutMs, 120_000);
       const response = await fetch(new URL("chat/completions", baseUrl), {
         method: "POST",
@@ -148,9 +220,58 @@ export class NanobotClient {
         signal: AbortSignal.timeout(completionTimeoutMs),
       });
       const raw = await response.text();
-      return response.ok
-        ? { ok: true }
-        : { ok: false, error: `HTTP ${response.status}: ${raw.slice(0, 200)}` };
+      const modelMs = Date.now() - modelStartedAt;
+      if (!response.ok) {
+        return {
+          ok: false,
+          stage: "model",
+          elapsedMs: Date.now() - startedAt,
+          runtimeMs,
+          modelMs,
+          error: safeProviderError(response.status, raw).message,
+        };
+      }
+      let content: unknown;
+      try {
+        const completion = JSON.parse(raw) as ChatCompletionResponse;
+        content = completion.choices?.[0]?.message?.content;
+      } catch {
+        return {
+          ok: false,
+          stage: "model",
+          elapsedMs: Date.now() - startedAt,
+          runtimeMs,
+          modelMs,
+          error: "Nanobot Runtime 返回了无效的模型响应",
+        };
+      }
+      if (typeof content !== "string" || !content.trim()) {
+        return {
+          ok: false,
+          stage: "model",
+          elapsedMs: Date.now() - startedAt,
+          runtimeMs,
+          modelMs,
+          error: "模型连接成功，但没有返回文本结果",
+        };
+      }
+      if (/^\s*(?:error|错误|失败)\s*[:：]/i.test(content)) {
+        return {
+          ok: false,
+          stage: "model",
+          elapsedMs: Date.now() - startedAt,
+          runtimeMs,
+          modelMs,
+          error: content.replace(/[\r\n\t]+/g, " ").slice(0, 240),
+        };
+      }
+      return {
+        ok: true,
+        stage: "complete",
+        elapsedMs: Date.now() - startedAt,
+        runtimeMs,
+        modelMs,
+      };
     } catch (error) {
       if (isTimeoutError(error)) {
         const seconds = stage === "runtime"
@@ -158,12 +279,21 @@ export class NanobotClient {
           : Math.ceil(Math.min(this.config.nanobot.timeoutMs, 120_000) / 1_000);
         return {
           ok: false,
+          stage,
+          elapsedMs: Date.now() - startedAt,
+          ...(runtimeMs !== undefined ? { runtimeMs } : {}),
           error: stage === "runtime"
             ? `Nanobot Runtime 在 ${seconds} 秒内没有响应`
             : `模型在 ${seconds} 秒内没有完成连接测试，请检查模型服务网络与运行日志`,
         };
       }
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return {
+        ok: false,
+        stage,
+        elapsedMs: Date.now() - startedAt,
+        ...(runtimeMs !== undefined ? { runtimeMs } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -220,7 +350,7 @@ export class NanobotClient {
     if (/^\s*error\s*:/i.test(content)) {
       throw new Error("Nanobot 模型暂时不可用，已切换本地检索");
     }
-    const parsed = JSON.parse(stripFence(content)) as Record<string, unknown>;
+    const parsed = parseModelObject(content, "检索计划");
     const strings = (value: unknown, limit: number): string[] => Array.isArray(value)
       ? value
         .filter((item): item is string => typeof item === "string")
@@ -355,7 +485,7 @@ export class NanobotClient {
     const completion = JSON.parse(raw) as ChatCompletionResponse;
     const content = completion.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Nanobot 未返回智能图解结构");
-    const parsed = JSON.parse(stripFence(content)) as Record<string, unknown>;
+    const parsed = parseModelObject(content, "智能图解");
     const allowedDiagramTypes = new Set<KnowledgeDiagramType>([
       "mindmap", "relationship", "flow", "timeline", "comparison", "sequence", "state",
     ]);
@@ -629,7 +759,7 @@ export class NanobotClient {
     const result = JSON.parse(raw) as ChatCompletionResponse;
     const content = result.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Nanobot 未返回文本结果");
-    const parsed = JSON.parse(stripFence(content)) as Record<string, unknown>;
+    const parsed = parseModelObject(content, "整理结果");
     const derivedDocuments = await this.readDerivedDocuments(
       parsed.derived_files,
       artifactRoot,

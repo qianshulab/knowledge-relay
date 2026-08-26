@@ -44,7 +44,7 @@ def provider_is_configured(config_path: Path, provider: str) -> bool:
     config_key = PROVIDER_CONFIG_KEYS.get(provider, provider)
     api_key = raw.get("providers", {}).get(config_key, {}).get("apiKey")
     if not isinstance(api_key, str):
-        return provider in {"ollama", "vllm", "openai_codex"}
+        return provider in {"custom", "ollama", "vllm", "openai_codex"}
     value = resolve_secret(api_key)
     return bool(value and value != UNCONFIGURED_PROVIDER_KEY and not value.startswith("${"))
 
@@ -65,7 +65,10 @@ def kimi_coding_models_payload(config_path: Path) -> dict:
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "Knowledge-Relay-Nanobot/1.9",
+            # Keep the same provider identity as Nanobot's native Kimi Coding
+            # runtime. The Coding Plan endpoint requires this compatibility
+            # header for both inference and catalog requests.
+            "User-Agent": "claude-code/0.1.0",
         },
     )
     base_payload = {

@@ -127,8 +127,8 @@ describe("BotManager interrupted work recovery", () => {
       manager,
       [new Error("Nanobot 智能整理任务处理超时：900 秒内未完成")],
     ) as { message: string };
-    expect(timeoutAlert.message).toContain("智能整理任务处理超时");
-    expect(timeoutAlert.message).toContain("基础模型连接可能仍然正常");
+    expect(timeoutAlert.message).toContain("长时间没有新的处理进展");
+    expect(timeoutAlert.message).toContain("已保留原始内容");
     const ingestion = Reflect.apply(
       Reflect.get(manager, "ingestionFor") as (...args: unknown[]) => unknown,
       manager,

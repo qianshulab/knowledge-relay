@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import fastifyStatic from "@fastify/static";
 import QRCode from "qrcode";
 
 import type { BotManager } from "./bot-manager.js";
@@ -24,7 +25,7 @@ import {
   resolvePluginRelease,
 } from "./plugin-release.js";
 import type { AppDatabase, ContentFormat, InboxSearchResult, KnowledgeMap, OwnerProfile } from "./storage/database.js";
-import { adminPage, adminUiVersion } from "./ui.js";
+import { adminUiVersion, loadWebIndex, webRoot } from "./web-ui.js";
 
 type OwnerRequest = FastifyRequest & {
   owner?: OwnerProfile;
@@ -125,6 +126,15 @@ export function createServer(
   let pluginPublishInProgress = false;
   const diagramGenerations = new Map<string, Promise<KnowledgeMap>>();
 
+  void app.register(fastifyStatic, {
+    root: webRoot,
+    prefix: "/app/",
+    decorateReply: false,
+    cacheControl: true,
+    maxAge: "1h",
+    immutable: false,
+  });
+
   for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed"]) {
     app.addContentTypeParser(contentType, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
   }
@@ -138,7 +148,7 @@ export function createServer(
     if (!reply.hasHeader("Content-Security-Policy")) {
       reply.header(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       );
     }
     return payload;
@@ -155,6 +165,7 @@ export function createServer(
     }
     if (
       url === "/" ||
+      url.startsWith("/app/") ||
       url === "/health" ||
       url === "/api/bootstrap" ||
       url === "/api/setup" ||
@@ -177,7 +188,7 @@ export function createServer(
   app.get("/", async (_request, reply) => reply
     .header("Cache-Control", "no-store, max-age=0")
     .type("text/html; charset=utf-8")
-    .send(adminPage));
+    .send(await loadWebIndex()));
   app.get("/health", async (_request, reply) => {
     const databaseHealthy = database.healthCheck();
     return reply.code(databaseHealthy ? 200 : 503).send({
@@ -738,9 +749,15 @@ export function createServer(
 
   app.post("/api/agent/test", async (request) => {
     const scoped = tenantDatabase(request);
-    return nanobot.health(scoped.getAgentSettings(config.nanobot), {
+    const provider = await getNanobotProviderSettings(config);
+    const result = await nanobot.health(scoped.getAgentSettings(config.nanobot), {
       tenantId: scoped.currentTenantId(),
     });
+    return {
+      ...result,
+      provider: provider.active.provider,
+      model: provider.active.model,
+    };
   });
 
   app.get("/api/nanobot/provider", async (request, reply) => {

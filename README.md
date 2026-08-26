@@ -118,9 +118,9 @@ curl --fail http://127.0.0.1:8787/health
 
 ### 4. 完成初始化
 
-1. 在“系统设置 → AI 智能整理”配置模型提供者并检查连接。
-2. 在“系统设置 → Nanobot Skills”确认所需 Skills 已启用。
-3. 在“系统设置 → 微信接入”扫描二维码连接 iLink Bot。
+1. 在“系统设置 → AI 智能整理”配置模型提供者，刷新模型列表并执行真实连接检查。
+2. 在“系统设置 → 整理能力”确认所需 Skills 已启用。
+3. 在“系统设置 → 收件接入”扫描二维码连接 iLink Bot，或创建开放 API 令牌。
 4. 发送一条文字和一条网页链接，确认收件、解析与整理状态。
 5. 按需配置 API 收件、成员邀请和 Obsidian 同步。
 
@@ -219,7 +219,9 @@ cd knowledge-relay
 DEEPSEEK_API_KEY=
 ```
 
-连接检查会验证 Runtime、提供者认证和最小模型请求。完整网页任务还包含正文抓取、脚本执行、图片缓存和内容整理，因此耗时通常更长。任务持续产生新步骤时会继续等待；长时间没有进展才会判定停滞。
+保存配置后，可以先“刷新模型列表”核对服务端实际开放的模型，再使用“保存并检查连接”执行真实的最小模型请求。检查结果会分别显示 Nanobot Runtime 与模型响应阶段；不提供模型目录的兼容服务仍可手动填写准确的模型 ID。
+
+完整网页任务还包含正文抓取、脚本执行、图片缓存和内容整理，因此耗时通常更长。任务持续产生新步骤时会继续等待；长时间没有进展才会判定停滞。模型返回了非标准 JSON、网页正文没有完整提取、认证失败或额度受限时，页面和微信提醒会显示对应原因。
 
 #### Kimi Code 与 Moonshot
 
@@ -230,7 +232,7 @@ Kimi Code 会员 API 与 Moonshot 开放平台是两个独立的服务，密钥�
 3. 填写在 Kimi Code 控制台创建的 `sk-kimi-` 密钥。
 4. 从在线列表选择当前账户可用的模型；基础会员可先使用 `kimi-for-coding`。
 
-知流会把该配置写入 Nanobot 原生 `kimi_coding` 提供者，整理、检索和 Skills 均继续由 Nanobot Runtime 执行。其他 OpenAI 兼容服务可选择“自定义 OpenAI 兼容接口”，填写对应的 HTTPS 地址、模型标识和密钥。
+知流会把该配置写入 Nanobot 原生 `kimi_coding` 提供者，整理、检索和 Skills 均继续由 Nanobot Runtime 执行。其他 OpenAI 兼容服务可选择“自定义 OpenAI 兼容接口”，填写对应的 API 地址、模型标识及服务要求的密钥；无需鉴权的接口可以留空。本机、Docker 服务名或局域网私有地址可使用 HTTP，公网接口必须使用 HTTPS。
 
 #### OpenAI 账户授权
 
@@ -356,6 +358,14 @@ docker compose restart nanobot
 cd /你的部署目录/knowledge-relay
 git pull --ff-only
 ./scripts/update-docker.sh <目标版本号>
+```
+
+例如升级到当前版本：
+
+```bash
+cd /你的部署目录/knowledge-relay
+git pull --ff-only
+./scripts/update-docker.sh 1.9.2
 ```
 
 升级脚本会先备份应用数据、Nanobot volume 和 `.env`，再拉取镜像、重建容器并执行健康检查。升级过程中不需要手动执行 `docker compose down`。

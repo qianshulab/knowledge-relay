@@ -161,7 +161,7 @@ export class IngestionService {
 
   private isRetryable(error: unknown): boolean {
     const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error);
-    return /timeout|abort|fetch failed|socket|ECONN|ENET|EAI_AGAIN|HTTP (408|425|429|5\d\d)|temporar|rate.?limit|网页解析|未生成 Markdown 产物/i.test(detail);
+    return /timeout|abort|fetch failed|socket|ECONN|ENET|EAI_AGAIN|HTTP (408|425|429|5\d\d)|temporar|rate.?limit|网页解析|未生成 Markdown 产物|NanobotOutputError|模型返回的.+格式不完整|未返回文本结果/i.test(detail);
   }
 
   private async completeWithRetry(

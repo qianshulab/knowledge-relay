@@ -163,8 +163,14 @@ export class BotManager {
     if (/HTTP 429|quota|rate.?limit|余额|额度/i.test(detail)) {
       return { fingerprint: "quota", message: "知流提醒：AI 模型额度不足或调用受限，本条已按原始内容保存。" };
     }
+    if (/NanobotOutputError|格式不完整|无效 JSON|未返回文本结果/i.test(detail)) {
+      return { fingerprint: "output", message: "知流提醒：模型已响应，但整理结果格式不完整。本条已保留原始内容，可稍后重新整理。" };
+    }
+    if (/网页解析|未生成 Markdown 产物|正文提取/i.test(detail)) {
+      return { fingerprint: "extraction", message: "知流提醒：模型服务可以使用，但本条网页正文没有完整提取。原始链接已保存，可稍后重新整理。" };
+    }
     if (/timeout|超时|abort/i.test(detail)) {
-      return { fingerprint: "timeout", message: "知流提醒：本条智能整理任务处理超时，已按原始内容保存。基础模型连接可能仍然正常，请稍后重试或检查相关 Skill。" };
+      return { fingerprint: "timeout", message: "知流提醒：本条智能整理任务长时间没有新的处理进展，已保留原始内容。请稍后重新整理。" };
     }
     if (/model/i.test(detail)) {
       return { fingerprint: "model", message: "知流提醒：配置的 AI 模型当前不可用，本条已按原始内容保存。" };

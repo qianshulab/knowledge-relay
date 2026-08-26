@@ -13,7 +13,7 @@ export type NanobotProviderDefinition = {
   name: string;
   defaultModel: string;
   defaultBaseUrl?: string;
-  auth: "api_key" | "local" | "oauth";
+  auth: "api_key" | "optional_key" | "local" | "oauth";
 };
 
 export type NanobotModelOption = {
@@ -38,9 +38,9 @@ export const NANOBOT_PROVIDERS: NanobotProviderDefinition[] = [
   { id: "siliconflow", configKey: "siliconflow", name: "硅基流动", defaultModel: "deepseek-ai/DeepSeek-V3", defaultBaseUrl: "https://api.siliconflow.cn/v1", auth: "api_key" },
   { id: "groq", configKey: "groq", name: "Groq", defaultModel: "openai/gpt-oss-120b", defaultBaseUrl: "https://api.groq.com/openai/v1", auth: "api_key" },
   { id: "qianfan", configKey: "qianfan", name: "百度千帆", defaultModel: "ernie-4.5", defaultBaseUrl: "https://qianfan.baidubce.com/v2", auth: "api_key" },
-  { id: "custom", configKey: "custom", name: "自定义 OpenAI 兼容接口", defaultModel: "", auth: "api_key" },
-  { id: "ollama", configKey: "ollama", name: "Ollama（本地）", defaultModel: "llama3.2", defaultBaseUrl: "http://localhost:11434/v1", auth: "local" },
-  { id: "vllm", configKey: "vllm", name: "vLLM（本地）", defaultModel: "", auth: "local" },
+  { id: "custom", configKey: "custom", name: "自定义 OpenAI 兼容接口", defaultModel: "", auth: "optional_key" },
+  { id: "ollama", configKey: "ollama", name: "Ollama（本地）", defaultModel: "llama3.2", defaultBaseUrl: "http://localhost:11434/v1", auth: "optional_key" },
+  { id: "vllm", configKey: "vllm", name: "vLLM / LM Studio（本地）", defaultModel: "", auth: "optional_key" },
 ];
 
 function record(value: unknown): JsonObject {
@@ -67,8 +67,16 @@ function validateProviderBaseUrl(provider: NanobotProviderDefinition, value: str
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
     throw new Error("模型 API 地址必须是有效的 HTTP/HTTPS 地址且不能包含账号密码");
   }
-  if (url.protocol === "http:" && provider.auth !== "local") {
-    throw new Error("在线模型提供者必须使用 HTTPS");
+  const localOrPrivateHost = url.hostname === "localhost"
+    || url.hostname === "127.0.0.1"
+    || url.hostname === "::1"
+    || url.hostname === "host.docker.internal"
+    || !url.hostname.includes(".")
+    || /^10\./.test(url.hostname)
+    || /^192\.168\./.test(url.hostname)
+    || /^172\.(?:1[6-9]|2\d|3[01])\./.test(url.hostname);
+  if (url.protocol === "http:" && !(provider.auth === "local" || (provider.auth === "optional_key" && localOrPrivateHost))) {
+    throw new Error("在线模型提供者必须使用 HTTPS；本地兼容接口可使用局域网 HTTP 地址");
   }
   if (provider.id === "kimi_coding"
     && (url.hostname !== "api.kimi.com" || !url.pathname.startsWith("/coding"))) {

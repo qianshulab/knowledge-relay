@@ -4,6 +4,7 @@ COPY package*.json ./
 RUN npm ci && node -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&minor<13))throw new Error('Node.js 22.13+ required')"
 COPY tsconfig.json ./
 COPY src ./src
+COPY frontend ./frontend
 COPY scripts ./scripts
 COPY obsidian-plugin ./obsidian-plugin
 RUN npm run build && npm run package:plugin && npm prune --omit=dev
@@ -14,6 +15,7 @@ ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/app/data NANOBOT_MANAGED=false
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/web-dist ./web-dist
 COPY --from=build /app/release ./release
 COPY --from=build /app/scripts ./scripts
 RUN apk add --no-cache su-exec \

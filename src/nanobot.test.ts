@@ -149,6 +149,49 @@ describe("NanobotClient", () => {
     expect(body.messages[0].content).toContain("这不是明确的可视化请求");
   });
 
+  it("兼容模型在 JSON 结果前后附加说明文字或 Markdown 围栏", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: [
+            "已按要求完成整理：",
+            "```json",
+            JSON.stringify({
+              title: "兼容不同模型输出",
+              category: "reference",
+              summary: "即使模型附加说明，仍提取完整的结构化整理结果。",
+              tags: ["模型兼容"],
+            }),
+            "```",
+            "以上为最终结果。",
+          ].join("\n"),
+        },
+      }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient(config);
+    const result = await client.process({
+      id: "wrapped-json",
+      senderId: "sender",
+      botId: "bot",
+      receivedAt: new Date().toISOString(),
+      text: "测试不同模型的输出格式",
+      attachments: [],
+    }, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    });
+    expect(result.note).toMatchObject({
+      title: "兼容不同模型输出",
+      category: "reference",
+    });
+    expect(result.note.tags).toContain("模型兼容");
+  });
+
   it("明确的 Canvas 请求会路由原版可视化 Skill 并约束产物目录", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ title: "知识画布", tags: [] }) } }],
@@ -418,16 +461,17 @@ describe("NanobotClient", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
     const client = new NanobotClient(config);
-    await expect(
-      client.health({
-        enabled: true,
-        baseUrl: config.nanobot.baseUrl,
-        model: "",
-        instructions: "",
-        autoReply: false,
-        notifyOnFailure: true,
-      }),
-    ).resolves.toEqual({ ok: true });
+    const result = await client.health({
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    });
+    expect(result).toMatchObject({ ok: true, stage: "complete" });
+    expect(result.runtimeMs).toBeTypeOf("number");
+    expect(result.modelMs).toBeTypeOf("number");
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/health");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/v1/chat/completions");
     expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe("POST");
@@ -454,8 +498,9 @@ describe("NanobotClient", () => {
       instructions: "",
       autoReply: false,
       notifyOnFailure: true,
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       ok: false,
+      stage: "model",
       error: "模型在 120 秒内没有完成连接测试，请检查模型服务网络与运行日志",
     });
   });
