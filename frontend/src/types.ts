@@ -73,6 +73,12 @@ export type MessageDetail = MessageItem & {
 export type Dashboard = {
   messages: number;
   pending: number;
+  queued: number;
+  activeProcessing: number;
+  organized: number;
+  fallback: number;
+  pendingSync: number;
+  agentEnabled: boolean;
   accounts: BotAccount[];
   syncTargets: SyncTarget[];
   [key: string]: unknown;
@@ -84,6 +90,7 @@ export type BotAccount = {
   ownerUserId: string;
   connectedAt: string;
   state: string;
+  lastPollAt?: string;
   lastMessageAt?: string;
   lastError?: string;
 };

@@ -177,6 +177,7 @@ kbd { border: 1px solid var(--border-strong); background: var(--surface); paddin
 .status-list > div { display: flex; justify-content: space-between; gap: 15px; padding: 17px 0; border-bottom: 1px solid var(--border); }
 .status-list span { color: var(--text-muted); }.status-list strong { text-align: right; font-size: 14px; }
 .text-link { border: 0; padding: 0; color: var(--primary); background: transparent; display: inline-flex; align-items: center; gap: 5px; font-weight: 650; cursor: pointer; }
+.status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
 .content-section { padding: 24px; }
 .section-heading { margin-bottom: 18px; }
 .section-heading h2 { font-size: 25px; }

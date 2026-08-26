@@ -266,6 +266,23 @@ export type MessageListOptions = {
   category?: string;
   domain?: string;
   organized?: boolean;
+  query?: string;
+};
+
+export type DashboardStats = {
+  messages: number;
+  organized: number;
+  pending: number;
+  queued: number;
+  activeProcessing: number;
+  libraryItems: number;
+  favorites: number;
+  processing: number;
+  fallback: number;
+  pendingSync: number;
+  archivedEvents: number;
+  latestEvent: number;
+  botAccounts: number;
 };
 
 export type InboxSearchOptions = {
@@ -2002,6 +2019,20 @@ export class AppDatabase {
       values.push(options.domain);
     }
     if (options.organized) where.push("m.agent_status='completed'");
+    const query = options.query?.trim().slice(0, 200);
+    if (query) {
+      const searchableColumns = [
+        "m.note_title",
+        "m.summary",
+        "m.text",
+        "m.tags_json",
+        "m.domains_json",
+        "m.knowledge_points_json",
+        "m.tools_json",
+      ];
+      where.push(`(${searchableColumns.map((column) => `INSTR(LOWER(COALESCE(${column},'')),LOWER(?))>0`).join(" OR ")})`);
+      values.push(...searchableColumns.map(() => query));
+    }
     return { clause: where.join(" AND "), values };
   }
 
@@ -2489,49 +2520,53 @@ export class AppDatabase {
       : undefined;
   }
 
-  dashboard(): Record<string, number> {
+  dashboard(): DashboardStats {
     const ownerId = this.requireOwnerId();
-    const messageCount = rowNumber(
-      this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=?", ownerId),
-      "count",
+    const messageStats = this.one(
+      `SELECT COUNT(*) AS messages,
+        COALESCE(SUM(CASE WHEN agent_status='completed' THEN 1 ELSE 0 END),0) AS organized,
+        COALESCE(SUM(CASE WHEN agent_status IN ('pending','processing') THEN 1 ELSE 0 END),0) AS pending,
+        COALESCE(SUM(CASE WHEN agent_status='pending' THEN 1 ELSE 0 END),0) AS queued,
+        COALESCE(SUM(CASE WHEN agent_status='processing' THEN 1 ELSE 0 END),0) AS active_processing,
+        COALESCE(SUM(CASE WHEN library_state='library' THEN 1 ELSE 0 END),0) AS library_items,
+        COALESCE(SUM(CASE WHEN is_favorite=1 THEN 1 ELSE 0 END),0) AS favorites,
+        COALESCE(SUM(CASE WHEN agent_status IN ('fallback','failed') THEN 1 ELSE 0 END),0) AS fallback
+       FROM messages WHERE tenant_id=?`,
+      ownerId,
     );
     const eventMax = rowNumber(
       this.one("SELECT COALESCE(MAX(seq),0) AS value FROM sync_events WHERE tenant_id=?", ownerId),
       "value",
     );
-    const primaryAck = rowNumber(
-      this.one(
-        "SELECT COALESCE(MAX(last_ack_seq),0) AS value FROM sync_targets WHERE tenant_id=? AND is_primary=1 AND revoked_at IS NULL",
-        ownerId,
-      ),
-      "value",
+    const primaryTarget = this.maybeOne(
+      `SELECT last_ack_seq FROM sync_targets
+       WHERE tenant_id=? AND is_primary=1 AND revoked_at IS NULL
+       ORDER BY created_at LIMIT 1`,
+      ownerId,
     );
+    const primaryAck = primaryTarget ? rowNumber(primaryTarget, "last_ack_seq") : 0;
+    const pendingSync = primaryTarget
+      ? rowNumber(
+          this.one(
+            "SELECT COUNT(DISTINCT message_id) AS count FROM sync_events WHERE tenant_id=? AND seq>?",
+            ownerId,
+            primaryAck,
+          ),
+          "count",
+        )
+      : 0;
     return {
-      messages: messageCount,
-      libraryItems: rowNumber(
-        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND library_state='library'", ownerId),
-        "count",
-      ),
-      favorites: rowNumber(
-        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND is_favorite=1", ownerId),
-        "count",
-      ),
-      processing: rowNumber(
-        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND agent_status IN ('pending','processing')", ownerId),
-        "count",
-      ),
-      fallback: rowNumber(
-        this.one("SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND agent_status IN ('fallback','failed')", ownerId),
-        "count",
-      ),
-      pendingSync: rowNumber(
-        this.one(
-          "SELECT COUNT(DISTINCT message_id) AS count FROM sync_events WHERE tenant_id=? AND seq>?",
-          ownerId,
-          primaryAck,
-        ),
-        "count",
-      ),
+      messages: rowNumber(messageStats, "messages"),
+      organized: rowNumber(messageStats, "organized"),
+      pending: rowNumber(messageStats, "pending"),
+      queued: rowNumber(messageStats, "queued"),
+      activeProcessing: rowNumber(messageStats, "active_processing"),
+      libraryItems: rowNumber(messageStats, "library_items"),
+      favorites: rowNumber(messageStats, "favorites"),
+      // Keep the original aggregate field for older dashboard consumers.
+      processing: rowNumber(messageStats, "pending"),
+      fallback: rowNumber(messageStats, "fallback"),
+      pendingSync,
       archivedEvents: primaryAck,
       latestEvent: eventMax,
       botAccounts: rowNumber(

@@ -32,7 +32,10 @@ describe("component frontend", () => {
 
   it("preserves all core product journeys", () => {
     expect(read("frontend/src/pages/InboxPage.tsx")).toContain("每页 10 条");
-    expect(read("frontend/src/pages/LibraryPage.tsx")).toContain("/api/knowledge/facets?organized=1");
+    const library = read("frontend/src/pages/LibraryPage.tsx");
+    expect(library).toContain("/api/knowledge/facets?organized=1");
+    expect(library).toContain('params.set("format", format)');
+    expect(library).not.toContain('active=1&organized=1');
     const reader = read("frontend/src/pages/ReaderPage.tsx");
     expect(reader).toContain("文章正文");
     expect(reader).toContain("智能图解");
@@ -104,7 +107,7 @@ describe("component frontend", () => {
     expect(styles).toContain(".app-shell.sidebar-collapsed");
     expect(layout).toContain('to="/settings/intake"');
     expect(layout).not.toContain('to="/settings/api"');
-    expect(read("frontend/src/pages/InboxPage.tsx")).toContain("管理收件接入");
+    expect(read("frontend/src/pages/InboxPage.tsx")).toContain("管理内容来源");
     expect(settings).not.toContain("settings-nav");
     expect(styles).toContain(':root[data-theme="dark"]');
     expect(styles).toContain("--text: #f8fafc");

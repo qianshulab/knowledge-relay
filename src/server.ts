@@ -414,15 +414,17 @@ export function createServer(
 
   app.get("/api/dashboard", async (request) => {
     const scoped = tenantDatabase(request);
+    const agentSettings = scoped.getAgentSettings(config.nanobot);
     return {
       ...scoped.dashboard(),
+      agentEnabled: agentSettings.enabled,
       accounts: scoped.getBotAccounts().map((account) => publicAccount(account, bots.isRunning(account.id))),
       syncTargets: scoped.listSyncTargets(),
     };
   });
 
-  app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; format?: string; category?: string; domain?: string; organized?: string } }>("/api/messages", async (request) => {
-    const limit = Math.min(Math.max(Number(request.query.limit || 10) || 10, 1), 50);
+  app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; format?: string; category?: string; domain?: string; organized?: string; q?: string } }>("/api/messages", async (request) => {
+    const limit = Math.min(Math.max(Number(request.query.limit || 10) || 10, 1), 100);
     const before = Number(request.query.before || 0) || undefined;
     const requestedState = stringBody(request.query.state, 20);
     const state = (["inbox", "library", "archived"] as const).find((value) => value === requestedState);
@@ -437,6 +439,7 @@ export function createServer(
       ...(stringBody(request.query.category, 40) ? { category: stringBody(request.query.category, 40) } : {}),
       ...(stringBody(request.query.domain, 120) ? { domain: stringBody(request.query.domain, 120) } : {}),
       ...(request.query.organized === "1" ? { organized: true } : {}),
+      ...(stringBody(request.query.q, 200) ? { query: stringBody(request.query.q, 200) } : {}),
     };
     const scoped = tenantDatabase(request);
     const messages = scoped.listMessages(limit + 1, before, options);

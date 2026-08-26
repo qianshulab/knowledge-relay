@@ -65,6 +65,46 @@ describe("AppDatabase", () => {
     expect(raw.includes(Buffer.from(session.token))).toBe(false);
   });
 
+  it("仪表盘使用全工作区统计并只计算已配置目标的待同步内容", async () => {
+    const { database, botId } = await setup();
+    const makeMessage = (id: string, text: string): PublicInboundMessage => ({
+      id: `bot-1:${id}`,
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text,
+      attachments: [],
+    });
+    const queued = makeMessage("dashboard-queued", "排队中的内容");
+    const processing = makeMessage("dashboard-processing", "正在整理的内容");
+    const organized = makeMessage("dashboard-organized", "已经整理的内容");
+
+    database.saveMessage(botId, "dashboard-queued", queued, defaultNote(queued));
+    database.saveMessage(botId, "dashboard-processing", processing, defaultNote(processing));
+    database.markAgentAttempt(processing.id);
+    database.saveMessage(botId, "dashboard-organized", organized, defaultNote(organized));
+    database.updateProcessedNote(organized.id, defaultNote(organized), "completed");
+    database.publishMessage(organized.id);
+
+    expect(database.dashboard()).toMatchObject({
+      messages: 3,
+      organized: 1,
+      pending: 2,
+      queued: 1,
+      activeProcessing: 1,
+      processing: 2,
+      pendingSync: 0,
+      botAccounts: 1,
+    });
+
+    const created = database.createSyncTarget({ name: "Vault", folder: "Inbox", primary: true });
+    expect(database.dashboard().pendingSync).toBe(1);
+    const batch = database.getOrCreateSyncBatch(created.target.id, 10);
+    database.acknowledgeSyncBatch(created.target.id, batch.batchId!);
+    expect(database.dashboard().pendingSync).toBe(0);
+    database.close();
+  });
+
   it("同一批次会稳定重试，确认后只返回新事件", async () => {
     const { database, botId } = await setup();
     const message: PublicInboundMessage = {
@@ -581,9 +621,14 @@ describe("AppDatabase", () => {
     expect(database.listMessages(10, undefined, { organized: true }).map((item) => item.id)).toEqual([message.id]);
     expect(database.listMessages(10, undefined, { organized: true, domain: "网络安全" }).map((item) => item.id)).toEqual([message.id]);
     expect(database.listMessages(10, undefined, { organized: true, format: "text" }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.listMessages(10, undefined, { organized: true, query: "Frida" }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.countMessages({ organized: true, query: "动态分析" })).toBe(1);
     expect(database.listMessages(10, undefined, { organized: true, format: "wechat_article" })).toEqual([]);
     expect(database.listMessages(10, undefined, { organized: true, domain: "不存在的主题" })).toEqual([]);
     expect(database.countMessages({ organized: true })).toBe(1);
+    database.updateResourceState(message.id, { state: "archived" });
+    expect(database.listMessages(10, undefined, { organized: true }).map((item) => item.id)).toEqual([message.id]);
+    expect(database.listMessages(10, undefined, { organized: true, active: true })).toEqual([]);
     expect(database.knowledgeFacets(true)).toMatchObject({
       total: 1,
       enriched: 1,
