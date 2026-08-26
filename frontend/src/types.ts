@@ -7,6 +7,24 @@ export type Owner = {
   disabled: boolean;
 };
 
+export type Invitation = {
+  id: string;
+  expiresAt: string;
+  createdAt: string;
+  consumed: boolean;
+  revoked: boolean;
+  consumedBy?: {
+    username: string;
+    displayName: string;
+  };
+};
+
+export type CreatedInvitation = {
+  id: string;
+  token: string;
+  expiresAt: string;
+};
+
 export type ContentFormat =
   | "wechat_article"
   | "web_article"

@@ -252,12 +252,21 @@ export function createServer(
   });
 
   app.post<{ Body: Record<string, unknown> }>("/api/register", async (request, reply) => {
-    const user = database.registerWithInvitation({
-      token: stringBody(request.body?.inviteToken, 500),
-      username: stringBody(request.body?.username, 32),
-      displayName: stringBody(request.body?.displayName, 60),
-      password: stringBody(request.body?.password, 200),
-    });
+    let user;
+    try {
+      user = database.registerWithInvitation({
+        token: stringBody(request.body?.inviteToken, 500),
+        username: stringBody(request.body?.username, 32),
+        displayName: stringBody(request.body?.displayName, 60),
+        password: stringBody(request.body?.password, 200),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "邀请注册失败";
+      if (/UNIQUE constraint failed: users\.username/i.test(message)) {
+        return reply.code(409).send({ error: "用户名已被使用" });
+      }
+      return reply.code(400).send({ error: message });
+    }
     const session = database.createSessionFor(user.id, config.sessionDays);
     reply.header("Set-Cookie", sessionCookie(config, session.token, config.sessionDays * 86_400));
     return { owner: user };

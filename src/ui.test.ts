@@ -36,6 +36,10 @@ describe("component frontend", () => {
     expect(library).toContain("/api/knowledge/facets?organized=1");
     expect(library).toContain('params.set("format", format)');
     expect(library).not.toContain('active=1&organized=1');
+    expect(library).toContain('refetchOnMount: "always"');
+    expect(library).toContain("refetchInterval: 20_000");
+    expect(library).toContain("const clearFilters = () =>");
+    expect(library).toContain("清除筛选并显示全部");
     const reader = read("frontend/src/pages/ReaderPage.tsx");
     expect(reader).toContain("文章正文");
     expect(reader).toContain("智能图解");
@@ -58,6 +62,12 @@ describe("component frontend", () => {
     for (const journey of ["收件接入", "微信 iLink", "开放 API", "AI 智能整理", "整理能力", "用户管理", "账号与安全"]) {
       expect(settings).toContain(journey);
     }
+    expect(settings).toContain("/api/admin/invitations");
+    expect(settings).toContain("邀请链接（仅显示一次）");
+    expect(settings).toContain("创建邀请");
+    const auth = read("frontend/src/pages/AuthPage.tsx");
+    expect(auth).toContain('new URLSearchParams(window.location.search).get("invite")');
+    expect(auth).toContain("defaultValue={initialInviteToken}");
     expect(settings).toContain("/api/nanobot/provider/models?provider=");
     expect(settings).toContain("刷新模型列表");
     expect(settings).toContain("保存并检查连接");

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ArrowRight, KeyRound, ShieldCheck, Sparkles } from "lucide-react";
 import { api } from "../api";
 import type { Owner } from "../types";
@@ -6,9 +6,17 @@ import type { Owner } from "../types";
 type Props = { needsSetup: boolean; onAuthenticated: (owner: Owner) => void };
 
 export default function AuthPage({ needsSetup, onAuthenticated }: Props) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [initialInviteToken] = useState(() => new URLSearchParams(window.location.search).get("invite") || "");
+  const [mode, setMode] = useState<"login" | "register">(() => initialInviteToken ? "register" : "login");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!initialInviteToken) return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete("invite");
+    window.history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+  }, [initialInviteToken]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -52,10 +60,10 @@ export default function AuthPage({ needsSetup, onAuthenticated }: Props) {
           <div className="auth-heading">
             <span className="eyebrow">{needsSetup ? "First setup" : register ? "Invitation" : "Welcome back"}</span>
             <h2>{needsSetup ? "创建管理员账户" : register ? "使用邀请加入" : "登录知流"}</h2>
-            <p>{needsSetup ? "完成后即可连接内容来源并开始整理。" : "进入你的独立知识工作区。"}</p>
+            <p>{needsSetup ? "完成后即可连接内容来源并开始整理。" : register ? "创建账户后，你将获得独立隔离的个人知识工作区。" : "进入你的独立知识工作区。"}</p>
           </div>
           <form onSubmit={submit} className="form-stack">
-            {register && <label>邀请码<input name="inviteToken" required autoComplete="off" /></label>}
+            {register && <label>邀请码<input name="inviteToken" required autoComplete="off" defaultValue={initialInviteToken} /></label>}
             <label>用户名<input name="username" required autoComplete="username" /></label>
             {(needsSetup || register) && <label>显示名称<input name="displayName" required autoComplete="name" /></label>}
             <label>密码<input name="password" type="password" required minLength={8} autoComplete={needsSetup || register ? "new-password" : "current-password"} /></label>

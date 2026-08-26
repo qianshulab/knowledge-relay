@@ -303,6 +303,8 @@ curl -X POST 'https://inbox.example.com/api/captures' \
 ### 多用户与权限
 
 - 系统不开放匿名注册，成员通过管理员生成的一次性邀请链接加入。
+- 管理员可在“系统设置 → 用户管理”中创建 24 小时、3 天、7 天或 30 天的一次性邀请，并查看待使用、已使用、已过期和已撤销状态。
+- 受邀用户打开邀请链接后直接进入注册页；邀请码仅能成功注册一个账户。
 - 管理员负责模型提供者、全局 Skills、插件发布和成员管理。
 - 成员只能访问自己的消息、附件、索引、接入连接和同步目标。
 - 每个活跃用户使用独立的 Nanobot Runtime、Workspace、sessions 和 artifacts。
@@ -365,7 +367,7 @@ git pull --ff-only
 ```bash
 cd /你的部署目录/knowledge-relay
 git pull --ff-only
-./scripts/update-docker.sh 1.9.3
+./scripts/update-docker.sh 1.9.4
 ```
 
 升级脚本会先备份应用数据、Nanobot volume 和 `.env`，再拉取镜像、重建容器并执行健康检查。升级过程中不需要手动执行 `docker compose down`。

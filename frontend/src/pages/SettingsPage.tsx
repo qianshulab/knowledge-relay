@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Bot, CheckCircle2, Copy, KeyRound, Plus, RefreshCw, Settings2, Shield, SlidersHorizontal, Trash2, UserRound, Wrench } from "lucide-react";
+import { Activity, Bot, CheckCircle2, Copy, KeyRound, Plus, RefreshCw, Settings2, Shield, SlidersHorizontal, Trash2, UserPlus, UserRound, Wrench } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentSettings, ApiToken, BotAccount, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings } from "../types";
+import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings } from "../types";
 import { useApp } from "../App";
 import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
 
@@ -172,6 +172,100 @@ function AiSettings() {
 
 function SkillsSettings() { const { notify } = useApp(); const queryClient = useQueryClient(); const skills = useQuery({ queryKey: ["skills"], queryFn: () => api<{ skills: ManagedSkill[] }>("/api/skills") }); async function toggle(skill: ManagedSkill) { await api(`/api/skills/${skill.id}`, { method: "PUT", body: JSON.stringify({ ...skill, enabled: !skill.enabled }) }); notify(`${skill.name}已${skill.enabled ? "停用" : "启用"}`, "success"); void queryClient.invalidateQueries({ queryKey: ["skills"] }); } return <><SettingsHeader title="整理能力" description="Skills 为不同内容提供专业整理规则，启用状态会即时应用到新收件。" /><section className="skills-grid">{skills.isLoading ? <LoadingState /> : skills.data?.skills.map((skill) => <article className="settings-card skill-card" key={skill.id}><div className="skill-icon"><Wrench size={20} /></div><div><h3>{skill.name}</h3><p>{skill.description}</p><span>{skill.builtin ? "内置能力" : "自定义能力"}</span></div><button className={`toggle-button ${skill.enabled ? "on" : ""}`} onClick={() => void toggle(skill)} aria-label={`${skill.enabled ? "停用" : "启用"}${skill.name}`}><i /></button></article>)}</section></>; }
 
-function UsersSettings() { const { owner, notify } = useApp(); const queryClient = useQueryClient(); const [search, setSearch] = useState(""); const users = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: (Owner & { botCount: number; messageCount: number })[] }>("/api/admin/users") }); const rows = users.data?.users.filter((user) => [user.username, user.displayName].join(" ").toLowerCase().includes(search.toLowerCase())) || []; async function setDisabled(user: Owner) { await api(`/api/admin/users/${user.id}/status`, { method: "PUT", body: JSON.stringify({ disabled: !user.disabled }) }); notify(`用户已${user.disabled ? "启用" : "停用"}`, "success"); void queryClient.invalidateQueries({ queryKey: ["users"] }); } async function removeUser(user: Owner) { const confirmation = window.prompt(`永久删除 @${user.username} 及其所有内容、附件和同步配置。请输入完整用户名确认：`); if (confirmation !== user.username) return; await api(`/api/admin/users/${user.id}`, { method: "DELETE", body: JSON.stringify({ confirmation }) }); notify("用户及其工作区数据已删除", "success"); void queryClient.invalidateQueries({ queryKey: ["users"] }); } return <><SettingsHeader title="用户管理" description="搜索、停用或删除工作区用户。每位用户的数据、模型会话和同步设备相互隔离。" /><section className="settings-card"><label className="table-search">搜索用户<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="用户名或显示名称" /></label><div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0,1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <><button className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></>}</div>)}</div></section></>; }
+function UsersSettings() {
+  const { owner, notify } = useApp();
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [createdInvitation, setCreatedInvitation] = useState<CreatedInvitation | null>(null);
+  const users = useQuery({
+    queryKey: ["users"],
+    queryFn: () => api<{ users: (Owner & { botCount: number; messageCount: number })[] }>("/api/admin/users"),
+  });
+  const invitations = useQuery({
+    queryKey: ["invitations"],
+    queryFn: () => api<{ invitations: Invitation[] }>("/api/admin/invitations"),
+  });
+  const rows = users.data?.users.filter((user) =>
+    [user.username, user.displayName].join(" ").toLowerCase().includes(search.toLowerCase()),
+  ) || [];
+  const invitationUrl = createdInvitation
+    ? `${window.location.origin}/?invite=${encodeURIComponent(createdInvitation.token)}`
+    : "";
+
+  async function createInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const invitation = await api<CreatedInvitation>("/api/admin/invitations", {
+        method: "POST",
+        body: JSON.stringify({ hours: Number(data.get("hours") || 72) }),
+      });
+      setCreatedInvitation(invitation);
+      notify("邀请链接已创建，请复制后发送给受邀用户", "success");
+      void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "邀请创建失败", "danger");
+    }
+  }
+
+  async function copyInvitation(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      notify(`${label}已复制`, "success");
+    } catch {
+      notify(`${label}复制失败，请手动选择复制`, "danger");
+    }
+  }
+
+  async function revokeInvitation(invitation: Invitation) {
+    if (!window.confirm("撤销后，此邀请码将无法继续注册。确定撤销吗？")) return;
+    try {
+      await api(`/api/admin/invitations/${invitation.id}`, { method: "DELETE" });
+      notify("邀请码已撤销", "success");
+      void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "邀请码撤销失败", "danger");
+    }
+  }
+
+  function invitationStatus(invitation: Invitation) {
+    if (invitation.consumed) return { label: "已使用", tone: "success" };
+    if (invitation.revoked) return { label: "已撤销", tone: "danger" };
+    if (new Date(invitation.expiresAt).getTime() <= Date.now()) return { label: "已过期", tone: "danger" };
+    return { label: "待使用", tone: "processing" };
+  }
+
+  async function setDisabled(user: Owner) {
+    await api(`/api/admin/users/${user.id}/status`, { method: "PUT", body: JSON.stringify({ disabled: !user.disabled }) });
+    notify(`用户已${user.disabled ? "启用" : "停用"}`, "success");
+    void queryClient.invalidateQueries({ queryKey: ["users"] });
+  }
+
+  async function removeUser(user: Owner) {
+    const confirmation = window.prompt(`永久删除 @${user.username} 及其所有内容、附件和同步配置。请输入完整用户名确认：`);
+    if (confirmation !== user.username) return;
+    await api(`/api/admin/users/${user.id}`, { method: "DELETE", body: JSON.stringify({ confirmation }) });
+    notify("用户及其工作区数据已删除", "success");
+    void queryClient.invalidateQueries({ queryKey: ["users"] });
+  }
+
+  return <>
+    <SettingsHeader title="用户管理" description="通过一次性邀请码添加用户，并管理彼此隔离的个人知识工作区。" />
+    <section className="settings-card">
+      <div className="settings-card-title"><UserPlus size={19} /><div><h3>邀请用户</h3><p>每个邀请码仅可使用一次，到期或撤销后立即失效。</p></div></div>
+      <form className="inline-create-form invitation-create" onSubmit={(event) => void createInvitation(event)}>
+        <label>有效期<select name="hours" defaultValue="72"><option value="24">24 小时</option><option value="72">3 天</option><option value="168">7 天</option><option value="720">30 天</option></select></label>
+        <button className="button button-primary"><Plus size={17} />创建邀请</button>
+      </form>
+      {createdInvitation && <div className="secret-reveal invitation-secret"><KeyRound size={20} /><div><strong>邀请链接（仅显示一次）</strong><code>{invitationUrl}</code><small>有效至 {formatDate(createdInvitation.expiresAt)}。受邀用户打开链接即可直接创建账户。</small></div><div className="secret-actions"><button className="button button-secondary" onClick={() => void copyInvitation(invitationUrl, "邀请链接")}><Copy size={16} />复制链接</button><button className="button button-secondary" onClick={() => void copyInvitation(createdInvitation.token, "邀请码")}><Copy size={16} />复制邀请码</button></div></div>}
+      {invitations.isLoading ? <LoadingState /> : invitations.data?.invitations.length ? <div className="invitation-list">{invitations.data.invitations.map((invitation) => { const status = invitationStatus(invitation); const active = status.label === "待使用"; return <div key={invitation.id}><div><strong>{invitation.consumedBy ? `由 ${invitation.consumedBy.displayName} (@${invitation.consumedBy.username}) 使用` : "一次性用户邀请"}</strong><span>创建于 {formatDate(invitation.createdAt)} · 有效至 {formatDate(invitation.expiresAt)}</span></div><span className={`status-badge ${status.tone}`}>{status.label}</span>{active && <button className="button button-secondary" onClick={() => void revokeInvitation(invitation)}>撤销</button>}</div>; })}</div> : <EmptyState title="尚未创建邀请" description="创建后将生成一次性邀请链接。" />}
+    </section>
+    <section className="settings-card">
+      <div className="settings-card-title"><UserRound size={19} /><div><h3>工作区用户</h3><p>搜索、停用或永久删除已有用户。</p></div></div>
+      <label className="table-search user-search">搜索用户<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="用户名或显示名称" /></label>
+      <div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <><button className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></>}</div>)}</div>
+    </section>
+  </>;
+}
 
 function AccountSettings() { const { owner, setOwner, notify, logout } = useApp(); async function profile(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const result = await api<{ owner: Owner }>("/api/me/profile", { method: "PUT", body: JSON.stringify({ displayName: data.get("displayName") }) }); setOwner(result.owner); notify("个人资料已更新", "success"); } async function password(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); await api("/api/me/password", { method: "POST", body: JSON.stringify({ currentPassword: data.get("currentPassword"), newPassword: data.get("newPassword"), confirmPassword: data.get("confirmPassword") }) }); notify("密码已更新，请重新登录", "success"); await logout(); } return <><SettingsHeader title="账号与安全" description="管理显示名称和登录密码。修改密码后，当前会话会立即退出。" /><section className="settings-card"><div className="settings-card-title"><UserRound size={19} /><div><h3>个人资料</h3><p>用户名 @{owner.username} 不可修改。</p></div></div><form className="settings-form" onSubmit={(event) => void profile(event)}><label>显示名称<input name="displayName" defaultValue={owner.displayName} /></label><div className="form-actions"><button className="button button-primary">保存资料</button></div></form></section><section className="settings-card"><div className="settings-card-title"><Shield size={19} /><div><h3>修改密码</h3><p>新密码至少 8 个字符，并需要输入两次确认。</p></div></div><form className="settings-form" onSubmit={(event) => void password(event)}><label>当前密码<input name="currentPassword" type="password" required /></label><div className="form-grid"><label>新密码<input name="newPassword" type="password" minLength={8} required /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required /></label></div><div className="form-actions"><button className="button button-primary">更新密码</button></div></form></section></>; }

@@ -263,6 +263,110 @@ describe("多用户资源与 Agent 任务边界", () => {
     database.close();
   });
 
+  it("管理员可以创建、查看和撤销一次性用户邀请", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-invitations-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    const admin = database.createOwner({
+      username: "admin",
+      displayName: "Admin",
+      password: "admin-password",
+    });
+    const adminSession = database.createSessionFor(admin.id, 30);
+    const app = createServer(
+      config(directory),
+      database,
+      {
+        isRunning: () => false,
+        acceptCapture: vi.fn(),
+        pauseTenant: vi.fn(async () => undefined),
+        resumeTenant: vi.fn(async () => undefined),
+      } as unknown as BotManager,
+      {} as AccountLoginManager,
+    );
+    const authorization = { Authorization: `Bearer ${adminSession.token}` };
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/invitations",
+      headers: authorization,
+      payload: { hours: 24 },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({
+      id: expect.any(String),
+      token: expect.stringMatching(/^invite_/),
+      expiresAt: expect.any(String),
+    });
+
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/register",
+      payload: {
+        inviteToken: created.json().token,
+        username: "invited-user",
+        displayName: "受邀用户",
+        password: "member-password",
+      },
+    });
+    expect(registered.statusCode).toBe(200);
+    expect(registered.json().owner).toMatchObject({ username: "invited-user", role: "member" });
+
+    const invitations = await app.inject({
+      method: "GET",
+      url: "/api/admin/invitations",
+      headers: authorization,
+    });
+    expect(invitations.statusCode).toBe(200);
+    expect(invitations.json().invitations[0]).toMatchObject({
+      consumed: true,
+      revoked: false,
+      consumedBy: { username: "invited-user", displayName: "受邀用户" },
+    });
+
+    const reused = await app.inject({
+      method: "POST",
+      url: "/api/register",
+      payload: {
+        inviteToken: created.json().token,
+        username: "second-user",
+        displayName: "Second",
+        password: "member-password",
+      },
+    });
+    expect(reused.statusCode).toBe(400);
+    expect(reused.json()).toEqual({ error: "邀请链接无效或已过期" });
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/admin/invitations",
+      headers: authorization,
+      payload: { hours: 72 },
+    });
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/invitations/${second.json().id}`,
+      headers: authorization,
+    });
+    expect(revoked.statusCode).toBe(200);
+
+    const revokedRegistration = await app.inject({
+      method: "POST",
+      url: "/api/register",
+      payload: {
+        inviteToken: second.json().token,
+        username: "revoked-user",
+        displayName: "Revoked",
+        password: "member-password",
+      },
+    });
+    expect(revokedRegistration.statusCode).toBe(400);
+    expect(revokedRegistration.json()).toEqual({ error: "邀请链接无效或已过期" });
+
+    await app.close();
+    database.close();
+  });
+
   it("链接类任务遇到瞬时网络错误会自动重试并记录进度", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-retry-"));
     temporaryDirectories.push(directory);

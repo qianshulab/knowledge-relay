@@ -1228,10 +1228,17 @@ export class AppDatabase {
     createdAt: string;
     consumed: boolean;
     revoked: boolean;
+    consumedBy?: {
+      username: string;
+      displayName: string;
+    };
   }> {
     const adminId = this.requireAdmin();
     return this.all(
-      "SELECT * FROM invitations WHERE created_by=? ORDER BY created_at DESC LIMIT 100",
+      `SELECT i.*,u.username AS consumed_username,u.display_name AS consumed_display_name
+       FROM invitations i
+       LEFT JOIN users u ON u.id=i.consumed_by
+       WHERE i.created_by=? ORDER BY i.created_at DESC LIMIT 100`,
       adminId,
     ).map((row) => ({
       id: rowString(row, "id"),
@@ -1239,6 +1246,12 @@ export class AppDatabase {
       createdAt: rowString(row, "created_at"),
       consumed: Boolean(rowOptional(row, "consumed_at")),
       revoked: Boolean(rowOptional(row, "revoked_at")),
+      ...(rowOptional(row, "consumed_username") ? {
+        consumedBy: {
+          username: rowString(row, "consumed_username"),
+          displayName: rowString(row, "consumed_display_name"),
+        },
+      } : {}),
     }));
   }
 
