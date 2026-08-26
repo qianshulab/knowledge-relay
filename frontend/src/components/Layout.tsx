@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Archive, BookOpen, Bot, ChevronDown, Inbox, Link2, LogOut, Menu, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
+import { Archive, BookOpen, Bot, ChevronDown, Inbox, Link2, LogOut, Menu, MessageCircleQuestion, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "../App";
 import SearchDialog from "./SearchDialog";
@@ -7,6 +7,7 @@ import SearchDialog from "./SearchDialog";
 const navigation = [
   { to: "/inbox", label: "收件台", icon: Inbox },
   { to: "/library", label: "知识库", icon: BookOpen },
+  { to: "/knowledge-chat", label: "知识问答", icon: MessageCircleQuestion },
   { to: "/obsidian", label: "Obsidian", icon: Archive },
 ];
 

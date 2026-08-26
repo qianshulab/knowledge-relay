@@ -596,6 +596,15 @@ describe("AppDatabase", () => {
     expect(database.searchInbox("", { tool: "Frida" })[0]?.id).toBe(message.id);
     expect(database.searchInbox("移动安全", { organized: true })[0]?.id).toBe(message.id);
     expect(database.searchInbox("移动安全", { organized: false })).toEqual([]);
+    expect(database.searchKnowledgeChunks("Frida 动态分析")).toEqual([
+      expect.objectContaining({
+        messageId: message.id,
+        content: expect.stringContaining("Frida"),
+      }),
+    ]);
+    expect(database.knowledgeChunksForMessage(message.id)).toEqual([
+      expect.objectContaining({ messageId: message.id, heading: "内容摘要" }),
+    ]);
     expect(database.knowledgeFacets()).toMatchObject({
       total: 1,
       enriched: 1,
@@ -671,6 +680,41 @@ describe("AppDatabase", () => {
       originalText: capture.text,
       source: { type: "api", name: "API 投稿", url: "https://example.com/article" },
     });
+    database.close();
+  });
+
+  it("知识库只使用明确封面或图片素材本身，不把普通正文图误当卡片封面", async () => {
+    const { directory, database } = await setup();
+    const bodyPath = path.join(directory, "body.jpg");
+    const coverPath = path.join(directory, "cover.jpg");
+    await fs.writeFile(bodyPath, "body-image");
+    await fs.writeFile(coverPath, "cover-image");
+    const article: CaptureInput = {
+      id: "wechat:cover-priority",
+      source: { channel: "wechat", type: "wechat_article", externalId: "cover-priority", name: "微信公众号" },
+      captureType: "link",
+      actorId: "owner",
+      receivedAt: new Date().toISOString(),
+      text: "https://mp.weixin.qq.com/s/example",
+      attachments: [
+        { kind: "derived", fileName: "正文配图-body.jpg", path: bodyPath, size: 10, mimeType: "image/jpeg" },
+        { kind: "derived", fileName: "测试文章封面-cover.jpg", path: coverPath, size: 11, mimeType: "image/jpeg" },
+      ],
+    };
+    database.saveCapture(article, defaultNote(article));
+    database.updateProcessedNote(article.id, defaultNote(article), "completed");
+    const explicitCover = database.attachmentsForMessageView(article.id).find((attachment) => attachment.fileName.includes("封面"));
+    expect(database.listMessages().find((item) => item.id === article.id)?.coverAttachmentId).toBe(explicitCover?.id);
+
+    const webArticle: CaptureInput = {
+      ...article,
+      id: "api:web-body-only",
+      source: { channel: "api", type: "web", externalId: "web-body-only", name: "网页" },
+      attachments: [{ kind: "derived", fileName: "正文配图.jpg", path: bodyPath, size: 10, mimeType: "image/jpeg" }],
+    };
+    database.saveCapture(webArticle, defaultNote(webArticle));
+    database.updateProcessedNote(webArticle.id, defaultNote(webArticle), "completed");
+    expect(database.listMessages().find((item) => item.id === webArticle.id)?.coverAttachmentId).toBeUndefined();
     database.close();
   });
 

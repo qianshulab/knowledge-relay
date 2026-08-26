@@ -1,4 +1,4 @@
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, BookOpen, Filter, LayoutGrid, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -7,6 +7,39 @@ import type { KnowledgeFacets, MessageItem } from "../types";
 import { EmptyState, LoadingState, PageHeader, formatDate, formatLabels } from "../components/ui";
 
 type MessageResponse = { messages: MessageItem[]; pagination: { total: number; hasMore: boolean; nextBefore?: number } };
+
+const coverThemes = [
+  ["#0f766e", "#134e4a", "#5eead4"],
+  ["#315c8c", "#1e3a5f", "#93c5fd"],
+  ["#6d4ca3", "#443164", "#c4b5fd"],
+  ["#9a5b2b", "#5f381f", "#fdba74"],
+  ["#3f6f57", "#234536", "#86efac"],
+  ["#8b4b63", "#542d3d", "#f9a8d4"],
+] as const;
+
+function coverTheme(value: string): CSSProperties {
+  let hash = 0;
+  for (const character of value) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  const palette = coverThemes[Math.abs(hash) % coverThemes.length]!;
+  return {
+    "--cover-primary": palette[0],
+    "--cover-deep": palette[1],
+    "--cover-accent": palette[2],
+  } as CSSProperties;
+}
+
+function KnowledgeCardCover({ item }: { item: MessageItem }) {
+  const [failed, setFailed] = useState(false);
+  if (item.coverAttachmentId && !failed) {
+    return <img src={attachmentUrl(item.coverAttachmentId)} alt={`${item.title}封面`} loading="lazy" onError={() => setFailed(true)} />;
+  }
+  const label = item.domains[0] || formatLabels[item.contentFormat] || "个人知识";
+  return <div className="knowledge-cover" style={coverTheme(`${item.id}:${label}`)} role="img" aria-label={`${label}默认封面`}>
+    <span className="knowledge-cover-orbit" aria-hidden="true"><i /><i /><i /></span>
+    <span className="knowledge-cover-brand"><b>知流</b><small>KNOWLEDGE RELAY</small></span>
+    <strong>{label}</strong>
+  </div>;
+}
 
 export default function LibraryPage() {
   const navigate = useNavigate();
@@ -81,7 +114,7 @@ export default function LibraryPage() {
       </aside>
       <div>
         {activeFilter ? <div className="library-active-filter"><span>当前浏览</span><strong>{activeFilter}</strong></div> : null}
-        {query.isLoading ? <LoadingState label="正在加载知识库" /> : query.isError ? <EmptyState icon={<BookOpen size={28} />} title="知识库加载失败" description={query.error instanceof Error ? query.error.message : "暂时无法读取知识库内容。"} action={<button className="button button-secondary" onClick={() => void query.refetch()}>重新加载</button>} /> : items.length ? <div className="library-grid">{items.map((item) => <article className="knowledge-card" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}>{item.coverAttachmentId ? <img src={attachmentUrl(item.coverAttachmentId)} alt="" /> : <div className="knowledge-cover"><BookOpen size={28} /><span>{item.domains[0] || formatLabels[item.contentFormat] || "个人知识"}</span></div>}<div className="knowledge-card-body"><div className="knowledge-meta"><span>{formatLabels[item.contentFormat] || item.category}</span><time>{formatDate(item.receivedAt).slice(0, 10)}</time></div><h2>{item.title}</h2><p>{item.summary || "暂无摘要"}</p><div className="tag-row">{(item.domains.length ? item.domains : item.tags).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="card-link">阅读全文 <ArrowRight size={16} /></div></div></article>)}</div> : <EmptyState icon={<BookOpen size={28} />} title="没有符合条件的内容" description={hasFilters ? "当前筛选条件下没有内容，可以清除筛选后查看全部知识。" : "整理完成的内容会自动出现在这里。"} action={hasFilters ? <button className="button button-secondary" onClick={clearFilters}>清除筛选并显示全部</button> : undefined} />}
+        {query.isLoading ? <LoadingState label="正在加载知识库" /> : query.isError ? <EmptyState icon={<BookOpen size={28} />} title="知识库加载失败" description={query.error instanceof Error ? query.error.message : "暂时无法读取知识库内容。"} action={<button className="button button-secondary" onClick={() => void query.refetch()}>重新加载</button>} /> : items.length ? <div className="library-grid">{items.map((item) => <article className="knowledge-card" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}><KnowledgeCardCover item={item} /><div className="knowledge-card-body"><div className="knowledge-meta"><span>{formatLabels[item.contentFormat] || item.category}</span><time>{formatDate(item.receivedAt).slice(0, 10)}</time></div><h2>{item.title}</h2><p>{item.summary || "暂无摘要"}</p><div className="tag-row">{(item.domains.length ? item.domains : item.tags).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="card-link">阅读全文 <ArrowRight size={16} /></div></div></article>)}</div> : <EmptyState icon={<BookOpen size={28} />} title="没有符合条件的内容" description={hasFilters ? "当前筛选条件下没有内容，可以清除筛选后查看全部知识。" : "整理完成的内容会自动出现在这里。"} action={hasFilters ? <button className="button button-secondary" onClick={clearFilters}>清除筛选并显示全部</button> : undefined} />}
       </div>
     </section>
   </main>;

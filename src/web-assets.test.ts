@@ -111,6 +111,31 @@ describe("article image security", () => {
       await fs.rm(dataDir, { recursive: true, force: true });
     }
   });
+
+  it("并发下载完成顺序不改变封面与正文图片的文档顺序", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-cover-order-"));
+    const png = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+    png.writeUInt32BE(1, 16);
+    png.writeUInt32BE(1, 20);
+    try {
+      const result = await localizeMarkdownImages(
+        { dataDir } as AppConfig,
+        "![文章封面](https://cdn.example/cover.png)\n\n![正文图](https://cdn.example/body.png)",
+        "tenant-a",
+        async (url) => {
+          if (url.pathname.includes("cover")) await new Promise((resolve) => setTimeout(resolve, 20));
+          return png;
+        },
+      );
+      expect(result.images.map((image) => image.fileName)).toEqual([
+        expect.stringContaining("文章封面"),
+        expect.stringContaining("正文图"),
+      ]);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("WeChat image Markdown", () => {

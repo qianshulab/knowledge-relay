@@ -20,6 +20,7 @@ describe("component frontend", () => {
     expect(app).toContain("<Routes>");
     expect(app).toContain('path="/inbox"');
     expect(app).toContain('path="/library"');
+    expect(app).toContain('path="/knowledge-chat"');
     expect(app).toContain('path="/reader/:id"');
     expect(app).toContain('path="/settings/:section"');
     expect(app).toContain('path="/settings/sources"');
@@ -31,7 +32,11 @@ describe("component frontend", () => {
   });
 
   it("preserves all core product journeys", () => {
-    expect(read("frontend/src/pages/InboxPage.tsx")).toContain("每页 10 条");
+    const inbox = read("frontend/src/pages/InboxPage.tsx");
+    expect(inbox).toContain("queryClient.prefetchQuery");
+    expect(inbox).toContain("await queryClient.fetchQuery");
+    expect(inbox).toContain("messagePageMinHeight");
+    expect(inbox).toContain("disabled={view.page === 0 || Boolean(pageNavigation)}");
     const library = read("frontend/src/pages/LibraryPage.tsx");
     expect(library).toContain("/api/knowledge/facets?organized=1");
     expect(library).toContain('params.set("format", format)');
@@ -58,6 +63,10 @@ describe("component frontend", () => {
     expect(diagram).toContain("适配窗口");
     expect(diagram).toContain("maximumScale = 2.5");
     expect(diagram).toContain("ResizeObserver");
+    expect(diagram).toContain('closest(".diagram-node")');
+    expect(diagram).toContain("event.stopPropagation(); selectNode(node.id)");
+    expect(diagram).toContain("diagram-node-card");
+    expect(diagram).toContain("roleNames");
     const settings = read("frontend/src/pages/SettingsPage.tsx");
     for (const journey of ["收件接入", "微信 iLink", "开放 API", "AI 智能整理", "整理能力", "用户管理", "账号与安全"]) {
       expect(settings).toContain(journey);
@@ -65,9 +74,21 @@ describe("component frontend", () => {
     expect(settings).toContain("/api/admin/invitations");
     expect(settings).toContain("邀请链接（仅显示一次）");
     expect(settings).toContain("创建邀请");
+    expect(settings).toContain("重置用户密码");
+    expect(settings).toContain("invitationPageSize");
+    const knowledgeChat = read("frontend/src/pages/KnowledgeChatPage.tsx");
+    expect(knowledgeChat).toContain("仅依据个人知识库");
+    expect(knowledgeChat).toContain("回答依据");
+    expect(knowledgeChat).toContain("/api/knowledge/chats");
+    expect(knowledgeChat).toContain("/messages/stream");
+    expect(knowledgeChat).toContain("streamedAnswer");
+    expect(knowledgeChat).toContain("持续提问");
+    expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/knowledge-chat"');
     const auth = read("frontend/src/pages/AuthPage.tsx");
     expect(auth).toContain('new URLSearchParams(window.location.search).get("invite")');
     expect(auth).toContain("defaultValue={initialInviteToken}");
+    expect(auth).toContain("别让有价值的内容");
+    expect(auth).toContain("auth-relay-demo");
     expect(settings).toContain("/api/nanobot/provider/models?provider=");
     expect(settings).toContain("刷新模型列表");
     expect(settings).toContain("保存并检查连接");
@@ -80,6 +101,11 @@ describe("component frontend", () => {
     expect(obsidian).toContain("/api/plugin-release");
     expect(obsidian).toContain("校验并发布");
     expect(obsidian).toContain("10 * 1024 * 1024");
+    expect(settings).toContain("分层路由");
+    expect(settings).toContain("新建 Skill");
+    expect(settings).toContain('api("/api/skills", { method: "POST"');
+    expect(diagram).toContain("在图解中查找");
+    expect(diagram).toContain("diagram-node-panel");
   });
 
   it("uses a high-contrast reading system without blurred glass surfaces", () => {
@@ -96,6 +122,8 @@ describe("component frontend", () => {
     expect(styles).toContain("@keyframes relay-packet-in");
     expect(styles).toContain("@keyframes relay-stage-dot");
     expect(styles).toContain("prefers-reduced-motion: reduce");
+    expect(styles).toContain("height: calc(100dvh - 76px)");
+    expect(styles).toContain(".stream-caret");
     expect(styles).not.toContain("backdrop-filter");
     expect(styles).not.toContain("@import url(");
   });

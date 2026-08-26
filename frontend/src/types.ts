@@ -25,6 +25,31 @@ export type CreatedInvitation = {
   expiresAt: string;
 };
 
+export type KnowledgeChatCitation = {
+  messageId: string;
+  title: string;
+  excerpt: string;
+  reference?: string;
+};
+
+export type KnowledgeChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: KnowledgeChatCitation[];
+  createdAt: string;
+};
+
+export type KnowledgeConversation = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  lastMessage?: string;
+  messages?: KnowledgeChatMessage[];
+};
+
 export type ContentFormat =
   | "wechat_article"
   | "web_article"
@@ -128,6 +153,10 @@ export type KnowledgeMapNode = {
   id: string;
   label: string;
   type: "root" | "resource" | "domain" | "concept" | "tool" | "point";
+  description?: string;
+  evidence?: string;
+  group?: string;
+  role?: "start" | "process" | "decision" | "result" | "actor" | "artifact" | "milestone" | "topic";
   count?: number;
 };
 export type KnowledgeMapEdge = { source: string; target: string; label?: string; kind?: string };

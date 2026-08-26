@@ -259,6 +259,24 @@ describe("多用户资源与 Agent 任务边界", () => {
     expect(restored.json().user.disabled).toBe(false);
     expect(resumeTenant).toHaveBeenCalledWith(member.id);
 
+    const sessionBeforeReset = database.createSessionFor(member.id, 30);
+    const reset = await app.inject({
+      method: "POST",
+      url: `/api/admin/users/${member.id}/reset-password`,
+      headers: { Authorization: `Bearer ${adminSession.token}` },
+      payload: { newPassword: "member-password-new", confirmPassword: "member-password-new" },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json().reset).toMatchObject({ username: "member", revokedSessions: 1 });
+    const revokedByReset = await app.inject({
+      method: "GET",
+      url: "/api/messages",
+      headers: { Authorization: `Bearer ${sessionBeforeReset.token}` },
+    });
+    expect(revokedByReset.statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/login", payload: { username: "member", password: "member-password" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/login", payload: { username: "member", password: "member-password-new" } })).statusCode).toBe(200);
+
     await app.close();
     database.close();
   });
@@ -349,6 +367,26 @@ describe("多用户资源与 Agent 任务边界", () => {
       headers: authorization,
     });
     expect(revoked.statusCode).toBe(200);
+
+    const invitationPage = await app.inject({
+      method: "GET",
+      url: "/api/admin/invitations?limit=1&offset=0&status=all",
+      headers: authorization,
+    });
+    expect(invitationPage.statusCode).toBe(200);
+    expect(invitationPage.json()).toMatchObject({
+      invitations: [expect.objectContaining({ revoked: true })],
+      pagination: { total: 2, limit: 1, offset: 0, hasMore: true },
+    });
+    const usedInvitations = await app.inject({
+      method: "GET",
+      url: "/api/admin/invitations?status=used",
+      headers: authorization,
+    });
+    expect(usedInvitations.json()).toMatchObject({
+      invitations: [expect.objectContaining({ consumed: true })],
+      pagination: { total: 1, hasMore: false },
+    });
 
     const revokedRegistration = await app.inject({
       method: "POST",

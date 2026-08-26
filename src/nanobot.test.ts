@@ -50,8 +50,8 @@ describe("NanobotClient", () => {
         selection_reason: "资料包含明确步骤",
         nodes: [
           { id: "root", label: "资料处理", type: "root" },
-          { id: "collect", label: "收集资料", type: "point" },
-          { id: "analyze", label: "分析资料", type: "point" },
+          { id: "collect", label: "收集资料", type: "point", description: "汇集输入资料", evidence: "先收集资料", group: "准备" },
+          { id: "analyze", label: "分析资料", type: "point", description: "分析已有资料", evidence: "再分析资料", group: "处理" },
         ],
         edges: [
           { source: "root", target: "collect", label: "第一步", kind: "primary" },
@@ -92,8 +92,9 @@ describe("NanobotClient", () => {
     }], { tenantId: "tenant-one" });
     const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
     expect(body.messages[0].content).toContain("先读取 workspace 中 mermaid-visualizer/SKILL.md");
-    expect(body.messages[0].content).toContain("只有明确主题层级才用 mindmap");
-    expect(result).toMatchObject({ diagramType: "flow", diagramLabel: "处理流程图" });
+    expect(body.messages[0].content).toContain("只有明确的中心主题—分支—子概念层级才用 mindmap");
+    expect(body.messages[0].content).toContain("description、evidence、group");
+    expect(result).toMatchObject({ diagramType: "flow", diagramLabel: "处理流程图", nodes: expect.arrayContaining([expect.objectContaining({ label: "收集资料", description: "汇集输入资料", group: "准备" })]) });
     expect(result.edges).toHaveLength(2);
   });
 
@@ -132,9 +133,9 @@ describe("NanobotClient", () => {
           id: "builtin:test",
           slug: "test",
           name: "测试 Skill",
-          description: "用于测试",
+          description: "TRIGGER：所有内容。SKIP：无。",
           content: "必须保留原始内容。",
-          builtin: true,
+          builtin: false,
           enabled: true,
           customized: false,
           kind: "prompt",
@@ -190,6 +191,28 @@ describe("NanobotClient", () => {
       category: "reference",
     });
     expect(result.note.tags).toContain("模型兼容");
+  });
+
+  it("微信公众号优先路由专用解析器，并只把通用解析保留为回退", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ title: "微信文章", category: "reference", summary: "已解析正文", tags: [] }) } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new NanobotClient(config);
+    const adapters = [
+      { slug: "wechat-article-extractor", name: "微信解析", description: "专用解析", content: "runtime", sourceUrl: "https://example.com/wechat" },
+      { slug: "fetch-skill", name: "网页解析", description: "通用回退", content: "runtime", sourceUrl: "https://example.com/fetch" },
+      { slug: "excalidraw-diagram", name: "Excalidraw", description: "画图", content: "runtime", sourceUrl: "https://example.com/draw" },
+    ].map((skill) => ({ id: `builtin:${skill.slug}`, ...skill, builtin: true, enabled: true, customized: false, kind: "adapter" as const }));
+    await client.process({
+      id: "wechat-route", actorId: "owner", receivedAt: new Date().toISOString(), text: "https://mp.weixin.qq.com/s/example", captureType: "link", attachments: [],
+      source: { channel: "wechat", type: "wechat_article", externalId: "example", name: "微信公众号", url: "https://mp.weixin.qq.com/s/example" },
+    } as never, { enabled: true, baseUrl: config.nanobot.baseUrl, model: "", instructions: "", autoReply: false, notifyOnFailure: true }, adapters);
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    const prompt = String(body.messages[0].content);
+    expect(prompt).toContain("wechat-article-extractor、fetch-skill");
+    expect(prompt).toContain("专用解析器明确失败时才使用");
+    expect(prompt).not.toContain("wechat-article-extractor、fetch-skill、excalidraw-diagram");
   });
 
   it("明确的 Canvas 请求会路由原版可视化 Skill 并约束产物目录", async () => {
@@ -277,6 +300,52 @@ describe("NanobotClient", () => {
     expect(body.session_id).toMatch(/^knowledge-relay:inbox-search:/);
     expect(body.messages[0].content).toContain("理解用户真正想查找的内容");
     expect(body.messages[0].content).toContain("我收藏过哪些安全工具");
+  });
+
+  it("把 Nanobot SSE 中逐步生成的回答内容实时转发给知识问答", async () => {
+    const fragments = [
+      '{"answer":"收藏资料建议采用 ',
+      '3-2-1 备份，并保留离线副本。[S1]",',
+      '"cited_source_ids":["source-1"],"follow_up_questions":["离线副本有什么作用？"]}',
+    ];
+    const body = `${fragments.map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join("")}data: [DONE]\n\n`;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const deltas: string[] = [];
+    const client = new NanobotClient(config);
+    const result = await client.answerKnowledgeQuestion(
+      "资料中的 NAS 备份建议是什么？",
+      [{
+        id: "source-1",
+        title: "家庭 NAS 备份",
+        summary: "介绍 3-2-1 备份方法",
+        content: "采用 3-2-1 备份，并保留一份离线副本。",
+        domains: ["数据存储"],
+        knowledgePoints: ["3-2-1 备份"],
+      }],
+      [],
+      {
+        enabled: true,
+        baseUrl: config.nanobot.baseUrl,
+        model: "",
+        instructions: "",
+        autoReply: false,
+        notifyOnFailure: true,
+      },
+      { tenantId: "chat-tenant", conversationId: "chat-one" },
+      (delta) => deltas.push(delta),
+    );
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({ stream: true });
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.join("")).toBe(result.answer);
+    expect(result).toEqual({
+      answer: "收藏资料建议采用 3-2-1 备份，并保留离线副本。[S1]",
+      citedSourceIds: ["source-1"],
+      followUps: ["离线副本有什么作用？"],
+    });
   });
 
   it("只接收 Nanobot 指定 artifacts 目录中的 Markdown 与可视化产物", async () => {

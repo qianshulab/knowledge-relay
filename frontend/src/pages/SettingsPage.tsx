@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Bot, CheckCircle2, Copy, KeyRound, Plus, RefreshCw, Settings2, Shield, SlidersHorizontal, Trash2, UserPlus, UserRound, Wrench } from "lucide-react";
+import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, Plus, RefreshCw, Route, Settings2, Shield, SlidersHorizontal, Trash2, UserPlus, UserRound, Wrench, X } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
 import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings } from "../types";
@@ -170,20 +170,72 @@ function AiSettings() {
   </>;
 }
 
-function SkillsSettings() { const { notify } = useApp(); const queryClient = useQueryClient(); const skills = useQuery({ queryKey: ["skills"], queryFn: () => api<{ skills: ManagedSkill[] }>("/api/skills") }); async function toggle(skill: ManagedSkill) { await api(`/api/skills/${skill.id}`, { method: "PUT", body: JSON.stringify({ ...skill, enabled: !skill.enabled }) }); notify(`${skill.name}已${skill.enabled ? "停用" : "启用"}`, "success"); void queryClient.invalidateQueries({ queryKey: ["skills"] }); } return <><SettingsHeader title="整理能力" description="Skills 为不同内容提供专业整理规则，启用状态会即时应用到新收件。" /><section className="skills-grid">{skills.isLoading ? <LoadingState /> : skills.data?.skills.map((skill) => <article className="settings-card skill-card" key={skill.id}><div className="skill-icon"><Wrench size={20} /></div><div><h3>{skill.name}</h3><p>{skill.description}</p><span>{skill.builtin ? "内置能力" : "自定义能力"}</span></div><button className={`toggle-button ${skill.enabled ? "on" : ""}`} onClick={() => void toggle(skill)} aria-label={`${skill.enabled ? "停用" : "启用"}${skill.name}`}><i /></button></article>)}</section></>; }
+function SkillsSettings() {
+  const { notify } = useApp();
+  const queryClient = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const skills = useQuery({ queryKey: ["skills"], queryFn: () => api<{ skills: ManagedSkill[] }>("/api/skills") });
+  const rows = skills.data?.skills || [];
+  const promptSkills = rows.filter((skill) => skill.kind === "prompt");
+  const adapterSkills = rows.filter((skill) => skill.kind === "adapter");
+
+  async function toggle(skill: ManagedSkill) {
+    await api(`/api/skills/${skill.id}`, { method: "PUT", body: JSON.stringify({ ...skill, enabled: !skill.enabled }) });
+    notify(`${skill.name}已${skill.enabled ? "停用" : "启用"}`, "success");
+    void queryClient.invalidateQueries({ queryKey: ["skills"] });
+  }
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await api("/api/skills", { method: "POST", body: JSON.stringify({ slug: form.get("slug"), name: form.get("name"), description: form.get("description"), content: form.get("content") }) });
+      event.currentTarget.reset(); setCreating(false); notify("自定义 Skill 已创建", "success");
+      void queryClient.invalidateQueries({ queryKey: ["skills"] });
+    } catch (error) { notify(error instanceof Error ? error.message : "Skill 创建失败", "danger"); }
+  }
+  async function remove(skill: ManagedSkill) {
+    if (!window.confirm(`删除自定义 Skill“${skill.name}”？`)) return;
+    await api(`/api/skills/${skill.id}`, { method: "DELETE" });
+    notify("自定义 Skill 已删除", "success");
+    void queryClient.invalidateQueries({ queryKey: ["skills"] });
+  }
+  function routeLabel(skill: ManagedSkill) {
+    if (["inbox-router", "obsidian-note-builder"].includes(skill.slug)) return "基础规则 · 自动应用";
+    return skill.kind === "adapter" ? "来源或意图触发" : "内容特征触发";
+  }
+  const group = (title: string, description: string, list: ManagedSkill[]) => <section className="skill-section"><div className="skill-section-heading"><div><h3>{title}</h3><p>{description}</p></div><span>{list.filter((skill) => skill.enabled).length}/{list.length} 已启用</span></div><div className="skills-grid">{list.map((skill) => <article className="settings-card skill-card" key={skill.id}><div className="skill-icon">{skill.kind === "adapter" ? <Route size={20} /> : <Wrench size={20} />}</div><div className="skill-copy"><div className="skill-title"><h3>{skill.name}</h3><span className="skill-route-badge">{routeLabel(skill)}</span></div><p>{skill.description}</p><div className="skill-meta"><span>{skill.builtin ? "知流内置" : "自定义规则"}</span>{skill.sourceUrl && <a href={skill.sourceUrl} target="_blank" rel="noreferrer">查看来源 <ExternalLink size={12} /></a>}</div></div><div className="skill-actions">{!skill.builtin && <button className="icon-button danger-text" type="button" onClick={() => void remove(skill)} aria-label={`删除${skill.name}`}><Trash2 size={16} /></button>}<button className={`toggle-button ${skill.enabled ? "on" : ""}`} onClick={() => void toggle(skill)} aria-label={`${skill.enabled ? "停用" : "启用"}${skill.name}`}><i /></button></div></article>)}</div></section>;
+
+  return <><SettingsHeader title="整理能力" description="系统先按来源、内容形态和用户意图缩小候选范围，再由 Nanobot 使用最匹配的 Skill；专用解析优先，失败后才使用通用回退。" />
+    <section className="settings-card skill-routing-card"><div className="settings-card-title"><Route size={19} /><div><h3>分层路由</h3><p>基础规则始终参与；文档、媒体和专业领域按内容触发；微信、网页与图解工具按来源或明确意图触发。没有足够证据时不猜测。</p></div></div><ol><li><strong>预筛选</strong><span>来源、附件形态与明确意图</span></li><li><strong>选择能力</strong><span>只向模型提供少量相关 Skill</span></li><li><strong>校验结果</strong><span>格式、证据与数据质量检查</span></li></ol></section>
+    <div className="skill-create-bar"><div><strong>自定义整理规则</strong><span>为自己的专业内容增加明确的触发与跳过条件。</span></div><button className="button button-primary" type="button" onClick={() => setCreating((value) => !value)}><Plus size={17} />{creating ? "收起" : "新建 Skill"}</button></div>
+    {creating && <section className="settings-card"><form className="settings-form skill-create-form" onSubmit={(event) => void create(event)}><div className="form-grid"><label>名称<input name="name" required maxLength={80} placeholder="例如：产品研究资料整理" /></label><label>标识<input name="slug" required pattern="[a-z0-9][a-z0-9-]{1,59}" placeholder="product-research" /></label></div><label>路由说明<textarea name="description" rows={3} required maxLength={500} placeholder="TRIGGER：什么内容应使用。SKIP：什么情况不能使用。ROUTE：与其他 Skill 重叠时谁优先。" /></label><label>整理规则<textarea name="content" rows={8} required maxLength={20000} placeholder="说明要提取什么、证据要求、输出边界和失败时如何处理。" /></label><div className="form-actions"><button className="button button-primary">创建并启用</button></div></form></section>}
+    {skills.isLoading ? <LoadingState /> : <>{group("语义整理规则", "参与标题、分类、摘要、知识点和专业领域判断。", promptSkills)}{group("解析与可视化适配器", "由确定性路由选择；同一任务只启用必要的专用能力。", adapterSkills)}</>}
+  </>;
+}
 
 function UsersSettings() {
   const { owner, notify } = useApp();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [createdInvitation, setCreatedInvitation] = useState<CreatedInvitation | null>(null);
+  const [invitationStatusFilter, setInvitationStatusFilter] = useState("all");
+  const [invitationPage, setInvitationPage] = useState(0);
+  const [resetTarget, setResetTarget] = useState<Owner | null>(null);
+  const invitationPageSize = 8;
   const users = useQuery({
     queryKey: ["users"],
     queryFn: () => api<{ users: (Owner & { botCount: number; messageCount: number })[] }>("/api/admin/users"),
   });
   const invitations = useQuery({
-    queryKey: ["invitations"],
-    queryFn: () => api<{ invitations: Invitation[] }>("/api/admin/invitations"),
+    queryKey: ["invitations", invitationStatusFilter, invitationPage],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        limit: String(invitationPageSize),
+        offset: String(invitationPage * invitationPageSize),
+        status: invitationStatusFilter,
+      });
+      return api<{ invitations: Invitation[]; pagination: { total: number; limit: number; offset: number; hasMore: boolean } }>(`/api/admin/invitations?${params}`);
+    },
   });
   const rows = users.data?.users.filter((user) =>
     [user.username, user.displayName].join(" ").toLowerCase().includes(search.toLowerCase()),
@@ -249,6 +301,25 @@ function UsersSettings() {
     void queryClient.invalidateQueries({ queryKey: ["users"] });
   }
 
+  async function resetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!resetTarget) return;
+    const data = new FormData(event.currentTarget);
+    try {
+      await api(`/api/admin/users/${resetTarget.id}/reset-password`, {
+        method: "POST",
+        body: JSON.stringify({
+          newPassword: data.get("newPassword"),
+          confirmPassword: data.get("confirmPassword"),
+        }),
+      });
+      notify(`@${resetTarget.username} 的密码已重置，原有登录已失效`, "success");
+      setResetTarget(null);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "密码重置失败", "danger");
+    }
+  }
+
   return <>
     <SettingsHeader title="用户管理" description="通过一次性邀请码添加用户，并管理彼此隔离的个人知识工作区。" />
     <section className="settings-card">
@@ -258,13 +329,15 @@ function UsersSettings() {
         <button className="button button-primary"><Plus size={17} />创建邀请</button>
       </form>
       {createdInvitation && <div className="secret-reveal invitation-secret"><KeyRound size={20} /><div><strong>邀请链接（仅显示一次）</strong><code>{invitationUrl}</code><small>有效至 {formatDate(createdInvitation.expiresAt)}。受邀用户打开链接即可直接创建账户。</small></div><div className="secret-actions"><button className="button button-secondary" onClick={() => void copyInvitation(invitationUrl, "邀请链接")}><Copy size={16} />复制链接</button><button className="button button-secondary" onClick={() => void copyInvitation(createdInvitation.token, "邀请码")}><Copy size={16} />复制邀请码</button></div></div>}
-      {invitations.isLoading ? <LoadingState /> : invitations.data?.invitations.length ? <div className="invitation-list">{invitations.data.invitations.map((invitation) => { const status = invitationStatus(invitation); const active = status.label === "待使用"; return <div key={invitation.id}><div><strong>{invitation.consumedBy ? `由 ${invitation.consumedBy.displayName} (@${invitation.consumedBy.username}) 使用` : "一次性用户邀请"}</strong><span>创建于 {formatDate(invitation.createdAt)} · 有效至 {formatDate(invitation.expiresAt)}</span></div><span className={`status-badge ${status.tone}`}>{status.label}</span>{active && <button className="button button-secondary" onClick={() => void revokeInvitation(invitation)}>撤销</button>}</div>; })}</div> : <EmptyState title="尚未创建邀请" description="创建后将生成一次性邀请链接。" />}
+      <div className="invitation-list-toolbar"><label>邀请记录<select value={invitationStatusFilter} onChange={(event) => { setInvitationStatusFilter(event.target.value); setInvitationPage(0); }}><option value="all">全部状态</option><option value="pending">待使用</option><option value="used">已使用</option><option value="expired">已过期</option><option value="revoked">已撤销</option></select></label><span>共 {invitations.data?.pagination.total || 0} 条</span></div>
+      {invitations.isLoading ? <LoadingState /> : invitations.data?.invitations.length ? <><div className="invitation-list">{invitations.data.invitations.map((invitation) => { const status = invitationStatus(invitation); const active = status.label === "待使用"; return <div key={invitation.id}><div><strong>{invitation.consumedBy ? `由 ${invitation.consumedBy.displayName} (@${invitation.consumedBy.username}) 使用` : "一次性用户邀请"}</strong><span>创建于 {formatDate(invitation.createdAt)} · 有效至 {formatDate(invitation.expiresAt)}</span></div><span className={`status-badge ${status.tone}`}>{status.label}</span>{active && <button className="button button-secondary" onClick={() => void revokeInvitation(invitation)}>撤销</button>}</div>; })}</div><div className="list-pagination"><button className="button button-secondary" disabled={invitationPage === 0} onClick={() => setInvitationPage((page) => Math.max(0, page - 1))}><ChevronLeft size={16} />上一页</button><span>第 {invitationPage + 1} 页</span><button className="button button-secondary" disabled={!invitations.data.pagination.hasMore} onClick={() => setInvitationPage((page) => page + 1)}>下一页<ChevronRight size={16} /></button></div></> : <EmptyState title={invitationStatusFilter === "all" ? "尚未创建邀请" : "这个状态下没有邀请记录"} description={invitationStatusFilter === "all" ? "创建后将生成一次性邀请链接。" : "可以切换状态查看其他邀请记录。"} />}
     </section>
     <section className="settings-card">
-      <div className="settings-card-title"><UserRound size={19} /><div><h3>工作区用户</h3><p>搜索、停用或永久删除已有用户。</p></div></div>
+      <div className="settings-card-title"><UserRound size={19} /><div><h3>工作区用户</h3><p>搜索、重置密码、停用或永久删除已有用户。</p></div></div>
       <label className="table-search user-search">搜索用户<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="用户名或显示名称" /></label>
-      <div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <><button className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></>}</div>)}</div>
+      <div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <div className="user-actions"><button className="button button-secondary" onClick={() => setResetTarget(user)}><LockKeyhole size={16} />重置密码</button><button className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></div>}</div>)}</div>
     </section>
+    {resetTarget && <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setResetTarget(null); }}><section className="account-action-modal" role="dialog" aria-modal="true" aria-label="重置用户密码"><header><div><span className="eyebrow">ACCOUNT SECURITY</span><h2>重置用户密码</h2><p>为 {resetTarget.displayName}（@{resetTarget.username}）设置新密码。保存后，该用户在其他设备上的登录会立即失效。</p></div><button className="icon-button" aria-label="关闭" onClick={() => setResetTarget(null)}><X size={20} /></button></header><form className="settings-form" onSubmit={(event) => void resetPassword(event)}><label>新密码<input name="newPassword" type="password" minLength={8} required autoFocus autoComplete="new-password" /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required autoComplete="new-password" /></label><div className="form-actions"><button type="button" className="button button-secondary" onClick={() => setResetTarget(null)}>取消</button><button className="button button-primary"><LockKeyhole size={16} />确认重置</button></div></form></section></div>}
   </>;
 }
 

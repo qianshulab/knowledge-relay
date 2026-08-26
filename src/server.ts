@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
+import { PassThrough } from "node:stream";
 import path from "node:path";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -125,6 +126,7 @@ export function createServer(
   let oauthInProgress = false;
   let pluginPublishInProgress = false;
   const diagramGenerations = new Map<string, Promise<KnowledgeMap>>();
+  const activeKnowledgeChats = new Set<string>();
 
   void app.register(fastifyStatic, {
     root: webRoot,
@@ -373,6 +375,18 @@ export function createServer(
     },
   );
 
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/admin/users/:id/reset-password",
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+      const newPassword = stringBody(request.body?.newPassword, 200);
+      const confirmPassword = stringBody(request.body?.confirmPassword, 200);
+      if (newPassword.length < 8) return reply.code(400).send({ error: "新密码至少需要 8 个字符" });
+      if (newPassword !== confirmPassword) return reply.code(400).send({ error: "两次输入的新密码不一致" });
+      return { ok: true, reset: tenantDatabase(request).resetUserPassword(request.params.id, newPassword) };
+    },
+  );
+
   app.delete<{ Params: { id: string }; Body: Record<string, unknown> }>(
     "/api/admin/users/:id",
     async (request, reply) => {
@@ -403,9 +417,25 @@ export function createServer(
       ? { ok: true }
       : reply.code(404).send({ error: "API 令牌不存在" }));
 
-  app.get("/api/admin/invitations", async (request, reply) => {
+  app.get<{ Querystring: { limit?: string; offset?: string; status?: string } }>("/api/admin/invitations", async (request, reply) => {
     if (!requireAdmin(request, reply)) return;
-    return { invitations: tenantDatabase(request).listInvitations() };
+    const allowedStatuses = new Set(["all", "pending", "used", "expired", "revoked"]);
+    const requestedStatus = stringBody(request.query.status, 20);
+    const status = allowedStatuses.has(requestedStatus) ? requestedStatus as "all" | "pending" | "used" | "expired" | "revoked" : "all";
+    const result = tenantDatabase(request).listInvitations({
+      limit: Math.max(1, Math.min(50, Number(request.query.limit) || 10)),
+      offset: Math.max(0, Number(request.query.offset) || 0),
+      status,
+    });
+    return {
+      invitations: result.invitations,
+      pagination: {
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        hasMore: result.offset + result.invitations.length < result.total,
+      },
+    };
   });
 
   app.post<{ Body: Record<string, unknown> }>("/api/admin/invitations", async (request, reply) => {
@@ -589,6 +619,233 @@ export function createServer(
       scope: "inbox_only",
     };
   });
+
+  app.get<{ Querystring: { limit?: string; offset?: string } }>("/api/knowledge/chats", async (request) => {
+    const result = tenantDatabase(request).listKnowledgeConversations(
+      Math.max(1, Math.min(50, Number(request.query.limit) || 30)),
+      Math.max(0, Number(request.query.offset) || 0),
+    );
+    return { ...result, hasMore: result.conversations.length + (Number(request.query.offset) || 0) < result.total };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/knowledge/chats", async (request) => ({
+    conversation: tenantDatabase(request).createKnowledgeConversation(stringBody(request.body?.title, 80)),
+  }));
+
+  app.get<{ Params: { id: string } }>("/api/knowledge/chats/:id", async (request, reply) => {
+    const conversation = tenantDatabase(request).getKnowledgeConversation(request.params.id);
+    return conversation ? { conversation } : reply.code(404).send({ error: "问答会话不存在" });
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/knowledge/chats/:id", async (request, reply) =>
+    tenantDatabase(request).deleteKnowledgeConversation(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "问答会话不存在" }));
+
+  type KnowledgeChatUpdate =
+    | { type: "status"; phase: "retrieving" | "reading" | "generating"; message: string }
+    | { type: "delta"; content: string };
+  const runKnowledgeChatAnswer = async (
+    scoped: AppDatabase,
+    conversation: NonNullable<ReturnType<AppDatabase["getKnowledgeConversation"]>>,
+    question: string,
+    tenantId: string,
+    onUpdate?: (event: KnowledgeChatUpdate) => void,
+  ) => {
+      const runKey = `${tenantId}:${conversation.id}`;
+      if (activeKnowledgeChats.has(runKey)) {
+        throw new Error("这个会话正在生成回答，请稍候");
+      }
+      activeKnowledgeChats.add(runKey);
+      try {
+        const settings = scoped.getAgentSettings(config.nanobot);
+        if (!settings.enabled) throw new Error("请先在系统设置中启用 AI 智能整理");
+        scoped.appendKnowledgeChatMessage(conversation.id, "user", question);
+        onUpdate?.({ type: "status", phase: "retrieving", message: "正在理解问题并检索知识库…" });
+        const recentHistory = conversation.messages.slice(-10);
+        const previousQuestions = recentHistory
+          .filter((message) => message.role === "user")
+          .slice(-2)
+          .map((message) => message.content);
+        const retrievalQuestion = [...previousQuestions, question].join("；").slice(0, 1_500);
+        let plan: Awaited<ReturnType<NanobotClient["planInboxQuery"]>> | undefined;
+        try {
+          plan = await nanobot.planInboxQuery(retrievalQuestion, {
+            ...settings,
+            baseUrl: config.nanobot.searchBaseUrl || settings.baseUrl,
+          }, { tenantId });
+        } catch (error) {
+          logger.warn("知识问答检索规划失败，已使用本地索引", errorDetails(error));
+        }
+        const ranked = new Map<string, { item: InboxSearchResult; score: number }>();
+        type RankedKnowledgeChunk = ReturnType<AppDatabase["searchKnowledgeChunks"]>[number] & { combinedScore: number };
+        const rankedChunks = new Map<string, RankedKnowledgeChunk>();
+        const addMatches = (items: InboxSearchResult[], score: number): void => {
+          for (const item of items) {
+            const current = ranked.get(item.id);
+            ranked.set(item.id, { item, score: (current?.score || 0) + score });
+          }
+        };
+        const addChunkMatches = (query: string, score: number): void => {
+          for (const item of scoped.searchKnowledgeChunks(query, 40)) {
+            const key = `${item.messageId}:${item.ordinal}`;
+            const current = rankedChunks.get(key);
+            rankedChunks.set(key, { ...item, combinedScore: (current?.combinedScore || 0) + score + item.score });
+          }
+        };
+        addMatches(scoped.searchInbox(retrievalQuestion, { organized: true, limit: 20 }), 30);
+        addChunkMatches(retrievalQuestion, 30);
+        Array.from(new Set(plan?.queries || [])).slice(0, 6).forEach((query, index) => {
+          addMatches(scoped.searchInbox(query, { organized: true, limit: 20 }), 24 - index * 2);
+          addChunkMatches(query, 24 - index * 2);
+        });
+        plan?.domains.forEach((domain) => addMatches(scoped.searchInbox("", { organized: true, domain, limit: 12 }), 12));
+        plan?.knowledgePoints.forEach((knowledgePoint) => addMatches(scoped.searchInbox("", { organized: true, knowledgePoint, limit: 12 }), 12));
+        plan?.tools.forEach((tool) => addMatches(scoped.searchInbox("", { organized: true, tool, limit: 12 }), 12));
+        const previousCitationIds = recentHistory
+          .filter((message) => message.role === "assistant")
+          .slice(-1)
+          .flatMap((message) => message.citations.map((citation) => citation.messageId));
+        const chunksByMessage = new Map<string, RankedKnowledgeChunk[]>();
+        Array.from(rankedChunks.values())
+          .sort((left, right) => right.combinedScore - left.combinedScore || left.ordinal - right.ordinal)
+          .forEach((chunk) => {
+            const current = chunksByMessage.get(chunk.messageId) || [];
+            if (current.length < 4) chunksByMessage.set(chunk.messageId, [...current, chunk]);
+          });
+        const chunkRankedIds = Array.from(chunksByMessage.entries())
+          .sort((left, right) => right[1].reduce((sum, chunk) => sum + chunk.combinedScore, 0)
+            - left[1].reduce((sum, chunk) => sum + chunk.combinedScore, 0))
+          .map(([messageId]) => messageId);
+        const candidateIds = Array.from(new Set([
+          ...previousCitationIds,
+          ...chunkRankedIds,
+          ...Array.from(ranked.values())
+            .sort((left, right) => right.score - left.score || right.item.seq - left.item.seq)
+            .map((entry) => entry.item.id),
+        ])).slice(0, 8);
+        onUpdate?.({ type: "status", phase: "reading", message: `已找到 ${candidateIds.length} 篇候选资料，正在核对相关段落…` });
+        const sources = candidateIds.flatMap((id) => {
+          const detail = scoped.getMessageDetail(id);
+          if (!detail || detail.agentStatus !== "completed") return [];
+          const chunks = chunksByMessage.get(id) || scoped.knowledgeChunksForMessage(id, 4);
+          const content = chunks.length
+            ? chunks.map((chunk) => `## ${chunk.heading}\n${chunk.content}`).join("\n\n")
+            : detail.contentMarkdown || detail.detailsMarkdown || detail.markdown || detail.text;
+          return [{
+            id: detail.id,
+            title: detail.title,
+            summary: detail.summary,
+            content,
+            domains: detail.domains,
+            knowledgePoints: detail.knowledgePoints,
+          }];
+        });
+        if (!sources.length) {
+          const content = "当前知识库中没有找到足够依据回答这个问题。可以换用更明确的主题、人物、工具名称，或先把相关资料发送到收件台完成整理。";
+          onUpdate?.({ type: "delta", content });
+          const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", content);
+          return { message, followUps: [] };
+        }
+        onUpdate?.({ type: "status", phase: "generating", message: `正在依据 ${sources.length} 篇资料组织回答…` });
+        const result = await nanobot.answerKnowledgeQuestion(
+          question,
+          sources,
+          recentHistory.map((message) => ({ role: message.role, content: message.content })),
+          settings,
+          { tenantId, conversationId: conversation.id },
+          onUpdate ? (content) => onUpdate({ type: "delta", content }) : undefined,
+        );
+        const citations = result.citedSourceIds.flatMap((id) => {
+          const source = sources.find((item) => item.id === id);
+          const sourceIndex = sources.findIndex((item) => item.id === id);
+          return source ? [{ messageId: source.id, title: source.title, excerpt: source.summary, reference: `S${sourceIndex + 1}` }] : [];
+        });
+        const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", result.answer, citations);
+        return { message, followUps: result.followUps };
+      } finally {
+        activeKnowledgeChats.delete(runKey);
+      }
+  };
+
+  const knowledgeChatRequest = (
+    request: FastifyRequest<{ Params: { id: string }; Body: Record<string, unknown> }>,
+    reply: FastifyReply,
+  ) => {
+    const scoped = tenantDatabase(request);
+    const conversation = scoped.getKnowledgeConversation(request.params.id);
+    if (!conversation) {
+      void reply.code(404).send({ error: "问答会话不存在" });
+      return;
+    }
+    const question = stringBody(request.body?.question, 2_000);
+    if (!question) {
+      void reply.code(400).send({ error: "请输入问题" });
+      return;
+    }
+    const tenantId = scoped.currentTenantId();
+    if (!tenantId) {
+      void reply.code(401).send({ error: "请先登录" });
+      return;
+    }
+    if (!scoped.getAgentSettings(config.nanobot).enabled) {
+      void reply.code(409).send({ error: "请先在系统设置中启用 AI 智能整理" });
+      return;
+    }
+    if (activeKnowledgeChats.has(`${tenantId}:${conversation.id}`)) {
+      void reply.code(409).send({ error: "这个会话正在生成回答，请稍候" });
+      return;
+    }
+    return { scoped, conversation, question, tenantId };
+  };
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/knowledge/chats/:id/messages",
+    async (request, reply) => {
+      const input = knowledgeChatRequest(request, reply);
+      if (!input) return reply;
+      return runKnowledgeChatAnswer(input.scoped, input.conversation, input.question, input.tenantId);
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/api/knowledge/chats/:id/messages/stream",
+    async (request, reply) => {
+      const input = knowledgeChatRequest(request, reply);
+      if (!input) return reply;
+      const stream = new PassThrough();
+      const write = (event: KnowledgeChatUpdate | {
+        type: "done";
+        message: ReturnType<AppDatabase["appendKnowledgeChatMessage"]>;
+        followUps: string[];
+      } | { type: "heartbeat"; at: string } | { type: "error"; error: string }) => {
+        if (!stream.destroyed) stream.write(`${JSON.stringify(event)}\n`);
+      };
+      const heartbeat = setInterval(() => write({ type: "heartbeat", at: new Date().toISOString() }), 15_000);
+      heartbeat.unref();
+      reply.headers({
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      });
+      void runKnowledgeChatAnswer(
+        input.scoped,
+        input.conversation,
+        input.question,
+        input.tenantId,
+        write,
+      ).then((result) => {
+        write({ type: "done", ...result });
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : "知识问答暂时失败";
+        write({ type: "error", error: message.replace(/[\r\n\t]+/g, " ").slice(0, 300) });
+      }).finally(() => {
+        clearInterval(heartbeat);
+        stream.end();
+      });
+      return reply.send(stream);
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/messages/:id", async (request, reply) => {
     const scoped = tenantDatabase(request);

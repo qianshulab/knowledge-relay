@@ -159,6 +159,10 @@ export type KnowledgeMapNode = {
   id: string;
   label: string;
   type: "root" | "resource" | "domain" | "concept" | "tool" | "point";
+  description?: string;
+  evidence?: string;
+  group?: string;
+  role?: "start" | "process" | "decision" | "result" | "actor" | "artifact" | "milestone" | "topic";
   count?: number;
 };
 
@@ -257,6 +261,42 @@ export type KnowledgeFacets = {
 };
 
 export type InboxSearchResult = MessageListItem & { excerpt: string };
+
+export type KnowledgeChunkSearchResult = {
+  messageId: string;
+  ordinal: number;
+  title: string;
+  summary: string;
+  heading: string;
+  content: string;
+  domains: string[];
+  knowledgePoints: string[];
+  score: number;
+};
+
+export type KnowledgeChatCitation = {
+  messageId: string;
+  title: string;
+  excerpt: string;
+  reference?: string;
+};
+
+export type KnowledgeChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: KnowledgeChatCitation[];
+  createdAt: string;
+};
+
+export type KnowledgeConversation = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  lastMessage?: string;
+};
 
 export type MessageListOptions = {
   state?: "inbox" | "library" | "archived";
@@ -393,6 +433,27 @@ function contentFormatSql(alias = "m"): string {
     ELSE 'text' END`;
 }
 
+function semanticCoverSql(attachmentAlias = "a", messageAlias = "m"): string {
+  return `(
+    ${attachmentAlias}.file_name LIKE '%封面%'
+    OR ${attachmentAlias}.file_name LIKE '%首图%'
+    OR LOWER(${attachmentAlias}.file_name) LIKE '%cover%'
+    OR LOWER(${attachmentAlias}.file_name) LIKE '%thumbnail%'
+    OR LOWER(${attachmentAlias}.file_name) LIKE '%poster%'
+    OR ((${contentFormatSql(messageAlias)})='image' AND ${attachmentAlias}.kind='image')
+  )`;
+}
+
+function semanticCoverOrderSql(attachmentAlias = "a"): string {
+  return `CASE
+    WHEN ${attachmentAlias}.file_name LIKE '%封面%'
+      OR ${attachmentAlias}.file_name LIKE '%首图%'
+      OR LOWER(${attachmentAlias}.file_name) LIKE '%cover%'
+      OR LOWER(${attachmentAlias}.file_name) LIKE '%thumbnail%'
+      OR LOWER(${attachmentAlias}.file_name) LIKE '%poster%' THEN 0
+    ELSE 1 END`;
+}
+
 function contentFormatFromRow(row: SqlRow): ContentFormat {
   const sourceType = rowString(row, "source_type");
   const captureType = rowString(row, "capture_type");
@@ -483,6 +544,60 @@ function stripNoteEnvelope(markdown: string): string {
     .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, "")
     .replace(/^#\s+[^\r\n]+\r?\n+/, "")
     .trim();
+}
+
+function knowledgeContentChunks(
+  title: string,
+  summary: string,
+  keyPoints: string[],
+  markdown: string,
+  detailsMarkdown: string,
+): Array<{ heading: string; content: string }> {
+  const sources = [
+    { heading: "内容摘要", text: [summary, ...keyPoints.map((point) => `- ${point}`)].filter(Boolean).join("\n") },
+    { heading: "文章正文", text: stripNoteEnvelope(markdown) },
+    { heading: "延伸整理", text: detailsMarkdown.trim() },
+  ];
+  const chunks: Array<{ heading: string; content: string }> = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    if (!source.text) continue;
+    let heading = source.heading;
+    let buffer = "";
+    const flush = (): void => {
+      const content = buffer.trim();
+      buffer = "";
+      if (content.length < 20) return;
+      const fingerprint = normalizedSearchText(content);
+      if (seen.has(fingerprint)) return;
+      seen.add(fingerprint);
+      chunks.push({ heading, content: content.slice(0, 2_000) });
+    };
+    const paragraphs = source.text.replace(/\r\n/g, "\n").split(/\n{2,}/);
+    for (const rawParagraph of paragraphs) {
+      const paragraph = rawParagraph.trim();
+      if (!paragraph) continue;
+      const nextHeading = paragraph.match(/^#{1,6}\s+(.+)$/)?.[1]?.trim();
+      if (nextHeading) {
+        flush();
+        heading = nextHeading.slice(0, 120);
+        continue;
+      }
+      if (paragraph.length > 1_800) {
+        flush();
+        for (let offset = 0; offset < paragraph.length && chunks.length < 100; offset += 1_500) {
+          const content = paragraph.slice(offset, offset + 1_700).trim();
+          if (content.length >= 20) chunks.push({ heading, content });
+        }
+        continue;
+      }
+      if (buffer && buffer.length + paragraph.length > 1_600) flush();
+      buffer += `${buffer ? "\n\n" : ""}${paragraph}`;
+    }
+    flush();
+  }
+  if (!chunks.length && title.trim()) chunks.push({ heading: "资料", content: title.trim() });
+  return chunks.slice(0, 100);
 }
 
 function noteSummary(markdown: string, fallback: string): string {
@@ -811,6 +926,37 @@ export class AppDatabase {
         generated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_knowledge_diagrams_tenant ON knowledge_diagrams(tenant_id, generated_at DESC);
+      CREATE TABLE IF NOT EXISTS knowledge_conversations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_knowledge_conversations_tenant
+        ON knowledge_conversations(tenant_id, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS knowledge_chat_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES knowledge_conversations(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+        content TEXT NOT NULL,
+        citations_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chat_messages_conversation
+        ON knowledge_chat_messages(conversation_id, created_at);
+      CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        heading TEXT NOT NULL,
+        content TEXT NOT NULL,
+        indexed_text TEXT NOT NULL,
+        UNIQUE(message_id, ordinal)
+      );
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tenant ON knowledge_chunks(tenant_id, message_id);
       CREATE TABLE IF NOT EXISTS sync_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1170,6 +1316,20 @@ export class AppDatabase {
     return mapOwner(this.one("SELECT * FROM users WHERE id=?", userId));
   }
 
+  resetUserPassword(userId: string, newPassword: string): { username: string; revokedSessions: number } {
+    const adminId = this.requireAdmin();
+    if (userId === adminId) throw new Error("请在账号与安全中修改当前管理员密码");
+    if (newPassword.length < 8) throw new Error("新密码至少需要 8 个字符");
+    const user = this.maybeOne("SELECT id,username,role FROM users WHERE id=?", userId);
+    if (!user) throw new Error("用户不存在");
+    if (rowString(user, "role") === "admin") throw new Error("不能重置其他管理员账户密码");
+    const revokedSessions = this.transaction(() => {
+      this.run("UPDATE users SET password_hash=? WHERE id=?", hashPassword(newPassword), userId);
+      return Number(this.run("DELETE FROM sessions WHERE user_id=?", userId).changes);
+    });
+    return { username: rowString(user, "username"), revokedSessions };
+  }
+
   deleteUser(userId: string, confirmation: string): { username: string; attachmentCount: number } {
     const adminId = this.requireAdmin();
     if (userId === adminId) throw new Error("不能删除当前管理员账户");
@@ -1222,7 +1382,12 @@ export class AppDatabase {
     return { id, token, expiresAt };
   }
 
-  listInvitations(): Array<{
+  listInvitations(options: {
+    limit?: number;
+    offset?: number;
+    status?: "all" | "pending" | "used" | "expired" | "revoked";
+  } = {}): {
+    invitations: Array<{
     id: string;
     expiresAt: string;
     createdAt: string;
@@ -1232,14 +1397,37 @@ export class AppDatabase {
       username: string;
       displayName: string;
     };
-  }> {
+    }>;
+    total: number;
+    limit: number;
+    offset: number;
+  } {
     const adminId = this.requireAdmin();
-    return this.all(
+    const limit = Math.max(1, Math.min(50, Math.floor(options.limit || 10)));
+    const offset = Math.max(0, Math.floor(options.offset || 0));
+    const status = options.status || "all";
+    const statusSql = status === "pending"
+      ? " AND i.consumed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>?"
+      : status === "used"
+        ? " AND i.consumed_at IS NOT NULL"
+        : status === "expired"
+          ? " AND i.consumed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at<=?"
+          : status === "revoked"
+            ? " AND i.revoked_at IS NOT NULL"
+            : "";
+    const statusValues: SqlValue[] = [adminId, ...(["pending", "expired"].includes(status) ? [now()] : [])];
+    const total = rowNumber(this.one(
+      `SELECT COUNT(*) AS count FROM invitations i WHERE i.created_by=?${statusSql}`,
+      ...statusValues,
+    ), "count");
+    const invitations = this.all(
       `SELECT i.*,u.username AS consumed_username,u.display_name AS consumed_display_name
        FROM invitations i
        LEFT JOIN users u ON u.id=i.consumed_by
-       WHERE i.created_by=? ORDER BY i.created_at DESC LIMIT 100`,
-      adminId,
+       WHERE i.created_by=?${statusSql} ORDER BY i.created_at DESC LIMIT ? OFFSET ?`,
+      ...statusValues,
+      limit,
+      offset,
     ).map((row) => ({
       id: rowString(row, "id"),
       expiresAt: rowString(row, "expires_at"),
@@ -1253,6 +1441,7 @@ export class AppDatabase {
         },
       } : {}),
     }));
+    return { invitations, total, limit, offset };
   }
 
   revokeInvitation(id: string): boolean {
@@ -1262,6 +1451,138 @@ export class AppDatabase {
       now(),
       id,
       adminId,
+    ).changes) === 1;
+  }
+
+  listKnowledgeConversations(limit = 30, offset = 0): {
+    conversations: KnowledgeConversation[];
+    total: number;
+  } {
+    const tenantId = this.requireOwnerId();
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 30));
+    const safeOffset = Math.max(0, Math.floor(offset) || 0);
+    const total = rowNumber(this.one(
+      "SELECT COUNT(*) AS count FROM knowledge_conversations WHERE tenant_id=?",
+      tenantId,
+    ), "count");
+    const conversations = this.all(
+      `SELECT c.*,
+        (SELECT COUNT(*) FROM knowledge_chat_messages m WHERE m.conversation_id=c.id) AS message_count,
+        (SELECT content FROM knowledge_chat_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at DESC,m.rowid DESC LIMIT 1) AS last_message
+       FROM knowledge_conversations c
+       WHERE c.tenant_id=? ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`,
+      tenantId,
+      safeLimit,
+      safeOffset,
+    ).map((row) => ({
+      id: rowString(row, "id"),
+      title: rowString(row, "title"),
+      createdAt: rowString(row, "created_at"),
+      updatedAt: rowString(row, "updated_at"),
+      messageCount: rowNumber(row, "message_count"),
+      lastMessage: rowOptional(row, "last_message"),
+    }));
+    return { conversations, total };
+  }
+
+  createKnowledgeConversation(title = "新对话"): KnowledgeConversation {
+    const tenantId = this.requireOwnerId();
+    const id = crypto.randomUUID();
+    const timestamp = now();
+    const normalizedTitle = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) || "新对话";
+    this.run(
+      "INSERT INTO knowledge_conversations(id,tenant_id,title,created_at,updated_at) VALUES(?,?,?,?,?)",
+      id,
+      tenantId,
+      normalizedTitle,
+      timestamp,
+      timestamp,
+    );
+    return { id, title: normalizedTitle, createdAt: timestamp, updatedAt: timestamp, messageCount: 0 };
+  }
+
+  getKnowledgeConversation(id: string): (KnowledgeConversation & { messages: KnowledgeChatMessage[] }) | undefined {
+    const tenantId = this.requireOwnerId();
+    const row = this.maybeOne(
+      `SELECT c.*,(SELECT COUNT(*) FROM knowledge_chat_messages m WHERE m.conversation_id=c.id) AS message_count
+       FROM knowledge_conversations c WHERE c.id=? AND c.tenant_id=?`,
+      id,
+      tenantId,
+    );
+    if (!row) return undefined;
+    const messages = this.all(
+      "SELECT * FROM knowledge_chat_messages WHERE conversation_id=? AND tenant_id=? ORDER BY created_at,rowid",
+      id,
+      tenantId,
+    ).map((message) => ({
+      id: rowString(message, "id"),
+      role: rowString(message, "role") === "assistant" ? "assistant" as const : "user" as const,
+      content: rowString(message, "content"),
+      citations: safeJson<KnowledgeChatCitation[]>(rowString(message, "citations_json"), [])
+        .filter((citation) => citation && typeof citation.messageId === "string" && typeof citation.title === "string")
+        .slice(0, 8),
+      createdAt: rowString(message, "created_at"),
+    }));
+    return {
+      id: rowString(row, "id"),
+      title: rowString(row, "title"),
+      createdAt: rowString(row, "created_at"),
+      updatedAt: rowString(row, "updated_at"),
+      messageCount: rowNumber(row, "message_count"),
+      messages,
+    };
+  }
+
+  appendKnowledgeChatMessage(
+    conversationId: string,
+    role: "user" | "assistant",
+    content: string,
+    citations: KnowledgeChatCitation[] = [],
+  ): KnowledgeChatMessage {
+    const tenantId = this.requireOwnerId();
+    const conversation = this.maybeOne(
+      "SELECT id,title FROM knowledge_conversations WHERE id=? AND tenant_id=?",
+      conversationId,
+      tenantId,
+    );
+    if (!conversation) throw new Error("问答会话不存在");
+    const normalizedContent = content.trim().slice(0, 20_000);
+    if (!normalizedContent) throw new Error("消息内容不能为空");
+    const normalizedCitations = citations
+      .filter((citation) => citation.messageId && citation.title)
+      .slice(0, 8)
+      .map((citation) => ({
+        messageId: citation.messageId.slice(0, 300),
+        title: citation.title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 160),
+        excerpt: citation.excerpt.replace(/[\r\n\t]+/g, " ").trim().slice(0, 500),
+        ...(citation.reference && /^S\d{1,2}$/.test(citation.reference) ? { reference: citation.reference } : {}),
+      }));
+    const id = crypto.randomUUID();
+    const createdAt = now();
+    this.transaction(() => {
+      this.run(
+        "INSERT INTO knowledge_chat_messages(id,conversation_id,tenant_id,role,content,citations_json,created_at) VALUES(?,?,?,?,?,?,?)",
+        id,
+        conversationId,
+        tenantId,
+        role,
+        normalizedContent,
+        JSON.stringify(normalizedCitations),
+        createdAt,
+      );
+      const nextTitle = role === "user" && rowString(conversation, "title") === "新对话"
+        ? normalizedContent.replace(/[?？!！。]+$/g, "").slice(0, 48) || "新对话"
+        : rowString(conversation, "title");
+      this.run("UPDATE knowledge_conversations SET title=?,updated_at=? WHERE id=?", nextTitle, createdAt, conversationId);
+    });
+    return { id, role, content: normalizedContent, citations: normalizedCitations, createdAt };
+  }
+
+  deleteKnowledgeConversation(id: string): boolean {
+    return Number(this.run(
+      "DELETE FROM knowledge_conversations WHERE id=? AND tenant_id=?",
+      id,
+      this.requireOwnerId(),
     ).changes) === 1;
   }
 
@@ -2054,9 +2375,11 @@ export class AppDatabase {
     const rows = this.all(
       `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
        (SELECT a.id FROM attachments a WHERE a.message_id=m.id AND a.mime_type LIKE 'image/%'
-        ORDER BY CASE WHEN a.kind='derived' THEN 0 ELSE 1 END,a.rowid LIMIT 1) AS cover_attachment_id,
+        AND ${semanticCoverSql("a", "m")}
+        ORDER BY ${semanticCoverOrderSql("a")},a.rowid LIMIT 1) AS cover_attachment_id,
        (SELECT a.mime_type FROM attachments a WHERE a.message_id=m.id AND a.mime_type LIKE 'image/%'
-        ORDER BY CASE WHEN a.kind='derived' THEN 0 ELSE 1 END,a.rowid LIMIT 1) AS cover_mime_type,
+        AND ${semanticCoverSql("a", "m")}
+        ORDER BY ${semanticCoverOrderSql("a")},a.rowid LIMIT 1) AS cover_mime_type,
        CASE WHEN EXISTS(SELECT 1 FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL)
          THEN CASE WHEN COALESCE((SELECT MAX(e.seq) FROM sync_events e WHERE e.message_id=m.id),0)
            <= COALESCE((SELECT MAX(t.last_ack_seq) FROM sync_targets t WHERE t.tenant_id=m.tenant_id AND t.is_primary=1 AND t.revoked_at IS NULL),0)
@@ -2188,6 +2511,70 @@ export class AppDatabase {
     }).sort((left, right) => right.searchScore - left.searchScore || right.seq - left.seq)
       .slice(0, resultLimit)
       .map(({ searchScore: _searchScore, ...item }) => item);
+  }
+
+  searchKnowledgeChunks(query: string, limit = 30): KnowledgeChunkSearchResult[] {
+    const terms = querySearchTokens(query);
+    if (!terms.length) return [];
+    const tenantId = this.requireOwnerId();
+    const rows = this.all(
+      `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq
+       FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id
+       WHERE k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
+         AND (${terms.map(() => "k.indexed_text LIKE ? ESCAPE '\\'").join(" OR ")})
+       ORDER BY m.seq DESC,k.ordinal LIMIT 1200`,
+      tenantId,
+      tenantId,
+      ...terms.map(likeValue),
+    );
+    const safeLimit = Math.max(1, Math.min(80, Math.floor(limit) || 30));
+    return rows.map((row) => {
+      const titleIndex = indexedSearchText(rowString(row, "note_title"));
+      const headingIndex = indexedSearchText(rowString(row, "heading"));
+      const contentIndex = rowString(row, "indexed_text");
+      const matchedTerms = terms.filter((term) => contentIndex.includes(term));
+      return {
+        messageId: rowString(row, "message_id"),
+        ordinal: rowNumber(row, "ordinal"),
+        title: rowString(row, "note_title"),
+        summary: rowString(row, "summary"),
+        heading: rowString(row, "heading"),
+        content: rowString(row, "content"),
+        domains: safeJson<string[]>(rowString(row, "domains_json"), []),
+        knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), [])
+          .map(compactKnowledgePoint)
+          .filter(Boolean),
+        score: matchedTerms.length * 3
+          + matchedTerms.filter((term) => titleIndex.includes(term)).length * 9
+          + matchedTerms.filter((term) => headingIndex.includes(term)).length * 7,
+      };
+    }).sort((left, right) => right.score - left.score || left.ordinal - right.ordinal).slice(0, safeLimit);
+  }
+
+  knowledgeChunksForMessage(messageId: string, limit = 4): KnowledgeChunkSearchResult[] {
+    const rows = this.all(
+      `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json
+       FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id
+       WHERE k.message_id=? AND k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
+       ORDER BY k.ordinal LIMIT ?`,
+      messageId,
+      this.requireOwnerId(),
+      this.requireOwnerId(),
+      Math.max(1, Math.min(12, Math.floor(limit) || 4)),
+    );
+    return rows.map((row) => ({
+      messageId: rowString(row, "message_id"),
+      ordinal: rowNumber(row, "ordinal"),
+      title: rowString(row, "note_title"),
+      summary: rowString(row, "summary"),
+      heading: rowString(row, "heading"),
+      content: rowString(row, "content"),
+      domains: safeJson<string[]>(rowString(row, "domains_json"), []),
+      knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), [])
+        .map(compactKnowledgePoint)
+        .filter(Boolean),
+      score: 0,
+    }));
   }
 
   getMessage(messageId: string): MessageListItem | undefined {
@@ -3106,14 +3493,40 @@ export class AppDatabase {
         rowString(row, "knowledge_points_json"), rowString(row, "tools_json"),
       ].join("\n")),
     );
+    this.run("DELETE FROM knowledge_chunks WHERE message_id=?", messageId);
+    if (rowString(row, "agent_status") !== "completed") return;
+    const title = rowString(row, "note_title");
+    const summary = rowString(row, "summary");
+    const keyPoints = safeJson<string[]>(rowString(row, "key_points_json"), []);
+    const chunks = knowledgeContentChunks(
+      title,
+      summary,
+      keyPoints,
+      rowString(row, "note_markdown"),
+      rowString(row, "details_markdown"),
+    );
+    chunks.forEach((chunk, ordinal) => {
+      this.run(
+        `INSERT INTO knowledge_chunks(id,message_id,tenant_id,ordinal,heading,content,indexed_text)
+         VALUES(?,?,?,?,?,?,?)`,
+        `${messageId}:${ordinal}`,
+        messageId,
+        rowString(row, "tenant_id"),
+        ordinal,
+        chunk.heading,
+        chunk.content,
+        indexedSearchText(`${title}\n${chunk.heading}\n${chunk.content}`),
+      );
+    });
   }
 
   private rebuildSearchIndexIfNeeded(): void {
-    const version = "3";
+    const version = "4";
     const current = this.maybeOne("SELECT value FROM metadata WHERE key='message_search_version'");
     if (current && rowString(current, "value") === version) return;
     this.transaction(() => {
       this.run("DELETE FROM message_search");
+      this.run("DELETE FROM knowledge_chunks");
       for (const row of this.all("SELECT id FROM messages ORDER BY seq")) {
         this.upsertSearchIndex(rowString(row, "id"));
       }

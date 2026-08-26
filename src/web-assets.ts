@@ -459,9 +459,13 @@ export async function localizeMarkdownImages(
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, unique.length) }, worker));
-  const images = [...results.values()]
-    .filter((value): value is StoredImage => !(value instanceof Error))
-    .map((value) => value.attachment);
+  // Promise workers finish in network order, not document order. Preserve the
+  // Markdown order so an explicitly prepended article cover remains the first
+  // derived image even when a later body image downloads faster.
+  const images = unique.flatMap((reference) => {
+    const value = results.get(reference.url);
+    return value && !(value instanceof Error) ? [value.attachment] : [];
+  });
   const failed = [...results.values()].filter((value) => value instanceof Error).length;
   if (failed) {
     const reasons = [...new Set(

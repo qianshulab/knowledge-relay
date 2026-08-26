@@ -30,14 +30,15 @@
 | 模块 | 能力 |
 |---|---|
 | 统一收件 | 接收微信 iLink Bot 与开放 API 提交的文字、链接、图片、语音、视频和文件 |
-| 网页解析 | 提取普通网页及微信公众号正文，生成 Markdown 快照并在本地保存正文图片 |
+| 网页解析 | 提取普通网页及微信公众号正文、原始封面和正文图片，生成可离线阅读的 Markdown 快照 |
 | 智能整理 | 生成标题、摘要、内容形态、动态主题、标签、领域、知识点和工具信息 |
 | 收件台 | 展示处理状态、失败原因、附件和同步结果，支持重新整理、归档与永久删除 |
 | 知识库 | 按内容形态、主题和领域浏览已整理内容，并提供独立文章阅读页 |
 | 内容检索 | 理解自然语言查询，在当前用户的本地内容索引中查找并归纳相关资料 |
-| 智能图解 | 按需生成关系图、流程图、对比图、时间线或思维导图，并保存生成结果 |
+| 知识问答 | 仅依据当前用户已整理的收藏内容进行持续问答，保存会话并提供可点击的资料依据 |
+| 智能图解 | 按资料结构选择关系图、流程图、对比图、时间线、时序图、状态图或思维导图；支持缩放、搜索、节点解释与证据查看 |
 | Obsidian 同步 | 增量同步笔记、原始附件、派生 Markdown 和正文图片，支持重试及修订更新 |
-| 多用户 | 邀请制加入；用户内容、令牌、接入通道、搜索索引和 Nanobot Workspace 相互隔离 |
+| 多用户 | 邀请制加入；支持用户搜索、密码重置、停用、删除和邀请记录分页，用户数据与 Nanobot Workspace 相互隔离 |
 
 当模型或 Nanobot 暂时不可用时，知流仍会保存原始内容，并保留重新整理入口，不会阻塞后续收件。
 
@@ -52,7 +53,7 @@ flowchart LR
     K --> N["Nanobot Runtime"]
     N --> S["网页、公众号与图解 Skills"]
     N --> M["模型提供者"]
-    K --> U["收件台、知识库与检索"]
+    K --> U["收件台、知识库、检索与问答"]
     K -. 可选 .-> O["Obsidian 插件"]
     O --> V["Obsidian Vault"]
 ```
@@ -175,8 +176,23 @@ server {
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
 
+    # 知识问答增量输出：关闭代理缓冲，收到一段就转发一段。
+    location ~ ^/api/knowledge/chats/[^/]+/messages/stream$ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -184,6 +200,20 @@ server {
     }
 }
 ```
+
+Caddy 配置示例：
+
+```caddyfile
+inbox.example.com {
+    @knowledge_stream path_regexp knowledge_stream ^/api/knowledge/chats/[^/]+/messages/stream$
+    reverse_proxy @knowledge_stream 127.0.0.1:8787 {
+        flush_interval -1
+    }
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+知流会为知识问答流返回 `Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no`，并定期发送心跳。若前面还使用了 CDN、WAF 或 NAS 自带的应用代理，也应对 `/api/knowledge/chats/*/messages/stream` 关闭缓存、压缩和响应缓冲，并把空闲读取超时设为 120 秒以上。
 
 浏览器访问地址、反向代理地址和 `PUBLIC_BASE_URL` 的协议及域名必须一致，否则修改类请求会被来源校验拒绝。
 
@@ -262,7 +292,9 @@ docker compose restart nanobot
 | [`obsidian-canvas-creator`](https://github.com/axtonliu/axton-obsidian-visual-skills/tree/main/obsidian-canvas-creator) | 可编辑 Obsidian Canvas |
 | [`excalidraw-diagram`](https://github.com/axtonliu/axton-obsidian-visual-skills/tree/main/excalidraw-diagram) | Excalidraw 图表 |
 
-管理页面展示的是当前 Runtime Workspace 中实际使用的 Skill。管理员可以查看、启停或修改，变更应用于之后提交的任务。第三方组件的固定版本和许可证见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
+系统不会把全部 Skill 一次性交给模型选择。每次任务先按来源、附件形态和明确意图进行预筛选，再提供少量候选能力：微信公众号优先使用专用解析器，只有失败后才进入通用网页回退；文档、媒体、安全研究和可视化能力只在符合触发条件时参与。专用能力优先于通用能力，Canvas、Excalidraw 与 Mermaid 互斥路由。
+
+“系统设置 → 整理能力”展示每项 Skill 的触发条件、跳过条件、来源与启用状态。用户也可以创建自己的语义整理 Skill；路由说明应明确写出 `TRIGGER`、`SKIP` 和重叠时的优先级。系统按内容相关度选择最多四项自定义规则，避免规则增多后相互竞争。第三方组件的固定版本和许可证见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 
 ### 微信接入
 
@@ -285,7 +317,7 @@ ILINK_ALLOW_FROM=*
 
 ### API 收件
 
-用户可以在“系统设置 → API 收件”创建独立令牌。API 令牌与登录会话、Obsidian 同步令牌相互独立，并可随时撤销。
+用户可以在“系统设置 → 收件接入”的“开放 API”区域创建独立令牌。API 令牌与登录会话、Obsidian 同步令牌相互独立，并可随时撤销。
 
 ```bash
 curl -X POST 'https://inbox.example.com/api/captures' \
@@ -303,12 +335,12 @@ curl -X POST 'https://inbox.example.com/api/captures' \
 ### 多用户与权限
 
 - 系统不开放匿名注册，成员通过管理员生成的一次性邀请链接加入。
-- 管理员可在“系统设置 → 用户管理”中创建 24 小时、3 天、7 天或 30 天的一次性邀请，并查看待使用、已使用、已过期和已撤销状态。
+- 管理员可在“系统设置 → 用户管理”中创建 24 小时、3 天、7 天或 30 天的一次性邀请；邀请记录支持状态筛选和分页查看，数量增长后不会无限拉长页面。
 - 受邀用户打开邀请链接后直接进入注册页；邀请码仅能成功注册一个账户。
 - 管理员负责模型提供者、全局 Skills、插件发布和成员管理。
 - 成员只能访问自己的消息、附件、索引、接入连接和同步目标。
 - 每个活跃用户使用独立的 Nanobot Runtime、Workspace、sessions 和 artifacts。
-- 停用成员会撤销会话并停止接入与同步；永久删除会清理其内容、附件、连接和 Runtime Workspace。
+- 管理员可以重置成员密码；重置后该成员的现有登录会话立即失效。停用成员会撤销会话并停止接入与同步；永久删除会清理其内容、附件、连接和 Runtime Workspace。
 
 数据层采用单机 SQLite，适合单节点自托管。不要让多个 Knowledge Relay 实例同时写入同一个数据库文件。
 
@@ -316,9 +348,11 @@ curl -X POST 'https://inbox.example.com/api/captures' \
 
 收件台保存全部接收记录和处理状态；完成整理的内容进入知识库。内容形态保持稳定，动态主题会根据当前用户的已整理内容持续聚合，领域、知识点和工具用于检索及关系分析。
 
-阅读页提供文章正文、整理笔记、延伸整理、原始内容、附件和按需生成的智能图解。网页正文图片会在收件时缓存为用户附件，阅读页面和 Obsidian 均引用本地副本。
+阅读页提供文章正文、整理笔记、延伸整理、原始内容、附件和按需生成的智能图解。微信公众号卡片优先使用文章原始封面，正文图片按原文顺序缓存并显示；没有可靠封面的其他资料使用稳定的知流品牌封面，不会把任意正文配图误当作封面。
 
-检索服务只查询当前用户的数据索引，不提供开放式通用对话，也不执行删除、修改或系统命令。
+智能图解只在用户打开时生成并缓存。系统会先识别资料要表达的是层级、依赖、步骤、时间演进、对象对比、消息交互还是状态转换，再选择图形；节点可点击查看简短解释、正文依据和相邻关系，也可在图内搜索、缩放、拖动或重新生成。
+
+“检索个人知识”和“知识问答”是两个独立入口：检索用于快速定位可能相关的收藏；知识问答用于跨多篇资料归纳、比较和连续追问。问答只把当前用户已完成整理的知识片段交给模型，回答附带可点击来源；知识库中没有足够依据时会明确说明，不使用网络信息或模型记忆补齐事实。两个入口均为只读，不执行删除、修改、同步或系统命令。
 
 ### Obsidian 同步
 
@@ -367,7 +401,7 @@ git pull --ff-only
 ```bash
 cd /你的部署目录/knowledge-relay
 git pull --ff-only
-./scripts/update-docker.sh 1.9.4
+./scripts/update-docker.sh 1.9.5
 ```
 
 升级脚本会先备份应用数据、Nanobot volume 和 `.env`，再拉取镜像、重建容器并执行健康检查。升级过程中不需要手动执行 `docker compose down`。

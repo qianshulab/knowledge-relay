@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, ArrowRight, BookOpen, Bot, Inbox, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -8,18 +8,38 @@ import KnowledgeRelay from "../components/KnowledgeRelay";
 import { EmptyState, LoadingState, PageHeader, StatusBadge, formatDate, formatLabels } from "../components/ui";
 
 type MessageResponse = { messages: MessageItem[]; pagination: { total: number; hasMore: boolean; nextBefore?: number } };
+type InboxState = "inbox" | "archived";
+type InboxView = { state: InboxState; page: number; cursors: (number | undefined)[] };
+
+const pageSize = 10;
+
+function messageQueryKey(state: InboxState, cursor?: number) {
+  return ["messages", state, cursor] as const;
+}
+
+function loadMessagePage(state: InboxState, cursor?: number) {
+  const params = new URLSearchParams({ limit: String(pageSize) });
+  if (state === "inbox") params.set("active", "1");
+  else params.set("state", "archived");
+  if (cursor !== undefined) params.set("before", String(cursor));
+  return api<MessageResponse>(`/api/messages?${params.toString()}`);
+}
 
 export default function InboxPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [state, setState] = useState<"inbox" | "archived">("inbox");
-  const [page, setPage] = useState(0);
-  const [cursors, setCursors] = useState<(number | undefined)[]>([undefined]);
+  const [view, setView] = useState<InboxView>({ state: "inbox", page: 0, cursors: [undefined] });
+  const [pageNavigation, setPageNavigation] = useState<string | null>(null);
+  const [pageNavigationError, setPageNavigationError] = useState("");
+  const navigationLock = useRef(false);
+  const messagePage = useRef<HTMLDivElement>(null);
+  const [messagePageMinHeight, setMessagePageMinHeight] = useState(0);
+  const cursor = view.cursors[view.page];
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Dashboard>("/api/dashboard"), refetchInterval: 15_000 });
   const messages = useQuery({
-    queryKey: ["messages", state, cursors[page]],
-    queryFn: () => api<MessageResponse>(`/api/messages?limit=10&${state === "inbox" ? "active=1" : "state=archived"}${cursors[page] ? `&before=${cursors[page]}` : ""}`),
-    refetchInterval: page === 0 ? 12_000 : false,
+    queryKey: messageQueryKey(view.state, cursor),
+    queryFn: () => loadMessagePage(view.state, cursor),
+    refetchInterval: view.page === 0 ? 12_000 : false,
   });
   const currentPageProcessing = useMemo(
     () => messages.data?.messages.filter((item) => ["processing", "pending", "queued"].includes(item.agentStatus)) || [],
@@ -68,17 +88,84 @@ export default function InboxPage() {
       ? `正在整理 ${activeProcessingCount} 条`
       : queuedCount > 0
         ? `${queuedCount} 条等待整理`
-        : "引擎待命";
+      : "引擎待命";
+  const totalPages = Math.max(1, Math.ceil((messages.data?.pagination.total || 0) / pageSize));
+
+  useEffect(() => {
+    const nextCursor = messages.data?.pagination.nextBefore;
+    if (!messages.data?.pagination.hasMore || nextCursor === undefined) return;
+    void queryClient.prefetchQuery({
+      queryKey: messageQueryKey(view.state, nextCursor),
+      queryFn: () => loadMessagePage(view.state, nextCursor),
+      staleTime: 30_000,
+    });
+  }, [messages.data?.pagination.hasMore, messages.data?.pagination.nextBefore, queryClient, view.state]);
+
+  useLayoutEffect(() => {
+    const height = messagePage.current?.scrollHeight || 0;
+    if (height > 0) setMessagePageMinHeight((current) => Math.max(current, height));
+  }, [messages.data?.messages]);
 
   function refresh() {
     void Promise.all([queryClient.invalidateQueries({ queryKey: ["dashboard"] }), queryClient.invalidateQueries({ queryKey: ["messages"] })]);
   }
 
+  async function openPage(target: number, targetCursor: number | undefined, nextCursors: (number | undefined)[], label: string) {
+    if (navigationLock.current) return;
+    navigationLock.current = true;
+    const source = view;
+    setPageNavigationError("");
+    setPageNavigation(label);
+    try {
+      await queryClient.fetchQuery({
+        queryKey: messageQueryKey(source.state, targetCursor),
+        queryFn: () => loadMessagePage(source.state, targetCursor),
+        staleTime: 15_000,
+      });
+      setView((current) => current.state === source.state && current.page === source.page
+        ? { ...current, page: target, cursors: nextCursors }
+        : current);
+    } catch {
+      setPageNavigationError("切换失败，请重试");
+    } finally {
+      navigationLock.current = false;
+      setPageNavigation(null);
+    }
+  }
+
+  function previousPage() {
+    if (view.page === 0) return;
+    const target = view.page - 1;
+    void openPage(target, view.cursors[target], view.cursors, "正在打开上一页");
+  }
+
   function nextPage() {
-    const cursor = messages.data?.pagination.nextBefore;
-    if (!cursor) return;
-    setCursors((current) => current[page + 1] === cursor ? current : [...current.slice(0, page + 1), cursor]);
-    setPage((value) => value + 1);
+    const nextCursor = messages.data?.pagination.nextBefore;
+    if (nextCursor === undefined) return;
+    const nextCursors = view.cursors[view.page + 1] === nextCursor
+      ? view.cursors
+      : [...view.cursors.slice(0, view.page + 1), nextCursor];
+    void openPage(view.page + 1, nextCursor, nextCursors, "正在打开下一页");
+  }
+
+  async function switchState(state: InboxState) {
+    if (state === view.state || navigationLock.current) return;
+    navigationLock.current = true;
+    setPageNavigationError("");
+    setPageNavigation(state === "inbox" ? "正在打开当前内容" : "正在打开已归档内容");
+    try {
+      await queryClient.fetchQuery({
+        queryKey: messageQueryKey(state),
+        queryFn: () => loadMessagePage(state),
+        staleTime: 15_000,
+      });
+      setView({ state, page: 0, cursors: [undefined] });
+    } catch {
+      setPageNavigationError("切换失败，请重试");
+    } finally {
+      navigationLock.current = false;
+      setPageNavigation(null);
+    }
   }
 
   return <main className="page inbox-page">
@@ -102,9 +189,11 @@ export default function InboxPage() {
       </article>
     </section>
     <section className="content-section">
-      <div className="section-heading"><div><span className="eyebrow">RECENT CAPTURES</span><h2>最近捕获</h2><p>点击任意内容即可查看整理结果与原始资料。</p></div><div className="segmented-control"><button className={state === "inbox" ? "active" : ""} onClick={() => { setState("inbox"); setPage(0); setCursors([undefined]); }}>当前内容</button><button className={state === "archived" ? "active" : ""} onClick={() => { setState("archived"); setPage(0); setCursors([undefined]); }}>已归档</button></div></div>
-      {messages.isLoading ? <LoadingState label="正在加载收件内容" /> : messages.data?.messages.length ? <div className="message-list">{messages.data.messages.map((item) => <button className="message-row" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}><div className="message-format">{formatLabels[item.contentFormat]?.slice(0, 2) || "内容"}</div><div className="message-main"><div className="message-title-line"><strong>{item.title || item.text.slice(0, 80) || "未命名内容"}</strong><StatusBadge status={item.agentStatus} /></div><p>{item.summary || item.text || "等待整理后生成摘要"}</p><div className="message-meta"><span>{formatLabels[item.contentFormat] || item.contentFormat}</span><span>{formatDate(item.receivedAt)}</span>{item.attachmentCount > 0 && <span>{item.attachmentCount} 个附件</span>}</div></div><ArrowRight className="row-arrow" size={19} /></button>)}</div> : <EmptyState icon={<Inbox size={28} />} title={state === "archived" ? "还没有归档内容" : "收件台是空的"} description={state === "archived" ? "归档后的内容会显示在这里。" : "通过微信 iLink 或 API 发送内容后，会自动出现在这里。"} />}
-      <div className="pagination"><button className="button button-secondary" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>上一页</button><span>第 {page + 1} 页 · 每页 10 条</span><button className="button button-secondary" disabled={!messages.data?.pagination.hasMore} onClick={nextPage}>下一页</button></div>
+      <div className="section-heading"><div><span className="eyebrow">RECENT CAPTURES</span><h2>最近捕获</h2><p>点击任意内容即可查看整理结果与原始资料。</p></div><div className="segmented-control" aria-busy={Boolean(pageNavigation)}><button className={view.state === "inbox" ? "active" : ""} disabled={Boolean(pageNavigation)} onClick={() => void switchState("inbox")}>当前内容</button><button className={view.state === "archived" ? "active" : ""} disabled={Boolean(pageNavigation)} onClick={() => void switchState("archived")}>已归档</button></div></div>
+      <div ref={messagePage} className="message-page" style={messagePageMinHeight ? { minHeight: messagePageMinHeight } : undefined} aria-busy={messages.isLoading || Boolean(pageNavigation)}>
+        {messages.isLoading ? <LoadingState label="正在加载收件内容" /> : messages.data?.messages.length ? <div className="message-list">{messages.data.messages.map((item) => <button className="message-row" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}><div className="message-format">{formatLabels[item.contentFormat]?.slice(0, 2) || "内容"}</div><div className="message-main"><div className="message-title-line"><strong>{item.title || item.text.slice(0, 80) || "未命名内容"}</strong><StatusBadge status={item.agentStatus} /></div><p>{item.summary || item.text || "等待整理后生成摘要"}</p><div className="message-meta"><span>{formatLabels[item.contentFormat] || item.contentFormat}</span><span>{formatDate(item.receivedAt)}</span>{item.attachmentCount > 0 && <span>{item.attachmentCount} 个附件</span>}</div></div><ArrowRight className="row-arrow" size={19} /></button>)}</div> : <EmptyState icon={<Inbox size={28} />} title={view.state === "archived" ? "还没有归档内容" : "收件台是空的"} description={view.state === "archived" ? "归档后的内容会显示在这里。" : "通过微信 iLink 或 API 发送内容后，会自动出现在这里。"} />}
+      </div>
+      <div className="pagination"><button className="button button-secondary" disabled={view.page === 0 || Boolean(pageNavigation)} onClick={previousPage}>上一页</button><span className={`pagination-status ${pageNavigationError ? "error" : ""}`} role="status" aria-live="polite">{pageNavigation ? <><RefreshCw className="spin" size={14} />{pageNavigation}</> : pageNavigationError || `第 ${view.page + 1} / ${totalPages} 页`}</span><button className="button button-secondary" disabled={!messages.data?.pagination.hasMore || Boolean(pageNavigation)} onClick={nextPage}>下一页</button></div>
     </section>
   </main>;
 }

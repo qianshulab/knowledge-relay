@@ -6,6 +6,7 @@ import AuthPage from "./pages/AuthPage";
 import InboxPage from "./pages/InboxPage";
 import LibraryPage from "./pages/LibraryPage";
 import ReaderPage from "./pages/ReaderPage";
+import KnowledgeChatPage from "./pages/KnowledgeChatPage";
 import ObsidianPage from "./pages/ObsidianPage";
 import SettingsPage from "./pages/SettingsPage";
 import Layout from "./components/Layout";
@@ -110,6 +111,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/knowledge-chat" element={<KnowledgeChatPage />} />
           <Route path="/reader/:id" element={<ReaderPage />} />
           <Route path="/obsidian" element={<ObsidianPage />} />
           <Route path="/settings" element={<Navigate to="/settings/intake" replace />} />
