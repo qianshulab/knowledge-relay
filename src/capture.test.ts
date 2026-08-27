@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { inferCaptureType, stableCaptureId, wechatCaptureSource } from "./capture.js";
+import { canonicalCaptureUrl, inferCaptureType, stableCaptureId, wechatCaptureSource } from "./capture.js";
 
 describe("channel-neutral captures", () => {
   it("separates the transport channel from the content source", () => {
@@ -35,5 +35,14 @@ describe("channel-neutral captures", () => {
       size: 1,
       mimeType: "image/png",
     }])).toBe("mixed");
+  });
+
+  it("normalizes equivalent links without changing meaningful query parameters", () => {
+    expect(canonicalCaptureUrl("https://Example.com/article/?b=2&utm_source=wechat&a=1#reply"))
+      .toBe("https://example.com/article?a=1&b=2");
+    expect(canonicalCaptureUrl("https://mp.weixin.qq.com/s/ArticleId?scene=1&from=timeline"))
+      .toBe("https://mp.weixin.qq.com/s/ArticleId");
+    expect(canonicalCaptureUrl("https://example.com/search?q=agent&page=2"))
+      .toBe("https://example.com/search?page=2&q=agent");
   });
 });

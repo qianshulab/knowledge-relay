@@ -1121,12 +1121,43 @@ export function createServer(
       diagramGenerations.set(generationKey, generation);
       void (async () => {
         try {
-          const result = await nanobot.generateKnowledgeDiagram(
-            message,
-            settings,
-            scoped.getEnabledSkills(),
-            { tenantId },
-          );
+          let result: Awaited<ReturnType<NanobotClient["generateKnowledgeDiagram"]>>;
+          try {
+            result = await nanobot.generateKnowledgeDiagram(
+              message,
+              settings,
+              scoped.getEnabledSkills(),
+              {
+                tenantId,
+                onRetry: (attempt, maximumAttempts) => {
+                  generation.message = `模型输出未完整，正在自动修复（第 ${attempt}/${maximumAttempts} 次）`;
+                  generation.updatedAt = new Date().toISOString();
+                },
+              },
+            );
+          } catch (modelError) {
+            generation.phase = "saving";
+            generation.message = "模型生成未完成，正在使用已整理内容构建稳定图解";
+            generation.updatedAt = new Date().toISOString();
+            result = scoped.knowledgeMap(message.id);
+            result.selectionReason = "模型未返回可用结构，已根据已整理的摘要、要点和知识索引生成稳定图解";
+            if (result.nodes.length < 2) {
+              const root = result.nodes[0]!;
+              const label = (message.summary || message.text || "当前资料的核心内容")
+                .replace(/[\r\n\t]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 120) || "当前资料的核心内容";
+              const pointId = `point:${crypto.createHash("sha256").update(label).digest("hex").slice(0, 12)}`;
+              result.nodes.push({ id: pointId, label, type: "point", role: "result" });
+              result.edges.push({ source: root.id, target: pointId, label: "核心内容", kind: "primary" });
+            }
+            logger.warn("AI 智能图解生成失败，已使用稳定结构兜底", {
+              tenantId,
+              messageId: message.id,
+              ...errorDetails(modelError),
+            });
+          }
           generation.phase = "saving";
           generation.message = "图解结构已生成，正在保存结果";
           generation.updatedAt = new Date().toISOString();

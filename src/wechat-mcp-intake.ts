@@ -57,6 +57,7 @@ function messageText(message: WechatMcpMessage): string {
 export class WechatMcpIntakeManager {
   private controller?: AbortController;
   private loop?: Promise<void>;
+  private activeClient?: { endpoint: string; authorization: string; client: WechatMcpClient };
 
   constructor(
     private readonly config: AppConfig,
@@ -77,6 +78,7 @@ export class WechatMcpIntakeManager {
   async stop(): Promise<void> {
     this.controller?.abort();
     await this.loop;
+    this.activeClient = undefined;
   }
 
   async reload(): Promise<void> {
@@ -101,6 +103,10 @@ export class WechatMcpIntakeManager {
         await this.poll(source);
         this.database.updateWechatMcpStatus({ lastPollAt: new Date().toISOString(), lastError: null });
       } catch (error) {
+        // A restarted MCP server invalidates both the HTTP connection and any
+        // Streamable HTTP session. Drop the client so the next poll always
+        // performs a fresh initialize/tools-list handshake.
+        this.activeClient = undefined;
         const detail = error instanceof Error ? error.message : String(error);
         this.database.updateWechatMcpStatus({ lastPollAt: new Date().toISOString(), lastError: detail.slice(0, 500) });
         logger.warn("微信助手 MCP 增量接收失败", errorDetails(error));
@@ -110,7 +116,16 @@ export class WechatMcpIntakeManager {
   }
 
   private async poll(source: WechatMcpSourceSecret): Promise<void> {
-    const client = new WechatMcpClient(source.endpoint, source.authorization);
+    if (!this.activeClient
+      || this.activeClient.endpoint !== source.endpoint
+      || this.activeClient.authorization !== source.authorization) {
+      this.activeClient = {
+        endpoint: source.endpoint,
+        authorization: source.authorization,
+        client: new WechatMcpClient(source.endpoint, source.authorization),
+      };
+    }
+    const client = this.activeClient.client;
     await client.initialize();
     const accounts = await client.listAccounts();
     const account = source.account || accounts[0] || "";

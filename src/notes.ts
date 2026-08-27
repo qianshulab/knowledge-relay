@@ -1,4 +1,5 @@
 import type { CaptureInput } from "./capture.js";
+import { normalizeLooseCodeBlocks } from "./markdown.js";
 import type { PublicInboundMessage } from "./messages.js";
 import { compactKnowledgePoint } from "./semantic-labels.js";
 import type { ProcessedNote } from "./storage/database.js";
@@ -232,7 +233,7 @@ export function normalizeAgentNote(
         .slice(0, 10)
     : [];
   const detailsMarkdown = typeof object.details_markdown === "string"
-    ? object.details_markdown.replace(/\r\n?/g, "\n").trim().slice(0, 100_000)
+    ? normalizeLooseCodeBlocks(object.details_markdown).slice(0, 100_000)
     : "";
   const attachmentBlock = message.attachments.flatMap((attachment) => [
     `- ${attachment.fileName}`,

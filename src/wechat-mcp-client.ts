@@ -41,6 +41,17 @@ type RpcResponse = {
   error?: { code?: number; message?: string; data?: unknown };
 };
 
+class McpSessionExpiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "McpSessionExpiredError";
+  }
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function record(value: unknown): JsonRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : undefined;
 }
@@ -107,6 +118,7 @@ export class WechatMcpClient {
   private initialized = false;
   private server = { name: "", version: "", protocolVersion: "" };
   private tools = new Set<string>();
+  private sessionId = "";
 
   constructor(
     readonly endpoint: string,
@@ -121,28 +133,77 @@ export class WechatMcpClient {
 
   private async rpc(method: string, params: JsonRecord = {}): Promise<JsonRecord> {
     const credential = this.authorization.trim();
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        Authorization: /^Bearer\s+/i.test(credential) ? credential : `Bearer ${credential}`,
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    const body = await response.text();
-    if (!response.ok) throw new Error(`MCP 请求失败：HTTP ${response.status}`);
-    let payload: RpcResponse;
-    try {
-      payload = response.headers.get("content-type")?.includes("text/event-stream")
-        ? parseEventStream(body)
-        : JSON.parse(body) as RpcResponse;
-    } catch {
-      throw new Error("MCP 返回的不是有效 JSON-RPC 响应");
+    const id = this.nextId++;
+    const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetch(this.endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            Authorization: /^Bearer\s+/i.test(credential) ? credential : `Bearer ${credential}`,
+            ...(this.sessionId && method !== "initialize" ? { "Mcp-Session-Id": this.sessionId } : {}),
+            ...(this.server.protocolVersion && method !== "initialize"
+              ? { "MCP-Protocol-Version": this.server.protocolVersion }
+              : {}),
+          },
+          body,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+        const responseBody = await response.text();
+        if ([404, 410].includes(response.status) && this.sessionId) {
+          this.resetSession();
+          throw new McpSessionExpiredError("MCP 会话已失效，正在重新建立连接");
+        }
+        if (!response.ok) {
+          const error = new Error(`MCP 请求失败：HTTP ${response.status}`);
+          if ([408, 425, 429].includes(response.status) || response.status >= 500) {
+            lastError = error;
+            if (attempt < 3) {
+              await wait(attempt * 200);
+              continue;
+            }
+          }
+          throw error;
+        }
+        const announcedSession = response.headers.get("mcp-session-id")?.trim();
+        if (announcedSession) this.sessionId = announcedSession;
+        let payload: RpcResponse;
+        try {
+          payload = response.headers.get("content-type")?.includes("text/event-stream")
+            ? parseEventStream(responseBody)
+            : JSON.parse(responseBody) as RpcResponse;
+        } catch {
+          throw new Error("MCP 返回的不是有效 JSON-RPC 响应");
+        }
+        if (payload.error) {
+          const detail = payload.error.message || String(payload.error.code || "未知错误");
+          if (this.sessionId && /session|会话|not initialized|initialize first|expired|invalid/i.test(detail)) {
+            this.resetSession();
+            throw new McpSessionExpiredError(`MCP 会话已失效：${detail}`);
+          }
+          throw new Error(`MCP ${method} 失败：${detail}`);
+        }
+        return payload.result || {};
+      } catch (error) {
+        if (error instanceof McpSessionExpiredError) throw error;
+        lastError = error;
+        const transient = error instanceof TypeError
+          || (error instanceof Error && /fetch failed|timeout|abort|ECONN|ENET|EAI_AGAIN|socket/i.test(error.message));
+        if (!transient || attempt >= 3) break;
+        await wait(attempt * 200);
+      }
     }
-    if (payload.error) throw new Error(`MCP ${method} 失败：${payload.error.message || payload.error.code || "未知错误"}`);
-    return payload.result || {};
+    const detail = lastError instanceof Error ? lastError.message : String(lastError || "未知网络错误");
+    throw new Error(`MCP 网络连接暂时不可用，系统将自动重连：${detail}`);
+  }
+
+  private resetSession(): void {
+    this.initialized = false;
+    this.sessionId = "";
+    this.tools.clear();
   }
 
   async initialize(): Promise<void> {
@@ -178,7 +239,14 @@ export class WechatMcpClient {
   private async callTool(name: string, args: JsonRecord): Promise<unknown> {
     await this.initialize();
     if (!this.tools.has(name)) throw new Error(`MCP 未提供工具：${name}`);
-    return toolPayload(await this.rpc("tools/call", { name, arguments: args }));
+    try {
+      return toolPayload(await this.rpc("tools/call", { name, arguments: args }));
+    } catch (error) {
+      if (!(error instanceof McpSessionExpiredError)) throw error;
+      await this.initialize();
+      if (!this.tools.has(name)) throw new Error(`MCP 重新连接后未提供工具：${name}`);
+      return toolPayload(await this.rpc("tools/call", { name, arguments: args }));
+    }
   }
 
   async listAccounts(): Promise<string[]> {

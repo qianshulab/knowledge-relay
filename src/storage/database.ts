@@ -13,6 +13,7 @@ import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 import {
+  canonicalCaptureUrl,
   firstHttpUrl,
   inferCaptureType,
   wechatCaptureSource,
@@ -950,6 +951,7 @@ export class AppDatabase {
         source_connection_id TEXT NOT NULL DEFAULT '',
         source_name TEXT NOT NULL DEFAULT '微信 iLink',
         source_url TEXT NOT NULL DEFAULT '',
+        source_url_key TEXT NOT NULL DEFAULT '',
         capture_type TEXT NOT NULL DEFAULT 'text',
         sender_id TEXT NOT NULL,
         session_id TEXT,
@@ -1170,6 +1172,11 @@ export class AppDatabase {
       }
     }
     this.migrateCaptureColumns();
+    try {
+      this.database.exec("ALTER TABLE messages ADD COLUMN source_url_key TEXT NOT NULL DEFAULT ''");
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+    }
     this.database.exec(`
       UPDATE messages SET
         source_external_id=CASE WHEN source_external_id='' THEN source_id ELSE source_external_id END,
@@ -1196,6 +1203,16 @@ export class AppDatabase {
         rowString(row, "id"),
       );
     }
+    const claimedUrlKeys = new Set<string>();
+    for (const row of this.all("SELECT id,tenant_id,source_url FROM messages WHERE source_url<>'' ORDER BY seq")) {
+      const key = canonicalCaptureUrl(rowString(row, "source_url"));
+      const tenantKey = `${rowString(row, "tenant_id")}\n${key}`;
+      const uniqueKey = key && !claimedUrlKeys.has(tenantKey) ? key : "";
+      if (uniqueKey) claimedUrlKeys.add(tenantKey);
+      this.run("UPDATE messages SET source_url_key=? WHERE id=?", uniqueKey, rowString(row, "id"));
+    }
+    this.database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_tenant_source_url
+      ON messages(tenant_id,source_url_key) WHERE source_url_key<>''`);
     const existingSearch = this.maybeOne(
       "SELECT sql FROM sqlite_master WHERE name='message_search' AND type='table'",
     );
@@ -2243,6 +2260,13 @@ export class AppDatabase {
   saveCapture(capture: CaptureInput, note: ProcessedNote): boolean {
     if (this.hasMessage(capture.id)) return false;
     const ownerId = this.requireOwnerId();
+    const sourceUrl = capture.source.url || firstHttpUrl(capture.text) || "";
+    const sourceUrlKey = canonicalCaptureUrl(sourceUrl);
+    if (sourceUrlKey && this.maybeOne(
+      "SELECT id FROM messages WHERE tenant_id=? AND source_url_key=? LIMIT 1",
+      ownerId,
+      sourceUrlKey,
+    )) return false;
     const connectionId = capture.source.connectionId;
     // Shared WeChat assistant intake uses the WeChat channel for source
     // semantics, but it is not an iLink bot account. Only persist the optional
@@ -2259,11 +2283,11 @@ export class AppDatabase {
       this.run(
         `INSERT INTO messages(
           id,tenant_id,bot_account_id,source_id,source_channel,source_type,source_external_id,
-          source_connection_id,source_name,source_url,capture_type,sender_id,session_id,received_at,sent_at,text,
+          source_connection_id,source_name,source_url,source_url_key,capture_type,sender_id,session_id,received_at,sent_at,text,
           note_title,note_markdown,category,tags_json,summary,key_points_json,knowledge_points_json,domains_json,tools_json,
           details_markdown,reason,suggested_action,sensitivity,confidence,warnings_json,
           created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         capture.id,
         ownerId,
         botAccountId,
@@ -2273,7 +2297,8 @@ export class AppDatabase {
         capture.source.externalId || capture.id,
         capture.source.connectionId || "owner",
         capture.source.name,
-        capture.source.url || "",
+        sourceUrl,
+        sourceUrlKey,
         capture.captureType,
         capture.actorId,
         capture.sessionId || null,

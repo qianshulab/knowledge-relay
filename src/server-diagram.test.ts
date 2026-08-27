@@ -141,6 +141,25 @@ describe("智能图解后台任务", () => {
     const completedDashboard = await app.inject({ method: "GET", url: "/api/dashboard", headers });
     expect(completedDashboard.json().diagramProcessing).toBe(0);
 
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"diagram_type":"flow","nodes":[' } }],
+    }), { status: 200 })));
+    const fallbackStarted = await app.inject({
+      method: "POST",
+      url: `/api/messages/${encodeURIComponent(message.id)}/diagram`,
+      headers,
+      payload: { force: true },
+    });
+    expect(fallbackStarted.statusCode).toBe(202);
+    await vi.waitFor(async () => {
+      const fallback = await app.inject({ method: "GET", url: `/api/messages/${encodeURIComponent(message.id)}/diagram`, headers });
+      expect(fallback.json()).toMatchObject({
+        status: "ready",
+        diagram: { selectionReason: expect.stringContaining("稳定图解") },
+      });
+    }, { timeout: 4_000 });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
     await app.close();
     database.close();
   });

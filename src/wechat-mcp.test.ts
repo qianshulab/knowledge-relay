@@ -47,6 +47,41 @@ describe("微信助手 MCP 收件", () => {
     expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).Authorization).toBe("Bearer secret-token");
   });
 
+  it("MCP 重启导致瞬时断线时自动重试，并在后续请求携带新会话标识", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) throw new TypeError("fetch failed");
+      const request = JSON.parse(String(init?.body)) as { id: number; method: string; params?: { name?: string } };
+      const result = request.method === "initialize"
+        ? { protocolVersion: "2025-06-18", serverInfo: { name: "wechat-mcp", version: "1.1.0" } }
+        : request.method === "tools/list"
+          ? { tools: [
+            { name: "wechat.core.list_accounts" },
+            { name: "wechat.chat.list_sessions" },
+            { name: "wechat.chat.get_messages" },
+          ] }
+          : { structuredContent: { accounts: ["primary"] } };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          ...(request.method === "initialize" ? { "Mcp-Session-Id": "session-after-restart" } : {}),
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new WechatMcpClient("https://wechat.example.test/mcp", "secret-token").check())
+      .resolves.toMatchObject({ ok: true, accounts: ["primary"] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((fetchMock.mock.calls[2]?.[1]?.headers as Record<string, string>)["Mcp-Session-Id"])
+      .toBe("session-after-restart");
+    expect((fetchMock.mock.calls[3]?.[1]?.headers as Record<string, string>)["Mcp-Session-Id"])
+      .toBe("session-after-restart");
+  });
+
   it("加密保存系统凭据，并用一次性绑定码把微信联系人路由到指定用户", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-wechat-mcp-"));
     temporaryDirectories.push(directory);

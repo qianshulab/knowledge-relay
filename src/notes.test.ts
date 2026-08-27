@@ -75,4 +75,26 @@ describe("note generation", () => {
       "Neo4j 知识图谱",
     ]);
   });
+
+  it("把模型逐行返回的行内代码恢复为 fenced Markdown 代码块", () => {
+    const note = normalizeAgentNote({
+      title: "Frida 脚本",
+      category: "reference",
+      details_markdown: [
+        "## 示例",
+        "",
+        "`function hookDlopen() {`",
+        "",
+        "`  const name = \"android_dlopen_ext\";`",
+        "",
+        "`  console.log(name);`",
+        "",
+        "`}`",
+      ].join("\n"),
+    }, message);
+
+    expect(note.detailsMarkdown).toContain("```javascript\nfunction hookDlopen() {");
+    expect(note.detailsMarkdown).toContain("console.log(name);\n}\n```");
+    expect(note.markdown).toContain("```javascript");
+  });
 });

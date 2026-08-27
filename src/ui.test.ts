@@ -53,7 +53,7 @@ describe("component frontend", () => {
     expect(reader).toContain("ReactMarkdown");
     expect(reader).toContain('attachment.kind === "derived" && attachment.mimeType === "text/markdown"');
     expect(reader).toContain('["article-markdown", messageId, articleAttachment?.id]');
-    expect(reader).toContain("children.replace(/attachment:");
+    expect(reader).toContain("normalizeLooseCodeBlocks(children).replace(/attachment:");
     expect(reader).toContain("attachment.sha256.toLowerCase() === hash.toLowerCase()");
     expect(reader).not.toContain("article-image-strip");
     expect(reader).not.toContain("rehypeRaw");

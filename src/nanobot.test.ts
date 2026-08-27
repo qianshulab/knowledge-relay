@@ -98,6 +98,54 @@ describe("NanobotClient", () => {
     expect(result.edges).toHaveLength(2);
   });
 
+  it("智能图解 JSON 被截断时使用精简上下文自动重试", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: '{"diagram_type":"flow","nodes":[' } }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          diagram_type: "flow",
+          diagram_label: "恢复后的流程图",
+          selection_reason: "资料包含明确步骤",
+          nodes: [
+            { id: "root", label: "资料处理", type: "root" },
+            { id: "done", label: "完成处理", type: "point" },
+          ],
+          edges: [{ source: "root", target: "done", label: "下一步", kind: "primary" }],
+        }) } }],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onRetry = vi.fn();
+    const client = new NanobotClient(config);
+    const result = await client.generateKnowledgeDiagram({
+      id: "diagram-retry",
+      title: "资料处理方法",
+      summary: "先处理资料，再保存结果。",
+      keyPoints: ["处理资料", "保存结果"],
+      knowledgePoints: ["资料处理"],
+      domains: ["知识管理"],
+      tools: [],
+      detailsMarkdown: "处理资料后保存结果。",
+      contentMarkdown: "完整正文",
+      text: "资料处理方法",
+    } as never, {
+      enabled: true,
+      baseUrl: config.nanobot.baseUrl,
+      model: "",
+      instructions: "",
+      autoReply: false,
+      notifyOnFailure: true,
+    }, [], { tenantId: "tenant-one", onRetry });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledWith(2, 3, expect.any(Error));
+    const retryBody = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    expect(retryBody.messages[0].content).toContain("结构化输出自动修复重试");
+    expect(retryBody.messages[0].content).toContain("nodes 最多 18 个");
+    expect(result).toMatchObject({ diagramType: "flow", diagramLabel: "恢复后的流程图" });
+  });
+
   it("默认省略 model，并使用个人收件箱 session_id", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

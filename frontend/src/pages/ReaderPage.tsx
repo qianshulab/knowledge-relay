@@ -9,6 +9,7 @@ import type { KnowledgeMap, MessageDetail } from "../types";
 import { useApp } from "../App";
 import KnowledgeDiagram from "../components/KnowledgeDiagram";
 import { EmptyState, LoadingState, formatBytes, formatDate, formatLabels } from "../components/ui";
+import { normalizeLooseCodeBlocks } from "../markdown";
 
 type DiagramResponse = {
   status: "ready" | "not_generated" | "generating" | "failed";
@@ -111,7 +112,7 @@ export default function ReaderPage() {
     : `${Math.floor(diagramElapsed / 60)} 分 ${diagramElapsed % 60} 秒`;
 
   const Markdown = ({ children }: { children: string }) => {
-    const resolvedMarkdown = children.replace(/attachment:\/\/([a-f0-9]{64})/gi, (reference, hash: string) => {
+    const resolvedMarkdown = normalizeLooseCodeBlocks(children).replace(/attachment:\/\/([a-f0-9]{64})/gi, (reference, hash: string) => {
       const local = sourceImages.find((attachment) => attachment.sha256.toLowerCase() === hash.toLowerCase());
       return local ? attachmentUrl(local.id) : reference;
     });

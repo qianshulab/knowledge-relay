@@ -47,6 +47,41 @@ export function firstHttpUrl(text: string): string | undefined {
   }
 }
 
+const TRACKING_QUERY_KEYS = new Set([
+  "fbclid", "gclid", "dclid", "msclkid", "spm", "from", "from_source",
+  "ref", "referrer", "sourceid", "share_token", "share_source",
+]);
+
+/**
+ * Produces a tenant-local content identity without changing the URL retained
+ * for reading. Tracking parameters, fragments and parameter order must not
+ * cause the same page to be enriched more than once.
+ */
+export function canonicalCaptureUrl(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+
+    if (url.hostname === "mp.weixin.qq.com" && /^\/s\/[A-Za-z0-9_-]+$/.test(url.pathname)) {
+      url.search = "";
+    } else {
+      const retained = [...url.searchParams.entries()]
+        .filter(([key]) => !key.toLowerCase().startsWith("utm_") && !TRACKING_QUERY_KEYS.has(key.toLowerCase()))
+        .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+          leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue));
+      url.search = "";
+      for (const [key, item] of retained) url.searchParams.append(key, item);
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function inferCaptureType(text: string, attachments: InboundAttachment[]): CaptureType {
   const hasText = Boolean(text.trim());
   const hasUrl = Boolean(firstHttpUrl(text));

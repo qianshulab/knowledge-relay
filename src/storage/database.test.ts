@@ -670,6 +670,19 @@ describe("AppDatabase", () => {
     const note = defaultNote(capture);
     expect(database.saveCapture(capture, note)).toBe(true);
     expect(database.saveCapture(capture, note)).toBe(false);
+    const repeatedLink = {
+      ...capture,
+      id: "wechat:repeated-url",
+      source: {
+        ...capture.source,
+        channel: "wechat" as const,
+        externalId: "different-message-id",
+        connectionId: "wechat-assistant",
+        url: "https://example.com/article/?utm_source=wechat#comments",
+      },
+      receivedAt: "2026-08-14T00:01:00.000Z",
+    };
+    expect(database.saveCapture(repeatedLink, defaultNote(repeatedLink))).toBe(false);
     database.updateProcessedNote(capture.id, note, "fallback");
     database.publishMessage(capture.id);
     const target = database.createSyncTarget({ name: "Vault", folder: "Inbox", primary: true });
@@ -710,6 +723,7 @@ describe("AppDatabase", () => {
       ...article,
       id: "api:web-body-only",
       source: { channel: "api", type: "web", externalId: "web-body-only", name: "网页" },
+      text: "https://example.com/body-only",
       attachments: [{ kind: "derived", fileName: "正文配图.jpg", path: bodyPath, size: 10, mimeType: "image/jpeg" }],
     };
     database.saveCapture(webArticle, defaultNote(webArticle));
