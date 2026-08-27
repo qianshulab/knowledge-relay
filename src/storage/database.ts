@@ -54,6 +54,41 @@ export type StoredBotAccount = IlinkAccount & {
   lastError?: string;
 };
 
+export type WechatMcpSource = {
+  id: string;
+  enabled: boolean;
+  endpoint: string;
+  authorizationConfigured: boolean;
+  displayName: string;
+  account: string;
+  pollIntervalSeconds: number;
+  qrConfigured: boolean;
+  qrMimeType?: string;
+  lastPollAt?: string;
+  lastMessageAt?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+export type WechatMcpSourceSecret = WechatMcpSource & {
+  authorization: string;
+  qrPath?: string;
+};
+
+export type WechatMcpBinding = {
+  id: string;
+  tenantId: string;
+  username?: string;
+  userDisplayName?: string;
+  account: string;
+  wechatUsername: string;
+  wechatDisplayName: string;
+  avatar?: string;
+  boundAt: string;
+  lastMessageId?: string;
+  lastMessageAt?: string;
+};
+
 export type AgentSettings = {
   enabled: boolean;
   baseUrl: string;
@@ -855,6 +890,45 @@ export class AppDatabase {
         revoked_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_bot_accounts_tenant ON bot_accounts(tenant_id);
+      CREATE TABLE IF NOT EXISTS wechat_mcp_sources (
+        id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        endpoint TEXT NOT NULL,
+        authorization_enc TEXT,
+        display_name TEXT NOT NULL DEFAULT '知流助手',
+        account TEXT NOT NULL DEFAULT '',
+        poll_interval_seconds INTEGER NOT NULL DEFAULT 8,
+        assistant_qr_path TEXT,
+        assistant_qr_mime_type TEXT,
+        last_poll_at TEXT,
+        last_message_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS wechat_mcp_binding_codes (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_wechat_mcp_codes_tenant ON wechat_mcp_binding_codes(tenant_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS wechat_mcp_bindings (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES wechat_mcp_sources(id) ON DELETE CASCADE,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        account TEXT NOT NULL,
+        wechat_username TEXT NOT NULL,
+        wechat_display_name TEXT NOT NULL,
+        avatar TEXT,
+        bound_at TEXT NOT NULL,
+        last_message_id TEXT,
+        last_message_at TEXT,
+        UNIQUE(source_id, account, wechat_username),
+        UNIQUE(source_id, tenant_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wechat_mcp_bindings_tenant ON wechat_mcp_bindings(tenant_id);
       CREATE TABLE IF NOT EXISTS messages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         id TEXT NOT NULL UNIQUE,
@@ -1727,6 +1801,221 @@ export class AppDatabase {
     if (this.tenantId) return this.tenantId;
     const row = this.ownerRow();
     return row ? rowString(row, "id") : undefined;
+  }
+
+  getWechatMcpSource(): WechatMcpSource | undefined {
+    const row = this.maybeOne("SELECT * FROM wechat_mcp_sources WHERE id='default'");
+    if (!row) return undefined;
+    return {
+      id: rowString(row, "id"),
+      enabled: Boolean(rowNumber(row, "enabled")),
+      endpoint: rowString(row, "endpoint"),
+      authorizationConfigured: Boolean(rowString(row, "authorization_enc")),
+      displayName: rowString(row, "display_name") || "知流助手",
+      account: rowString(row, "account"),
+      pollIntervalSeconds: Math.max(3, rowNumber(row, "poll_interval_seconds") || 8),
+      qrConfigured: Boolean(rowString(row, "assistant_qr_path")),
+      qrMimeType: rowString(row, "assistant_qr_mime_type") || undefined,
+      lastPollAt: rowString(row, "last_poll_at") || undefined,
+      lastMessageAt: rowString(row, "last_message_at") || undefined,
+      lastError: rowString(row, "last_error") || undefined,
+      updatedAt: rowString(row, "updated_at"),
+    };
+  }
+
+  getWechatMcpSourceSecret(): WechatMcpSourceSecret | undefined {
+    const source = this.getWechatMcpSource();
+    if (!source) return undefined;
+    const row = this.one("SELECT authorization_enc,assistant_qr_path FROM wechat_mcp_sources WHERE id=?", source.id);
+    const encrypted = rowString(row, "authorization_enc");
+    return {
+      ...source,
+      authorization: encrypted ? this.secrets.decrypt(encrypted) : "",
+      qrPath: rowString(row, "assistant_qr_path") || undefined,
+    };
+  }
+
+  saveWechatMcpSource(input: {
+    endpoint: string;
+    authorization?: string;
+    displayName: string;
+    account: string;
+    pollIntervalSeconds: number;
+    enabled: boolean;
+  }): WechatMcpSource {
+    const endpoint = new URL(input.endpoint.trim()).toString();
+    const existing = this.maybeOne("SELECT authorization_enc FROM wechat_mcp_sources WHERE id='default'");
+    const authorization = input.authorization?.trim();
+    const authorizationEnc = authorization
+      ? this.secrets.encrypt(authorization)
+      : existing ? rowString(existing, "authorization_enc") || null : null;
+    if (input.enabled && !authorizationEnc) throw new Error("启用微信助手前请配置 MCP Authorization");
+    this.run(
+      `INSERT INTO wechat_mcp_sources(
+        id,enabled,endpoint,authorization_enc,display_name,account,poll_interval_seconds,updated_at
+       ) VALUES('default',?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        enabled=excluded.enabled,endpoint=excluded.endpoint,authorization_enc=excluded.authorization_enc,
+        display_name=excluded.display_name,account=excluded.account,
+        poll_interval_seconds=excluded.poll_interval_seconds,updated_at=excluded.updated_at`,
+      input.enabled ? 1 : 0,
+      endpoint,
+      authorizationEnc,
+      input.displayName.trim().slice(0, 80) || "知流助手",
+      input.account.trim().slice(0, 200),
+      Math.max(3, Math.min(60, Math.floor(input.pollIntervalSeconds || 8))),
+      now(),
+    );
+    return this.getWechatMcpSource()!;
+  }
+
+  setWechatMcpQr(filePath?: string, mimeType?: string): void {
+    const source = this.getWechatMcpSource();
+    if (!source) throw new Error("请先保存微信助手 MCP 配置");
+    this.run(
+      "UPDATE wechat_mcp_sources SET assistant_qr_path=?,assistant_qr_mime_type=?,updated_at=? WHERE id=?",
+      filePath || null,
+      mimeType || null,
+      now(),
+      source.id,
+    );
+  }
+
+  updateWechatMcpStatus(input: { lastPollAt?: string; lastMessageAt?: string; lastError?: string | null }): void {
+    const source = this.getWechatMcpSource();
+    if (!source) return;
+    this.run(
+      `UPDATE wechat_mcp_sources SET
+        last_poll_at=COALESCE(?,last_poll_at),last_message_at=COALESCE(?,last_message_at),last_error=?
+       WHERE id=?`,
+      input.lastPollAt || null,
+      input.lastMessageAt || null,
+      input.lastError === undefined ? source.lastError || null : input.lastError,
+      source.id,
+    );
+  }
+
+  createWechatMcpBindingCode(minutes = 15): { code: string; expiresAt: string } {
+    const tenantId = this.requireOwnerId();
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let body = "";
+    for (const byte of crypto.randomBytes(8)) body += alphabet[byte % alphabet.length];
+    const code = `ZL-${body.slice(0, 4)}-${body.slice(4)}`;
+    const createdAt = now();
+    const expiresAt = new Date(Date.now() + Math.max(5, Math.min(60, minutes)) * 60_000).toISOString();
+    this.transaction(() => {
+      this.run("DELETE FROM wechat_mcp_binding_codes WHERE tenant_id=? AND consumed_at IS NULL", tenantId);
+      this.run(
+        "INSERT INTO wechat_mcp_binding_codes(id,tenant_id,code_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
+        crypto.randomUUID(),
+        tenantId,
+        tokenHash(code),
+        expiresAt,
+        createdAt,
+      );
+    });
+    return { code, expiresAt };
+  }
+
+  consumeWechatMcpBindingCode(input: {
+    code: string;
+    sourceId: string;
+    account: string;
+    wechatUsername: string;
+    wechatDisplayName: string;
+    avatar?: string;
+  }): WechatMcpBinding | undefined {
+    const code = input.code.trim().toUpperCase();
+    const row = this.maybeOne(
+      `SELECT * FROM wechat_mcp_binding_codes
+       WHERE code_hash=? AND consumed_at IS NULL AND expires_at>?`,
+      tokenHash(code),
+      now(),
+    );
+    if (!row) return undefined;
+    const tenantId = rowString(row, "tenant_id");
+    const id = crypto.randomUUID();
+    const boundAt = now();
+    this.transaction(() => {
+      this.run("DELETE FROM wechat_mcp_bindings WHERE source_id=? AND tenant_id=?", input.sourceId, tenantId);
+      this.run(
+        `INSERT INTO wechat_mcp_bindings(
+          id,source_id,tenant_id,account,wechat_username,wechat_display_name,avatar,bound_at
+         ) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id,account,wechat_username) DO UPDATE SET
+          tenant_id=excluded.tenant_id,wechat_display_name=excluded.wechat_display_name,
+          avatar=excluded.avatar,bound_at=excluded.bound_at,last_message_id=NULL,last_message_at=NULL`,
+        id,
+        input.sourceId,
+        tenantId,
+        input.account,
+        input.wechatUsername,
+        input.wechatDisplayName,
+        input.avatar || null,
+        boundAt,
+      );
+      this.run("UPDATE wechat_mcp_binding_codes SET consumed_at=? WHERE id=?", boundAt, rowString(row, "id"));
+    });
+    return this.getWechatMcpBindingForTenant(tenantId);
+  }
+
+  getWechatMcpBinding(sourceId: string, account: string, wechatUsername: string): WechatMcpBinding | undefined {
+    const row = this.maybeOne(
+      `SELECT b.*,u.username,u.display_name AS user_display_name FROM wechat_mcp_bindings b
+       JOIN users u ON u.id=b.tenant_id AND u.disabled_at IS NULL
+       WHERE b.source_id=? AND b.account=? AND b.wechat_username=?`,
+      sourceId,
+      account,
+      wechatUsername,
+    );
+    return row ? this.mapWechatMcpBinding(row) : undefined;
+  }
+
+  getWechatMcpBindingForTenant(tenantId = this.requireOwnerId()): WechatMcpBinding | undefined {
+    const row = this.maybeOne(
+      `SELECT b.*,u.username,u.display_name AS user_display_name FROM wechat_mcp_bindings b
+       JOIN users u ON u.id=b.tenant_id WHERE b.source_id='default' AND b.tenant_id=?`,
+      tenantId,
+    );
+    return row ? this.mapWechatMcpBinding(row) : undefined;
+  }
+
+  listWechatMcpBindings(): WechatMcpBinding[] {
+    return this.all(
+      `SELECT b.*,u.username,u.display_name AS user_display_name FROM wechat_mcp_bindings b
+       JOIN users u ON u.id=b.tenant_id ORDER BY b.bound_at DESC`,
+    ).map((row) => this.mapWechatMcpBinding(row));
+  }
+
+  deleteWechatMcpBindingForTenant(tenantId = this.requireOwnerId()): boolean {
+    return Number(this.run("DELETE FROM wechat_mcp_bindings WHERE source_id='default' AND tenant_id=?", tenantId).changes) > 0;
+  }
+
+  deleteWechatMcpBinding(id: string): boolean {
+    return Number(this.run("DELETE FROM wechat_mcp_bindings WHERE id=?", id).changes) > 0;
+  }
+
+  updateWechatMcpBindingCursor(id: string, messageId: string, messageAt: string): void {
+    this.run(
+      "UPDATE wechat_mcp_bindings SET last_message_id=?,last_message_at=? WHERE id=?",
+      messageId,
+      messageAt,
+      id,
+    );
+  }
+
+  private mapWechatMcpBinding(row: SqlRow): WechatMcpBinding {
+    return {
+      id: rowString(row, "id"),
+      tenantId: rowString(row, "tenant_id"),
+      username: rowString(row, "username") || undefined,
+      userDisplayName: rowString(row, "user_display_name") || undefined,
+      account: rowString(row, "account"),
+      wechatUsername: rowString(row, "wechat_username"),
+      wechatDisplayName: rowString(row, "wechat_display_name"),
+      avatar: rowString(row, "avatar") || undefined,
+      boundAt: rowString(row, "bound_at"),
+      lastMessageId: rowString(row, "last_message_id") || undefined,
+      lastMessageAt: rowString(row, "last_message_at") || undefined,
+    };
   }
 
   private requireOwnerId(): string {

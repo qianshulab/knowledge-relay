@@ -11,6 +11,7 @@ import {
   imageDimensions,
   isPublicImageAddress,
   localizeMarkdownImages,
+  normalizeMarkdownImages,
   pinnedImageLookup,
   sniffImageType,
   validateRemoteImageUrl,
@@ -81,6 +82,42 @@ describe("article image security", () => {
   it("没有远程图片时不触发网络并保持 Markdown 原样", async () => {
     await expect(localizeMarkdownImages({} as never, "# 标题\n\n正文", "tenant-a"))
       .resolves.toEqual({ markdown: "# 标题\n\n正文", images: [], warnings: [] });
+  });
+
+  it("把论坛相对地址、协议相对地址和懒加载 HTML 图片规范化为绝对 Markdown", () => {
+    const source = [
+      "![截图](upload/attach/demo.png)",
+      '<img src="/placeholder.gif" data-original="upload/attach/lazy.jpg" alt="调用流程">',
+      '<img src="//cdn.example/body.webp" alt="结构图">',
+    ].join("\n\n");
+    expect(normalizeMarkdownImages(source, "https://bbs.example/thread-1.htm")).toBe([
+      "![截图](https://bbs.example/upload/attach/demo.png)",
+      "![调用流程](https://bbs.example/upload/attach/lazy.jpg)",
+      "![结构图](https://cdn.example/body.webp)",
+    ].join("\n\n"));
+  });
+
+  it("下载相对地址正文图片后按原位置写回离线引用", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-relative-images-"));
+    const png = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+    png.writeUInt32BE(1, 16);
+    png.writeUInt32BE(1, 20);
+    try {
+      const requested: string[] = [];
+      const result = await localizeMarkdownImages(
+        { dataDir } as AppConfig,
+        '<p>正文</p><img src="upload/attach/screenshot.png" alt="调试截图">',
+        "tenant-a",
+        async (url) => { requested.push(url.toString()); return png; },
+        "https://bbs.kanxue.com/thread-292208.htm",
+      );
+      expect(requested).toEqual(["https://bbs.kanxue.com/upload/attach/screenshot.png"]);
+      expect(result.markdown).toMatch(/!\[调试截图\]\(attachment:\/\/[a-f0-9]{64}\)/);
+      expect(result.images).toHaveLength(1);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("把正文图片按内容哈希本地化并在单张失败时保留整篇", async () => {

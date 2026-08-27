@@ -290,7 +290,22 @@ async function resolvePublicAddresses(hostname: string): Promise<ResolvedAddress
   return addresses;
 }
 
-async function requestImage(url: URL, redirects = 0): Promise<Buffer> {
+function safeImageReferrer(sourceUrl: string | undefined, target: URL): string | undefined {
+  if (!sourceUrl) return undefined;
+  try {
+    const source = new URL(sourceUrl);
+    if (!["http:", "https:"].includes(source.protocol) || source.username || source.password) return undefined;
+    source.hash = "";
+    // Match the browser's common strict-origin-when-cross-origin behaviour:
+    // same-site image hosts receive the article URL, third-party CDNs only the
+    // origin. This helps anti-hotlinking without leaking article query strings.
+    return source.origin === target.origin ? source.toString().slice(0, 2_000) : `${source.origin}/`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function requestImage(url: URL, sourceUrl?: string, redirects = 0): Promise<Buffer> {
   const resolved = await resolvePublicAddresses(url.hostname);
   return await new Promise<Buffer>((resolve, reject) => {
     let settled = false;
@@ -301,6 +316,7 @@ async function requestImage(url: URL, redirects = 0): Promise<Buffer> {
       else resolve(value || Buffer.alloc(0));
     };
     const transport = url.protocol === "https:" ? https : http;
+    const referer = safeImageReferrer(sourceUrl, url);
     const request = transport.request({
       protocol: url.protocol,
       hostname: url.hostname,
@@ -310,7 +326,9 @@ async function requestImage(url: URL, redirects = 0): Promise<Buffer> {
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1",
         "Accept-Encoding": "identity",
-        "User-Agent": "KnowledgeRelay/1.0 image-cache",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        ...(referer ? { Referer: referer } : {}),
       },
       lookup: pinnedImageLookup(resolved),
       servername: url.protocol === "https:" ? url.hostname : undefined,
@@ -330,7 +348,7 @@ async function requestImage(url: URL, redirects = 0): Promise<Buffer> {
           finish(error instanceof Error ? error : new Error("图片重定向无效"));
           return;
         }
-        void requestImage(redirect, redirects + 1).then((value) => finish(undefined, value), (error) => finish(error));
+        void requestImage(redirect, sourceUrl, redirects + 1).then((value) => finish(undefined, value), (error) => finish(error));
         return;
       }
       if (status < 200 || status >= 300) {
@@ -418,6 +436,47 @@ function safeFailureReason(error: Error): string {
   return "网络连接失败";
 }
 
+function htmlAttribute(tag: string, name: string): string | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tag.match(new RegExp(`\\s${escaped}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))`, "i"));
+  return match?.[1] || match?.[2] || match?.[3] || undefined;
+}
+
+function resolveImageReference(value: string, sourceUrl?: string): string | undefined {
+  const decoded = value.trim().replace(/^<|>$/g, "").replace(/&amp;/gi, "&");
+  if (!decoded || /^(?:data|blob|javascript):/i.test(decoded)) return undefined;
+  try {
+    const url = sourceUrl ? new URL(decoded, sourceUrl) : new URL(decoded);
+    return validateRemoteImageUrl(url.toString()).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Convert the image shapes commonly returned by reader services and raw HTML
+ * fallbacks into one absolute Markdown representation. Besides ordinary
+ * Markdown this covers relative URLs, protocol-relative URLs and lazy-loading
+ * attributes used by forums such as Kanxue.
+ */
+export function normalizeMarkdownImages(markdown: string, sourceUrl?: string): string {
+  const markdownPattern = /!\[([^\]\r\n]{0,500})\]\(\s*(?:<([^>\r\n]{1,4000})>|([^\s)\r\n]{1,4000}))(?:\s+["'][^"'\r\n]*["'])?\s*\)/gi;
+  const normalizedMarkdown = markdown.replace(markdownPattern, (full, alt: string, wrappedUrl: string, plainUrl: string) => {
+    const resolved = resolveImageReference(wrappedUrl || plainUrl || "", sourceUrl);
+    return resolved ? `![${alt}](${resolved})` : full;
+  });
+  return normalizedMarkdown.replace(/<img\b[^>]*>/gi, (tag) => {
+    const lazySource = ["data-src", "data-original", "data-lazy-src", "data-url"]
+      .map((name) => htmlAttribute(tag, name))
+      .find(Boolean);
+    const srcset = htmlAttribute(tag, "srcset")?.split(",")[0]?.trim().split(/\s+/)[0];
+    const resolved = resolveImageReference(lazySource || htmlAttribute(tag, "src") || srcset || "", sourceUrl);
+    if (!resolved) return tag;
+    const alt = (htmlAttribute(tag, "alt") || "正文图片").replace(/[\[\]\r\n]+/g, " ").trim();
+    return `![${alt}](${resolved})`;
+  });
+}
+
 function imageReferences(markdown: string): ImageReference[] {
   const matches: ImageReference[] = [];
   const pattern = /!\[([^\]\r\n]{0,500})\]\(\s*(https?:\/\/[^)\s]{1,4000})(?:\s+["'][^"']*["'])?\s*\)/gi;
@@ -431,10 +490,13 @@ export async function localizeMarkdownImages(
   config: AppConfig,
   markdown: string,
   tenantId?: string,
-  download: (url: URL) => Promise<Buffer> = requestImage,
+  download?: (url: URL) => Promise<Buffer>,
+  sourceUrl?: string,
 ): Promise<LocalizedMarkdownBundle> {
-  const references = imageReferences(markdown);
-  if (!references.length) return { markdown, images: [], warnings: [] };
+  const normalizedMarkdown = normalizeMarkdownImages(markdown, sourceUrl);
+  const references = imageReferences(normalizedMarkdown);
+  if (!references.length) return { markdown: normalizedMarkdown, images: [], warnings: [] };
+  const imageDownloader = download || ((url: URL) => requestImage(url, sourceUrl));
   const warnings: string[] = [];
   if (references.length > MAX_IMAGES) warnings.push(`文章包含 ${references.length} 张图片，仅缓存前 ${MAX_IMAGES} 张。`);
   const selected = references.slice(0, MAX_IMAGES);
@@ -447,7 +509,7 @@ export async function localizeMarkdownImages(
       const index = next++;
       const reference = unique[index]!;
       try {
-        const stored = await persistImage(config, tenantId, reference.url, reference.alt, index, download);
+        const stored = await persistImage(config, tenantId, reference.url, reference.alt, index, imageDownloader);
         if (totalBytes + stored.attachment.size > MAX_ARTICLE_IMAGE_BYTES) {
           throw new Error("文章图片总量超过 64 MB 限制");
         }
@@ -475,7 +537,7 @@ export async function localizeMarkdownImages(
     )].slice(0, 2);
     warnings.push(`${failed} 张文章图片未能缓存（${reasons.join("、")}），正文已保留并提供原始图片链接。`);
   }
-  const localized = markdown.replace(
+  const localized = normalizedMarkdown.replace(
     /!\[([^\]\r\n]{0,500})\]\(\s*(https?:\/\/[^)\s]{1,4000})(?:\s+["'][^"']*["'])?\s*\)/gi,
     (_full, alt: string, url: string) => {
       const stored = results.get(url);

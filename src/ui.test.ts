@@ -117,7 +117,7 @@ describe("component frontend", () => {
     expect(styles).toContain("line-height: 1.88");
     expect(styles).toContain(".reader-tabs { position: static;");
     expect(styles).not.toContain(".reader-tabs { position: sticky;");
-    expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain("捕获</span>");
+    expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain('"捕获"');
     expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain("语义整理引擎");
     expect(styles).toContain("@keyframes relay-packet-in");
     expect(styles).toContain("@keyframes relay-stage-dot");

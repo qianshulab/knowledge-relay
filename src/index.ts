@@ -6,6 +6,7 @@ import { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { configureLogger, errorDetails, logger } from "./logger.js";
 import { createServer } from "./server.js";
 import { AppDatabase } from "./storage/database.js";
+import { WechatMcpIntakeManager } from "./wechat-mcp-intake.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -17,7 +18,8 @@ async function main(): Promise<void> {
 
   const bots = new BotManager(config, database);
   const login = new AccountLoginManager(config, database, bots);
-  const server = createServer(config, database, bots, login);
+  const wechatMcp = new WechatMcpIntakeManager(config, database, bots);
+  const server = createServer(config, database, bots, login, wechatMcp);
 
   await server.listen({ host: config.host, port: config.port });
   logger.info("管理页面已启动", {
@@ -25,12 +27,14 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
   });
   await bots.startAll();
+  await wechatMcp.start();
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("正在停止服务", { signal });
+    await wechatMcp.stop();
     await bots.stopAll();
     await server.close();
     database.close();

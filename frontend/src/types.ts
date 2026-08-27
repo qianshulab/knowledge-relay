@@ -121,8 +121,24 @@ export type Dashboard = {
   organized: number;
   fallback: number;
   pendingSync: number;
+  diagramProcessing: number;
+  diagramJobs: Array<{
+    messageId: string;
+    title: string;
+    phase: "analyzing" | "saving";
+    message: string;
+    startedAt: string;
+    updatedAt: string;
+  }>;
   agentEnabled: boolean;
   accounts: BotAccount[];
+  wechatAssistant: {
+    available: boolean;
+    bound: boolean;
+    displayName?: string;
+    lastMessageAt?: string;
+    error?: string;
+  };
   syncTargets: SyncTarget[];
   [key: string]: unknown;
 };
@@ -205,6 +221,53 @@ export type ApiToken = {
   lastUsedAt?: string;
   revoked: boolean;
   token?: string;
+};
+
+export type WechatMcpSource = {
+  id: string;
+  enabled: boolean;
+  endpoint: string;
+  authorizationConfigured: boolean;
+  displayName: string;
+  account: string;
+  pollIntervalSeconds: number;
+  qrConfigured: boolean;
+  qrMimeType?: string;
+  lastPollAt?: string;
+  lastMessageAt?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+export type WechatMcpBinding = {
+  id: string;
+  tenantId?: string;
+  username?: string;
+  userDisplayName?: string;
+  wechatDisplayName: string;
+  boundAt: string;
+  lastMessageAt?: string;
+};
+
+export type WechatMcpUserState = {
+  available: boolean;
+  source?: Pick<WechatMcpSource, "displayName" | "qrConfigured" | "lastPollAt" | "lastError">;
+  binding?: WechatMcpBinding;
+};
+
+export type WechatMcpAdminState = {
+  source?: WechatMcpSource;
+  bindings: WechatMcpBinding[];
+};
+
+export type WechatMcpCheck = {
+  ok: boolean;
+  serverName: string;
+  serverVersion: string;
+  protocolVersion: string;
+  toolCount: number;
+  accountCount: number;
+  accounts: string[];
 };
 
 export type AgentSettings = {

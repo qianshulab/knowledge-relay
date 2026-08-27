@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import { createReadStream } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import { PassThrough } from "node:stream";
 import path from "node:path";
 
@@ -25,14 +25,48 @@ import {
   publishPluginRelease,
   resolvePluginRelease,
 } from "./plugin-release.js";
-import type { AppDatabase, ContentFormat, InboxSearchResult, KnowledgeMap, OwnerProfile } from "./storage/database.js";
+import type { AppDatabase, ContentFormat, InboxSearchResult, OwnerProfile } from "./storage/database.js";
 import { adminUiVersion, loadWebIndex, webRoot } from "./web-ui.js";
+import type { WechatMcpIntakeManager } from "./wechat-mcp-intake.js";
 
 type OwnerRequest = FastifyRequest & {
   owner?: OwnerProfile;
   sessionToken?: string;
   tenantDatabase?: AppDatabase;
 };
+
+type DiagramGenerationPhase = "analyzing" | "saving";
+
+type DiagramGenerationJob = {
+  tenantId: string;
+  messageId: string;
+  title: string;
+  status: "generating" | "failed";
+  phase: DiagramGenerationPhase;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
+  error?: string;
+};
+
+function publicDiagramGeneration(job: DiagramGenerationJob) {
+  return {
+    status: job.status,
+    cached: false,
+    generation: {
+      phase: job.phase,
+      message: job.message,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      ...(job.error ? { error: job.error } : {}),
+    },
+  };
+}
+
+function diagramGenerationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/sk-[A-Za-z0-9_-]{12,}/g, "[已隐藏密钥]").slice(0, 500);
+}
 
 function tenantDatabase(request: FastifyRequest): AppDatabase {
   const scoped = (request as OwnerRequest).tenantDatabase;
@@ -118,6 +152,7 @@ export function createServer(
   database: AppDatabase,
   bots: BotManager,
   login: AccountLoginManager,
+  wechatMcp?: WechatMcpIntakeManager,
 ): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   const nanobot = new NanobotClient(config);
@@ -125,7 +160,7 @@ export function createServer(
   const captureLimits = new Map<string, { count: number; resetAt: number }>();
   let oauthInProgress = false;
   let pluginPublishInProgress = false;
-  const diagramGenerations = new Map<string, Promise<KnowledgeMap>>();
+  const diagramGenerations = new Map<string, DiagramGenerationJob>();
   const activeKnowledgeChats = new Set<string>();
 
   void app.register(fastifyStatic, {
@@ -137,7 +172,7 @@ export function createServer(
     immutable: false,
   });
 
-  for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed"]) {
+  for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed", "image/jpeg", "image/png", "image/webp"]) {
     app.addContentTypeParser(contentType, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
   }
 
@@ -417,6 +452,153 @@ export function createServer(
       ? { ok: true }
       : reply.code(404).send({ error: "API 令牌不存在" }));
 
+  app.get("/api/wechat-mcp", async (request) => {
+    const source = database.getWechatMcpSource();
+    const binding = tenantDatabase(request).getWechatMcpBindingForTenant();
+    return {
+      available: Boolean(source?.enabled && source.qrConfigured),
+      source: source?.enabled ? {
+        displayName: source.displayName,
+        qrConfigured: source.qrConfigured,
+        lastPollAt: source.lastPollAt,
+        lastError: source.lastError,
+      } : undefined,
+      binding: binding ? {
+        id: binding.id,
+        wechatDisplayName: binding.wechatDisplayName,
+        boundAt: binding.boundAt,
+        lastMessageAt: binding.lastMessageAt,
+      } : undefined,
+    };
+  });
+
+  app.post("/api/wechat-mcp/binding-code", async (request, reply) => {
+    const source = database.getWechatMcpSource();
+    if (!source?.enabled || !source.qrConfigured) {
+      return reply.code(409).send({ error: "管理员尚未启用微信助手收件" });
+    }
+    if (tenantDatabase(request).getWechatMcpBindingForTenant()) {
+      return reply.code(409).send({ error: "当前账户已经绑定微信联系人" });
+    }
+    return tenantDatabase(request).createWechatMcpBindingCode(15);
+  });
+
+  app.delete("/api/wechat-mcp/binding", async (request, reply) =>
+    tenantDatabase(request).deleteWechatMcpBindingForTenant()
+      ? { ok: true }
+      : reply.code(404).send({ error: "当前账户尚未绑定微信助手" }));
+
+  app.get("/api/wechat-mcp/assistant-qr", async (_request, reply) => {
+    const source = database.getWechatMcpSourceSecret();
+    if (!source?.enabled || !source.qrPath) return reply.code(404).send({ error: "微信助手二维码尚未配置" });
+    try {
+      const stat = await fs.stat(source.qrPath);
+      reply.header("Content-Type", source.qrMimeType || "image/jpeg");
+      reply.header("Content-Length", String(stat.size));
+      reply.header("Cache-Control", "private, max-age=300");
+      reply.header("Content-Disposition", "inline");
+      return reply.send(createReadStream(source.qrPath));
+    } catch {
+      return reply.code(404).send({ error: "微信助手二维码文件不存在" });
+    }
+  });
+
+  app.get("/api/admin/wechat-mcp", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return {
+      source: database.getWechatMcpSource(),
+      bindings: database.listWechatMcpBindings(),
+    };
+  });
+
+  app.put<{ Body: Record<string, unknown> }>("/api/admin/wechat-mcp", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const endpoint = stringBody(request.body?.endpoint, 1_000);
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      return reply.code(400).send({ error: "MCP 地址格式不正确" });
+    }
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+      return reply.code(400).send({ error: "MCP 地址必须是 HTTP(S)，且不能包含用户名或密码" });
+    }
+    const source = database.saveWechatMcpSource({
+      endpoint: parsed.toString(),
+      authorization: stringBody(request.body?.authorization, 4_096) || undefined,
+      displayName: stringBody(request.body?.displayName, 80) || "知流助手",
+      account: stringBody(request.body?.account, 200),
+      pollIntervalSeconds: Math.max(3, Math.min(60, Number(request.body?.pollIntervalSeconds) || 8)),
+      enabled: booleanBody(request.body?.enabled),
+    });
+    if (wechatMcp) void wechatMcp.reload();
+    return { source };
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/admin/wechat-mcp/check", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    if (!wechatMcp) return reply.code(503).send({ error: "微信助手接收服务未启动" });
+    const existing = database.getWechatMcpSourceSecret();
+    const endpoint = stringBody(request.body?.endpoint, 1_000) || existing?.endpoint || "";
+    const authorization = stringBody(request.body?.authorization, 4_096) || existing?.authorization || "";
+    try {
+      return await wechatMcp.check({
+        id: existing?.id || "default",
+        enabled: false,
+        endpoint,
+        authorization,
+        authorizationConfigured: Boolean(authorization),
+        displayName: stringBody(request.body?.displayName, 80) || existing?.displayName || "知流助手",
+        account: stringBody(request.body?.account, 200) || existing?.account || "",
+        pollIntervalSeconds: existing?.pollIntervalSeconds || 8,
+        qrConfigured: existing?.qrConfigured || false,
+        qrMimeType: existing?.qrMimeType,
+        qrPath: existing?.qrPath,
+        updatedAt: existing?.updatedAt || new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.warn("微信助手 MCP 连接检查失败", errorDetails(error));
+      return reply.code(502).send({ error: error instanceof Error ? error.message : "MCP 连接检查失败" });
+    }
+  });
+
+  app.put<{ Body: Buffer }>(
+    "/api/admin/wechat-mcp/assistant-qr",
+    { bodyLimit: 4 * 1024 * 1024 },
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+      const mimeType = String(request.headers["content-type"] || "").split(";")[0] || "";
+      const suffix = ({ "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp" } as Record<string, string>)[mimeType];
+      if (!suffix || !Buffer.isBuffer(request.body) || request.body.length < 100) {
+        return reply.code(400).send({ error: "请上传 JPG、PNG 或 WebP 格式的助手二维码" });
+      }
+      if (!database.getWechatMcpSource()) return reply.code(409).send({ error: "请先保存 MCP 配置" });
+      const directory = path.join(config.dataDir, "system", "wechat-mcp");
+      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+      const filePath = path.join(directory, `assistant-qr${suffix}`);
+      const previous = database.getWechatMcpSourceSecret()?.qrPath;
+      await fs.writeFile(filePath, request.body, { mode: 0o600 });
+      if (previous && previous !== filePath) await fs.unlink(previous).catch(() => undefined);
+      database.setWechatMcpQr(filePath, mimeType);
+      return { ok: true, qrUrl: `/api/wechat-mcp/assistant-qr?v=${Date.now()}` };
+    },
+  );
+
+  app.delete("/api/admin/wechat-mcp/assistant-qr", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const previous = database.getWechatMcpSourceSecret()?.qrPath;
+    database.setWechatMcpQr();
+    if (previous) await fs.unlink(previous).catch(() => undefined);
+    return { ok: true };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/admin/wechat-mcp/bindings/:id", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    return database.deleteWechatMcpBinding(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "绑定关系不存在" });
+  });
+
   app.get<{ Querystring: { limit?: string; offset?: string; status?: string } }>("/api/admin/invitations", async (request, reply) => {
     if (!requireAdmin(request, reply)) return;
     const allowedStatuses = new Set(["all", "pending", "used", "expired", "revoked"]);
@@ -454,11 +636,37 @@ export function createServer(
   app.get("/api/dashboard", async (request) => {
     const scoped = tenantDatabase(request);
     const agentSettings = scoped.getAgentSettings(config.nanobot);
+    const tenantId = scoped.currentTenantId();
+    const diagramJobs = tenantId
+      ? [...diagramGenerations.values()]
+        .filter((job) => job.tenantId === tenantId && job.status === "generating")
+        .map((job) => ({
+          messageId: job.messageId,
+          title: job.title,
+          phase: job.phase,
+          message: job.message,
+          startedAt: job.startedAt,
+          updatedAt: job.updatedAt,
+        }))
+      : [];
     return {
       ...scoped.dashboard(),
       agentEnabled: agentSettings.enabled,
       accounts: scoped.getBotAccounts().map((account) => publicAccount(account, bots.isRunning(account.id))),
+      wechatAssistant: (() => {
+        const source = database.getWechatMcpSource();
+        const binding = scoped.getWechatMcpBindingForTenant();
+        return {
+          available: Boolean(source?.enabled && source.qrConfigured),
+          bound: Boolean(binding),
+          displayName: source?.displayName,
+          lastMessageAt: binding?.lastMessageAt,
+          error: source?.lastError,
+        };
+      })(),
       syncTargets: scoped.listSyncTargets(),
+      diagramProcessing: diagramJobs.length,
+      diagramJobs,
     };
   });
 
@@ -871,6 +1079,9 @@ export function createServer(
   app.get<{ Params: { id: string } }>("/api/messages/:id/diagram", async (request, reply) => {
     const scoped = tenantDatabase(request);
     if (!scoped.getMessage(request.params.id)) return reply.code(404).send({ error: "消息不存在" });
+    const tenantId = scoped.currentTenantId();
+    const generation = tenantId ? diagramGenerations.get(`${tenantId}:${request.params.id}`) : undefined;
+    if (generation) return publicDiagramGeneration(generation);
     const diagram = scoped.getKnowledgeDiagram(request.params.id);
     return diagram
       ? { status: "ready", cached: true, diagram }
@@ -891,22 +1102,52 @@ export function createServer(
       const tenantId = scoped.currentTenantId();
       if (!tenantId) return reply.code(401).send({ error: "请先登录" });
       const generationKey = `${tenantId}:${message.id}`;
-      let generation = diagramGenerations.get(generationKey);
-      if (!generation) {
-        generation = (async () => {
+      const existing = diagramGenerations.get(generationKey);
+      if (existing?.status === "generating") {
+        return reply.code(202).send(publicDiagramGeneration(existing));
+      }
+      const now = new Date().toISOString();
+      const generation: DiagramGenerationJob = {
+        tenantId,
+        messageId: message.id,
+        title: message.title || message.text.slice(0, 80) || "未命名内容",
+        status: "generating",
+        phase: "analyzing",
+        message: "正在分析资料结构并选择合适的图形",
+        startedAt: now,
+        updatedAt: now,
+      };
+      diagramGenerations.set(generationKey, generation);
+      void (async () => {
+        try {
           const result = await nanobot.generateKnowledgeDiagram(
             message,
             settings,
             scoped.getEnabledSkills(),
             { tenantId },
           );
-          return scoped.saveKnowledgeDiagram(message.id, result, message.revision);
-        })();
-        diagramGenerations.set(generationKey, generation);
-        void generation.finally(() => diagramGenerations.delete(generationKey)).catch(() => undefined);
-      }
-      const diagram = await generation;
-      return { status: "ready", cached: false, diagram };
+          generation.phase = "saving";
+          generation.message = "图解结构已生成，正在保存结果";
+          generation.updatedAt = new Date().toISOString();
+          scoped.saveKnowledgeDiagram(message.id, result, message.revision);
+          if (diagramGenerations.get(generationKey) === generation) diagramGenerations.delete(generationKey);
+        } catch (error) {
+          generation.status = "failed";
+          generation.message = "智能图解生成失败，可重新尝试";
+          generation.error = diagramGenerationError(error);
+          generation.updatedAt = new Date().toISOString();
+          logger.warn("智能图解生成失败", {
+            tenantId,
+            messageId: message.id,
+            ...errorDetails(error),
+          });
+          const cleanup = setTimeout(() => {
+            if (diagramGenerations.get(generationKey) === generation) diagramGenerations.delete(generationKey);
+          }, 10 * 60_000);
+          cleanup.unref();
+        }
+      })();
+      return reply.code(202).send(publicDiagramGeneration(generation));
     },
   );
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { AppConfig } from "./config.js";
-import { persistExtractedMarkdown, persistGeneratedVisualization } from "./web-content.js";
+import { persistExtractedBundle, persistExtractedMarkdown, persistGeneratedVisualization } from "./web-content.js";
 
 describe("derived Markdown persistence", () => {
   it("同一消息中的多个无 URL 文档使用不同文件并保留各自内容", async () => {
@@ -48,6 +48,23 @@ describe("derived Markdown persistence", () => {
       expect(first.path).toContain(`${path.sep}derived${path.sep}tenants${path.sep}`);
       await expect(fs.readFile(first.path, "utf8")).resolves.toBe(content.markdown);
       await expect(fs.readFile(second.path, "utf8")).resolves.toBe(content.markdown);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("识别原站访问限制并避免把公开片段误报为完整正文", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-gated-web-"));
+    try {
+      const bundle = await persistExtractedBundle({ dataDir } as AppConfig, "gated-web", {
+        url: "https://bbs.example/thread-1.htm",
+        title: "受限文章",
+        markdown: "# 公开部分\n\n回复或点赞可查看完整内容",
+        sourceType: "web",
+      });
+      expect(bundle.warnings).toEqual([
+        "原站对部分正文设置了登录、回复或点赞权限；已保存当前可访问的正文与图片，受限部分需在原站授权后重新整理。",
+      ]);
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }

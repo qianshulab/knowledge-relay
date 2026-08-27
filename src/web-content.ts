@@ -161,7 +161,10 @@ export async function persistExtractedBundle(
   content: ExtractedWebContent,
   tenantId?: string,
 ): Promise<PersistedExtractedBundle> {
-  const localized = await localizeMarkdownImages(config, content.markdown, tenantId);
+  const localized = await localizeMarkdownImages(config, content.markdown, tenantId, undefined, content.url);
+  const accessWarnings = /回复或点赞可查看完整内容|登录后(?:才)?可查看完整内容|该内容仅对登录用户可见/i.test(content.markdown)
+    ? ["原站对部分正文设置了登录、回复或点赞权限；已保存当前可访问的正文与图片，受限部分需在原站授权后重新整理。"]
+    : [];
   const digest = crypto
     .createHash("sha256")
     .update(`${messageId}\n${content.sourceType}\n${content.url}\n${content.title}\n${localized.markdown}`)
@@ -193,6 +196,6 @@ export async function persistExtractedBundle(
       },
       ...localized.images,
     ],
-    warnings: localized.warnings,
+    warnings: [...new Set([...localized.warnings, ...accessWarnings])],
   };
 }

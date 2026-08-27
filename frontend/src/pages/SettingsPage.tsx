@@ -1,9 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, Plus, RefreshCw, Route, Settings2, Shield, SlidersHorizontal, Trash2, UserPlus, UserRound, Wrench, X } from "lucide-react";
+import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Settings2, Shield, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings } from "../types";
+import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
 import { useApp } from "../App";
 import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
 
@@ -17,7 +17,7 @@ export default function SettingsPage() {
 function SettingsHeader({ title, description }: { title: string; description: string }) { return <div className="settings-heading"><h2>{title}</h2><p>{description}</p></div>; }
 
 function IntakeSettings() {
-  return <><SettingsHeader title="收件接入" description="通过微信 iLink 或开放 API 把链接、文字与附件汇入同一个收件台。" /><div className="intake-stack"><SourcesSettings /><ApiSettings /></div></>;
+  return <><SettingsHeader title="收件接入" description="通过微信 iLink、微信助手或开放 API，把链接、文字与附件汇入同一个收件台。" /><div className="intake-stack"><SourcesSettings /><WechatAssistantSettings /><ApiSettings /></div></>;
 }
 
 function SourcesSettings() {
@@ -27,7 +27,119 @@ function SourcesSettings() {
   async function start() { const value = await api<{ sessionId: string }>("/api/ilink/login/start", { method: "POST" }); setSession({ sessionId: value.sessionId, qrUrl: `/api/ilink/login/${value.sessionId}/qr.svg` }); }
   async function disconnect(account: BotAccount) { if (!window.confirm("断开后将停止接收这个微信账号的新消息。确定继续吗？")) return; await api(`/api/ilink/accounts/${account.id}`, { method: "DELETE" }); notify("微信账号已断开", "success"); void queryClient.invalidateQueries({ queryKey: ["dashboard"] }); }
   useEffect(() => { if (!session) return; const timer = window.setInterval(async () => { try { const status = await api<{ status: string }>(`/api/ilink/login/${session.sessionId}/status`); if (["connected", "confirmed", "success"].includes(status.status)) { setSession(null); notify("微信 iLink 已连接", "success"); void queryClient.invalidateQueries({ queryKey: ["dashboard"] }); } } catch { /* login session may briefly rotate */ } }, 2500); return () => window.clearInterval(timer); }, [notify, queryClient, session]);
-  return <section className="settings-card"><div className="settings-card-head"><div className="source-logo wechat">微</div><div><h3>微信 iLink</h3><p>把消息、公众号文章和附件发送给 iLink Bot。</p></div><button className="button button-primary" onClick={() => void start()}><Plus size={17} />连接微信</button></div>{session?.qrUrl && <div className="qr-connect"><img src={session.qrUrl} alt="微信 iLink 登录二维码" /><div><strong>使用微信扫码连接</strong><p>扫码后按微信提示完成确认，此页面会自动更新。</p></div></div>}{dashboard.isLoading ? <LoadingState /> : dashboard.data?.accounts.length ? <div className="source-list">{dashboard.data.accounts.map((account) => <div key={account.id}><CheckCircle2 size={19} /><div><strong>{account.botId}</strong><span>连接于 {formatDate(account.connectedAt)}</span></div><span className="status-badge success">已连接</span><button className="icon-button danger-text" aria-label="断开微信账号" onClick={() => void disconnect(account)}><Trash2 size={17} /></button></div>)}</div> : <EmptyState title="尚未连接微信" description="连接后即可通过微信发送内容。" />}</section>;
+  return <section className="settings-card"><div className="settings-card-head"><MessageCircle size={20} /><div><h3>微信 iLink</h3><p>把消息、公众号文章和附件发送给 iLink Bot。</p></div><button className="button button-primary" onClick={() => void start()}><Plus size={17} />连接微信</button></div>{session?.qrUrl && <div className="qr-connect"><img src={session.qrUrl} alt="微信 iLink 登录二维码" /><div><strong>使用微信扫码连接</strong><p>扫码后按微信提示完成确认，此页面会自动更新。</p></div></div>}<div className="section-caption source-section-caption"><strong>连接状态</strong><span>{dashboard.data?.accounts.length ? `${dashboard.data.accounts.length} 个微信账号正在接收` : "连接账号后开始接收"}</span></div>{dashboard.isLoading ? <LoadingState /> : dashboard.data?.accounts.length ? <div className="source-list">{dashboard.data.accounts.map((account) => <div key={account.id}><CheckCircle2 size={19} /><div><strong>{account.botId}</strong><span>连接于 {formatDate(account.connectedAt)}</span></div><span className="status-badge success">已连接</span><button className="icon-button danger-text" aria-label="断开微信账号" onClick={() => void disconnect(account)}><Trash2 size={17} /></button></div>)}</div> : <EmptyState title="尚未连接微信" description="连接后即可通过微信发送内容。" />}</section>;
+}
+
+function WechatAssistantSettings() {
+  const { owner, notify } = useApp();
+  const queryClient = useQueryClient();
+  const state = useQuery({ queryKey: ["wechat-mcp-state"], queryFn: () => api<WechatMcpUserState>("/api/wechat-mcp"), refetchInterval: 10_000 });
+  const admin = useQuery({ queryKey: ["wechat-mcp-admin"], queryFn: () => api<WechatMcpAdminState>("/api/admin/wechat-mcp"), enabled: owner.role === "admin", refetchInterval: 10_000 });
+  const [form, setForm] = useState({ endpoint: "", authorization: "", displayName: "知流助手", account: "", pollIntervalSeconds: 8, enabled: false });
+  const [connection, setConnection] = useState<WechatMcpCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [bindingCode, setBindingCode] = useState<{ code: string; expiresAt: string } | null>(null);
+  const qrInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const source = admin.data?.source;
+    if (!source) return;
+    setForm({ endpoint: source.endpoint, authorization: "", displayName: source.displayName, account: source.account, pollIntervalSeconds: source.pollIntervalSeconds, enabled: source.enabled });
+  }, [admin.data?.source]);
+
+  async function refresh() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["wechat-mcp-state"] }),
+      queryClient.invalidateQueries({ queryKey: ["wechat-mcp-admin"] }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+    ]);
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await api("/api/admin/wechat-mcp", { method: "PUT", body: JSON.stringify(form) });
+      notify("微信助手 MCP 配置已保存", "success");
+      setForm((current) => ({ ...current, authorization: "" }));
+      await refresh();
+    } catch (error) { notify(error instanceof Error ? error.message : "配置保存失败", "danger"); }
+  }
+
+  async function check() {
+    setChecking(true); setConnection(null);
+    try {
+      const result = await api<WechatMcpCheck>("/api/admin/wechat-mcp/check", { method: "POST", body: JSON.stringify(form) });
+      setConnection(result);
+      if (!form.account && result.accounts[0]) setForm((current) => ({ ...current, account: result.accounts[0] || "" }));
+      notify(`连接正常，发现 ${result.accountCount} 个微信账号`, "success");
+    } catch (error) { notify(error instanceof Error ? error.message : "MCP 连接失败", "danger"); }
+    finally { setChecking(false); }
+  }
+
+  async function uploadQr(file?: File) {
+    if (!file) return;
+    try {
+      await api("/api/admin/wechat-mcp/assistant-qr", { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      notify("助手二维码已更新", "success");
+      await refresh();
+    } catch (error) { notify(error instanceof Error ? error.message : "二维码上传失败", "danger"); }
+  }
+
+  async function generateCode() {
+    try {
+      const result = await api<{ code: string; expiresAt: string }>("/api/wechat-mcp/binding-code", { method: "POST" });
+      setBindingCode(result);
+    } catch (error) { notify(error instanceof Error ? error.message : "绑定码生成失败", "danger"); }
+  }
+
+  async function unbind(id?: string) {
+    if (!window.confirm("解除后，这个微信联系人发送的新内容将不再进入对应用户的收件台。确定继续吗？")) return;
+    try {
+      await api(id ? `/api/admin/wechat-mcp/bindings/${id}` : "/api/wechat-mcp/binding", { method: "DELETE" });
+      setBindingCode(null); notify("微信助手绑定已解除", "success"); await refresh();
+    } catch (error) { notify(error instanceof Error ? error.message : "解除绑定失败", "danger"); }
+  }
+
+  const source = admin.data?.source;
+  const binding = state.data?.binding;
+  const latestError = source?.lastError || state.data?.source?.lastError;
+  const latestPoll = source?.lastPollAt || state.data?.source?.lastPollAt;
+  const qrConfigured = source?.qrConfigured ?? state.data?.source?.qrConfigured ?? false;
+  const runtimeLabel = !source && owner.role === "admin"
+    ? "尚未配置"
+    : latestError
+      ? "接收异常"
+      : state.data?.available
+        ? latestPoll ? "运行中" : "等待首次轮询"
+        : source?.enabled ? "等待二维码" : "已停用";
+  return <section className="settings-card wechat-assistant-card">
+    <div className="settings-card-title"><Bot size={20} /><div><h3>微信助手</h3><p>添加统一的知流助手微信，通过一次性绑定码把联系人安全路由到各自的知流账户。</p></div><span className={`status-badge ${latestError ? "warning" : state.data?.available ? "success" : ""}`}>{runtimeLabel}</span></div>
+    <div className="intake-status-grid" aria-label="微信助手配置状态">
+      <div><span>接收服务</span><strong>{runtimeLabel}</strong><small>{latestError ? "最近轮询失败" : source?.enabled || state.data?.available ? "后台持续接收新消息" : "保存并启用后开始接收"}</small></div>
+      <div><span>服务轮询</span><strong>{latestPoll ? "已建立" : "尚未建立"}</strong><small>{latestPoll ? `最近 ${formatDate(latestPoll)}` : "等待首次成功连接"}</small></div>
+      <div><span>助手二维码</span><strong>{qrConfigured ? "已配置" : "未配置"}</strong><small>{qrConfigured ? "用户可扫码添加助手" : "需由管理员上传"}</small></div>
+      <div><span>用户绑定</span><strong>{owner.role === "admin" ? `${admin.data?.bindings.length || 0} 个账户` : binding ? "已绑定" : "未绑定"}</strong><small>{binding ? binding.wechatDisplayName : "绑定后才会路由消息"}</small></div>
+    </div>
+    {owner.role === "admin" && <div className="wechat-mcp-admin">
+      <div className="section-caption"><strong>连接配置</strong><span>仅管理员可修改；Authorization 加密保存在服务器，不会返回浏览器。</span></div>
+      <form className="settings-form" onSubmit={(event) => void save(event)}>
+        <label>MCP Endpoint<input type="url" required value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value })} placeholder="https://example.com/mcp" /></label>
+        <label>Authorization<input type="password" value={form.authorization} onChange={(event) => setForm({ ...form, authorization: event.target.value })} placeholder={source?.authorizationConfigured ? "已配置，留空保持不变" : "Bearer token"} /></label>
+        <div className="form-grid"><label>助手名称<input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} /></label><label>微信账号<select value={form.account} onChange={(event) => setForm({ ...form, account: event.target.value })}><option value="">自动选择</option>{connection?.accounts.map((account) => <option key={account} value={account}>{account}</option>)}{source?.account && !connection?.accounts.includes(source.account) && <option value={source.account}>{source.account}</option>}</select></label></div>
+        <div className="form-grid"><label>轮询间隔（秒）<input type="number" min={3} max={60} value={form.pollIntervalSeconds} onChange={(event) => setForm({ ...form, pollIntervalSeconds: Number(event.target.value) || 8 })} /></label><label className="toggle-row compact-toggle"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span><strong>启用微信助手收件</strong><small>仅接收已完成用户绑定后的新消息。</small></span></label></div>
+        {connection && <InlineMessage tone="success">{connection.serverName} {connection.serverVersion} · MCP {connection.protocolVersion} · {connection.toolCount} 个工具</InlineMessage>}
+        {source?.lastError && <InlineMessage tone="danger">最近接收失败：{source.lastError}</InlineMessage>}
+        <div className="qr-config-row"><div><span className="qr-config-icon"><QrCode size={19} /></span><span><strong>助手二维码</strong><small>JPG、PNG 或 WebP；用户绑定时会在当前页面展示。</small></span></div><button type="button" className="button button-secondary qr-upload-button" onClick={() => qrInputRef.current?.click()}><Upload size={17} />{qrConfigured ? "更换二维码" : "上传二维码"}</button><input ref={qrInputRef} className="visually-hidden-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { void uploadQr(event.target.files?.[0]); event.currentTarget.value = ""; }} /></div>
+        <div className="form-actions wechat-config-actions"><button className="button button-primary">保存连接配置</button><button type="button" className="button button-secondary" disabled={checking || !form.endpoint} onClick={() => void check()}><Activity size={17} />{checking ? "正在握手…" : "检查连接"}</button></div>
+      </form>
+    </div>}
+    <div className="section-caption wechat-binding-caption"><strong>用户绑定</strong><span>配置状态与用户绑定相互独立，只有已绑定联系人会进入对应账户。</span></div>
+    <div className="wechat-assistant-bind">
+      <div className="wechat-assistant-qr">{state.data?.source?.qrConfigured ? <img src={`/api/wechat-mcp/assistant-qr?v=${source?.updatedAt || "current"}`} alt="知流助手微信二维码" /> : <div className="qr-placeholder"><QrCode size={42} /><span>{owner.role === "admin" ? "请上传助手二维码" : "管理员尚未配置二维码"}</span></div>}</div>
+      <div className="wechat-bind-copy"><strong>{binding ? `已绑定：${binding.wechatDisplayName}` : "添加助手并绑定账户"}</strong>{binding ? <><p>这个微信联系人发送给助手的新消息，会进入当前账户。最近收件：{binding.lastMessageAt ? formatDate(binding.lastMessageAt) : "尚无"}</p><button className="button button-secondary" onClick={() => void unbind()}>解除我的绑定</button></> : <><ol><li>使用微信扫描二维码，添加知流助手。</li><li>生成一次性绑定码，并原样发送给助手。</li><li>绑定成功后，再发送链接、文字或附件。</li></ol>{bindingCode ? <div className="binding-code"><div><span>15 分钟内有效</span><strong>{bindingCode.code}</strong><small>有效至 {formatDate(bindingCode.expiresAt)}</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(bindingCode.code)}><Copy size={16} />复制</button></div> : <button className="button button-primary" disabled={!state.data?.available} onClick={() => void generateCode()}><KeyRound size={17} />生成绑定码</button>}</>}</div>
+    </div>
+    {owner.role === "admin" && Boolean(admin.data?.bindings.length) && <div className="compact-list wechat-binding-list"><div className="section-caption"><strong>当前绑定</strong><span>{admin.data?.bindings.length} 个用户</span></div>{admin.data?.bindings.map((item) => <div key={item.id}><div><strong>{item.userDisplayName || item.username} ↔ {item.wechatDisplayName}</strong><span>绑定于 {formatDate(item.boundAt)}{item.lastMessageAt ? ` · 最近收件 ${formatDate(item.lastMessageAt)}` : ""}</span></div><button className="icon-button danger-text" onClick={() => void unbind(item.id)} aria-label="解除用户微信绑定"><Trash2 size={17} /></button></div>)}</div>}
+  </section>;
 }
 
 function ApiSettings() {
@@ -35,7 +147,8 @@ function ApiSettings() {
   const tokens = useQuery({ queryKey: ["api-tokens"], queryFn: () => api<{ tokens: ApiToken[] }>("/api/me/api-tokens") });
   async function create(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const value = await api<ApiToken>("/api/me/api-tokens", { method: "POST", body: JSON.stringify({ name: form.get("name") }) }); setCreated(value); event.currentTarget.reset(); void queryClient.invalidateQueries({ queryKey: ["api-tokens"] }); }
   async function revoke(id: string) { await api(`/api/me/api-tokens/${id}`, { method: "DELETE" }); notify("API 令牌已撤销", "success"); void queryClient.invalidateQueries({ queryKey: ["api-tokens"] }); }
-  return <section className="settings-card"><div className="settings-card-title"><KeyRound size={19} /><div><h3>开放 API</h3><p>为浏览器扩展、快捷指令或自动化工具创建独立令牌。</p></div></div>{created?.token && <div className="secret-reveal"><KeyRound size={20} /><div><strong>新 API 令牌</strong><code>{created.token}</code><small>只显示一次，请立即保存。</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(created.token || "")}><Copy size={17} />复制</button></div>}<form className="inline-create-form" onSubmit={(event) => void create(event)}><label>令牌名称<input name="name" required placeholder="例如：iPhone 快捷指令" /></label><button className="button button-primary"><Plus size={17} />创建令牌</button></form><div className="compact-list">{tokens.data?.tokens.filter((item) => !item.revoked).map((token) => <div key={token.id}><div><strong>{token.name}</strong><span>创建于 {formatDate(token.createdAt)}{token.lastUsedAt ? ` · 最近使用 ${formatDate(token.lastUsedAt)}` : ""}</span></div><button className="icon-button danger-text" onClick={() => void revoke(token.id)} aria-label={`撤销令牌 ${token.name}`}><Trash2 size={18} /></button></div>)}</div><div className="api-example"><h4>提交方式</h4><p>向 <code>POST /api/captures</code> 发送 JSON，并在 Authorization 中使用 Bearer 令牌。支持 <code>text</code>、<code>url</code> 与 <code>externalId</code>。</p></div></section>;
+  const activeTokens = tokens.data?.tokens.filter((item) => !item.revoked) || [];
+  return <section className="settings-card"><div className="settings-card-title"><KeyRound size={19} /><div><h3>开放 API</h3><p>为浏览器扩展、快捷指令或自动化工具创建独立令牌。</p></div><span className="status-badge">{activeTokens.length} 个有效令牌</span></div>{created?.token && <div className="secret-reveal"><KeyRound size={20} /><div><strong>新 API 令牌</strong><code>{created.token}</code><small>只显示一次，请立即保存。</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(created.token || "")}><Copy size={17} />复制</button></div>}<div className="section-caption source-section-caption"><strong>创建收件令牌</strong><span>不同设备建议使用独立令牌，便于单独撤销。</span></div><form className="inline-create-form" onSubmit={(event) => void create(event)}><label>令牌名称<input name="name" required placeholder="例如：iPhone 快捷指令" /></label><button className="button button-primary"><Plus size={17} />创建令牌</button></form><div className="section-caption source-section-caption"><strong>令牌状态</strong><span>{activeTokens.length ? "最近使用时间会自动更新" : "尚未创建可用令牌"}</span></div><div className="compact-list">{activeTokens.map((token) => <div key={token.id}><div><strong>{token.name}</strong><span>创建于 {formatDate(token.createdAt)}{token.lastUsedAt ? ` · 最近使用 ${formatDate(token.lastUsedAt)}` : " · 尚未使用"}</span></div><button className="icon-button danger-text" onClick={() => void revoke(token.id)} aria-label={`撤销令牌 ${token.name}`}><Trash2 size={18} /></button></div>)}</div><div className="api-example"><h4>提交方式</h4><p>向 <code>POST /api/captures</code> 发送 JSON，并在 Authorization 中使用 Bearer 令牌。支持 <code>text</code>、<code>url</code> 与 <code>externalId</code>。</p></div></section>;
 }
 
 function AiSettings() {
