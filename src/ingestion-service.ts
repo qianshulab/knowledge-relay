@@ -3,8 +3,9 @@ import type { CaptureInput } from "./capture.js";
 import { logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
 import { defaultNote } from "./notes.js";
+import { extractPublicWebContent } from "./public-web-extractor.js";
 import type { AgentSettings, AppDatabase } from "./storage/database.js";
-import { persistExtractedBundle, persistGeneratedVisualization } from "./web-content.js";
+import { persistExtractedBundle, persistGeneratedVisualization, type ExtractedWebContent } from "./web-content.js";
 
 export type IngestionResult = {
   accepted: boolean;
@@ -14,6 +15,7 @@ export type IngestionResult = {
 };
 
 export type CaptureAgent = Pick<NanobotClient, "process">;
+export type PublicWebExtractor = (url: string) => Promise<ExtractedWebContent | undefined>;
 
 export type AcceptedCapture = {
   accepted: boolean;
@@ -27,6 +29,7 @@ export type AcceptedCapture = {
  */
 export class IngestionService {
   private readonly nanobot: CaptureAgent;
+  private readonly webExtractor: PublicWebExtractor;
   private readonly activeJobs = new Map<string, Promise<IngestionResult>>();
   private processingQueue: Promise<unknown> = Promise.resolve();
 
@@ -34,8 +37,10 @@ export class IngestionService {
     private readonly config: AppConfig,
     private readonly database: AppDatabase,
     nanobot?: CaptureAgent,
+    webExtractor?: PublicWebExtractor,
   ) {
     this.nanobot = nanobot || new NanobotClient(config);
+    this.webExtractor = webExtractor || extractPublicWebContent;
   }
 
   async ingest(capture: CaptureInput): Promise<IngestionResult> {
@@ -168,12 +173,13 @@ export class IngestionService {
     capture: CaptureInput,
     settings: AgentSettings,
   ): Promise<string | undefined> {
+    const extractedWebContent = await this.extractWebContent(capture);
     const maximumAttempts = capture.source.url || capture.captureType === "link" ? 3 : 2;
     let lastError: unknown;
     for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
       this.database.markAgentAttempt(capture.id);
       try {
-        return await this.completeWithAgent(capture, settings);
+        return await this.completeWithAgent(capture, settings, extractedWebContent);
       } catch (error) {
         lastError = error;
         if (attempt >= maximumAttempts || !this.isRetryable(error)) throw error;
@@ -189,27 +195,53 @@ export class IngestionService {
     throw lastError;
   }
 
+  private async extractWebContent(capture: CaptureInput): Promise<ExtractedWebContent | undefined> {
+    if (capture.source.type !== "web" || !capture.source.url) return undefined;
+    try {
+      const extracted = await this.webExtractor(capture.source.url);
+      if (extracted) {
+        logger.info("网页正文已由服务端提取", {
+          captureId: capture.id,
+          url: capture.source.url,
+          images: (extracted.markdown.match(/!\[[^\]]*\]\(/g) || []).length,
+        });
+      }
+      return extracted;
+    } catch (error) {
+      logger.warn("服务端网页正文提取失败，将由 Nanobot 使用备用解析", {
+        captureId: capture.id,
+        url: capture.source.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   private async completeWithAgent(
     capture: CaptureInput,
     settings: AgentSettings,
+    extractedWebContent?: ExtractedWebContent,
   ): Promise<string | undefined> {
     const processed = await this.nanobot.process(
       capture,
       settings,
       this.database.getEnabledSkills(),
-      [],
+      extractedWebContent ? [extractedWebContent] : [],
       { tenantId: this.database.currentTenantId() || "legacy" },
     );
+    const derivedDocuments = extractedWebContent
+      ? [extractedWebContent, ...processed.derivedDocuments.filter((document) => document.sourceType !== "web")]
+      : processed.derivedDocuments;
     if (
       capture.source.url
       && ["web", "wechat_article"].includes(capture.source.type)
-      && processed.derivedDocuments.length === 0
+      && derivedDocuments.length === 0
     ) {
       throw new Error("网页解析未生成 Markdown 产物");
     }
     const derivedAttachments = [];
     const assetWarnings: string[] = [];
-    for (const document of processed.derivedDocuments) {
+    for (const document of derivedDocuments) {
       if (document.sourceType === "visualization") {
         derivedAttachments.push(await persistGeneratedVisualization(
           this.config,

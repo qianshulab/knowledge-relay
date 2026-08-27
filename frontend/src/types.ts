@@ -244,9 +244,19 @@ export type WechatMcpBinding = {
   tenantId?: string;
   username?: string;
   userDisplayName?: string;
+  account?: string;
   wechatDisplayName: string;
   boundAt: string;
   lastMessageAt?: string;
+};
+
+export type WechatMcpUserBindingStatus = {
+  tenantId: string;
+  username: string;
+  userDisplayName: string;
+  role: "admin" | "member";
+  disabled: boolean;
+  binding?: WechatMcpBinding;
 };
 
 export type WechatMcpUserState = {
@@ -258,6 +268,7 @@ export type WechatMcpUserState = {
 export type WechatMcpAdminState = {
   source?: WechatMcpSource;
   bindings: WechatMcpBinding[];
+  users: WechatMcpUserBindingStatus[];
 };
 
 export type WechatMcpCheck = {

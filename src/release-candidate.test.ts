@@ -104,7 +104,7 @@ describe("小范围发布候选主链路", () => {
         }),
       }],
     }));
-    const ingestion = new IngestionService(config(directory), scoped, { process });
+    const ingestion = new IngestionService(config(directory), scoped, { process }, async () => undefined);
     const backgroundJobs: Promise<unknown>[] = [];
     const bots = {
       isRunning: () => false,

@@ -12,6 +12,7 @@ import type { InboundAttachment } from "./messages.js";
 const MAX_IMAGES = 48;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_ARTICLE_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_HTML_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_SIDE = 16_384;
 const MAX_IMAGE_PIXELS = 80_000_000;
 const MAX_REDIRECTS = 3;
@@ -376,6 +377,106 @@ async function requestImage(url: URL, sourceUrl?: string, redirects = 0): Promis
       response.on("error", (error) => finish(error));
     });
     request.on("timeout", () => request.destroy(new Error("图片下载超时")));
+    request.on("error", (error) => finish(error));
+    request.end();
+  });
+}
+
+export type PublicHtmlResponse = {
+  html: string;
+  url: string;
+  contentType: string;
+};
+
+/**
+ * Fetch public HTML through the same DNS-pinned, private-network-blocking path
+ * used by article images. Keeping page extraction server-side must not turn a
+ * user supplied bookmark URL into an SSRF primitive.
+ */
+export async function requestPublicHtml(value: string, redirects = 0): Promise<PublicHtmlResponse> {
+  const url = validateRemoteImageUrl(value);
+  const resolved = await resolvePublicAddresses(url.hostname);
+  return await new Promise<PublicHtmlResponse>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error, result?: PublicHtmlResponse) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else if (result) resolve(result);
+      else reject(new Error("网页响应为空"));
+    };
+    const transport = url.protocol === "https:" ? https : http;
+    const request = transport.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || undefined,
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      headers: {
+        Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+        "Accept-Encoding": "identity",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      },
+      lookup: pinnedImageLookup(resolved),
+      servername: url.protocol === "https:" ? url.hostname : undefined,
+      timeout: REQUEST_TIMEOUT_MS,
+    }, (response) => {
+      const status = response.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(status)) {
+        response.resume();
+        if (!response.headers.location || redirects >= MAX_REDIRECTS) {
+          finish(new Error("网页重定向无效"));
+          return;
+        }
+        let redirect: URL;
+        try {
+          redirect = validateRemoteImageUrl(new URL(response.headers.location, url).toString());
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error("网页重定向无效"));
+          return;
+        }
+        void requestPublicHtml(redirect.toString(), redirects + 1).then(
+          (result) => finish(undefined, result),
+          (error) => finish(error),
+        );
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        finish(new Error(`网页下载失败（HTTP ${status}）`));
+        return;
+      }
+      const contentType = String(response.headers["content-type"] || "").toLowerCase();
+      if (contentType && !/text\/html|application\/xhtml\+xml/.test(contentType)) {
+        response.resume();
+        finish(new Error("远程内容不是 HTML 网页"));
+        return;
+      }
+      const declaredLength = Number(response.headers["content-length"] || 0);
+      if (declaredLength > MAX_HTML_BYTES) {
+        response.destroy();
+        finish(new Error("网页超过 8 MB 限制"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let received = 0;
+      response.on("data", (chunk: Buffer) => {
+        received += chunk.length;
+        if (received > MAX_HTML_BYTES) {
+          response.destroy(new Error("网页超过 8 MB 限制"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => finish(undefined, {
+        html: Buffer.concat(chunks, received).toString("utf8"),
+        url: url.toString(),
+        contentType,
+      }));
+      response.on("error", (error) => finish(error));
+    });
+    request.on("timeout", () => request.destroy(new Error("网页下载超时")));
     request.on("error", (error) => finish(error));
     request.end();
   });

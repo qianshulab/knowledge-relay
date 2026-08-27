@@ -163,7 +163,10 @@ export class WechatMcpIntakeManager {
       if (binding.lastMessageAt && Date.parse(sentAt) < Date.parse(binding.lastMessageAt)) continue;
       if (binding.lastMessageId === message.id) continue;
       const attachments = await this.downloadAttachments(client, binding, message);
-      const sourceInfo = wechatCaptureSource(message.id, `wechat-mcp:${source.id}`, content);
+      // Include the MCP account in the stable connection identity. Message IDs
+      // are not guaranteed to be globally unique across multiple WeChat data
+      // accounts exposed by one MCP server.
+      const sourceInfo = wechatCaptureSource(message.id, `wechat-mcp:${source.id}:${account}`, content);
       sourceInfo.name = sourceInfo.type === "wechat_article" ? "微信公众号" : source.displayName;
       const capture: CaptureInput = {
         id: stableCaptureId(sourceInfo),
@@ -176,10 +179,15 @@ export class WechatMcpIntakeManager {
         text: content,
         attachments,
       };
-      this.bots.acceptCapture(binding.tenantId, capture);
+      const accepted = this.bots.acceptCapture(binding.tenantId, capture);
       this.database.updateWechatMcpBindingCursor(binding.id, message.id, sentAt);
       this.database.updateWechatMcpStatus({ lastMessageAt: sentAt, lastError: null });
       binding = { ...binding, lastMessageId: message.id, lastMessageAt: sentAt };
+      logger.info(accepted.accepted ? "微信助手消息已进入收件台" : "微信助手消息已存在，跳过重复收件", {
+        tenantId: binding.tenantId,
+        messageId: capture.id,
+        sourceId: source.id,
+      });
     }
   }
 

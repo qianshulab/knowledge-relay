@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { inferCaptureType, stableCaptureId, wechatCaptureSource } from "./capture.js";
+import { defaultNote } from "./notes.js";
 import { AppDatabase } from "./storage/database.js";
 import { WechatMcpClient } from "./wechat-mcp-client.js";
 
@@ -83,6 +85,30 @@ describe("微信助手 MCP 收件", () => {
       wechatUsername: "another-contact",
       wechatDisplayName: "其他用户",
     })).toBeUndefined();
+
+    const assistantSource = wechatCaptureSource("message-after-binding", "wechat-mcp:default:primary", "绑定后的正式消息");
+    const assistantCapture = {
+      id: stableCaptureId(assistantSource),
+      source: assistantSource,
+      captureType: inferCaptureType("绑定后的正式消息", []),
+      actorId: "wx-contact",
+      receivedAt: new Date().toISOString(),
+      text: "绑定后的正式消息",
+      attachments: [],
+    };
+    expect(database.forTenant(member.id).saveCapture(assistantCapture, defaultNote(assistantCapture))).toBe(true);
+    expect(database.forTenant(member.id).getMessage(assistantCapture.id)).toMatchObject({ text: "绑定后的正式消息" });
+
+    expect(database.forTenant(owner.id).listWechatMcpUserBindingStatuses()).toEqual([
+      expect.objectContaining({ tenantId: owner.id, username: owner.username, role: "admin", disabled: false }),
+      expect.objectContaining({
+        tenantId: member.id,
+        username: member.username,
+        role: "member",
+        disabled: false,
+        binding: expect.objectContaining({ wechatDisplayName: "微信用户" }),
+      }),
+    ]);
 
     database.close();
   });

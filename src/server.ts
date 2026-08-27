@@ -508,6 +508,7 @@ export function createServer(
     return {
       source: database.getWechatMcpSource(),
       bindings: database.listWechatMcpBindings(),
+      users: tenantDatabase(request).listWechatMcpUserBindingStatuses(),
     };
   });
 

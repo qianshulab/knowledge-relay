@@ -428,6 +428,13 @@ kbd { border: 1px solid var(--border-strong); background: var(--surface); paddin
 .wechat-binding-list { margin-top: 20px; border-top: 1px solid var(--border); }
 .wechat-binding-list .section-caption { padding: 16px 0 6px; }
 .wechat-binding-list .section-caption + div { border-top: 0; }
+.wechat-binding-overview { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+.binding-search { max-width: 420px; margin-top: 14px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-muted); }
+.binding-search input { min-height: 40px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.binding-search input:focus { box-shadow: none; }
+.wechat-binding-overview .wechat-binding-list { margin-top: 14px; }
+.wechat-binding-overview .wechat-binding-list > div { display: grid; grid-template-columns: 22px minmax(0,1fr) auto auto; }
+.wechat-binding-overview .wechat-binding-list strong small { margin-left: 7px; color: var(--text-muted); font-size: 11px; font-weight: 500; }
 @media (max-width: 620px) {
   .wechat-assistant-card .settings-card-title { flex-wrap: wrap; }
   .wechat-assistant-card .settings-card-title .status-badge { margin-left: 34px; }

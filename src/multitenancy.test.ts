@@ -431,10 +431,19 @@ describe("多用户资源与 Agent 任务边界", () => {
           markdown: "# 重试后的文章\n\n正文。",
         }],
       });
-    const ingestion = new IngestionService(config(directory), scoped, { process } as never);
+    const extracted = {
+      url: "https://example.com/article",
+      title: "服务端提取正文",
+      sourceType: "web" as const,
+      markdown: "# 服务端提取正文\n\n这是按网页结构确定性提取的完整内容。",
+    };
+    const webExtractor = vi.fn().mockResolvedValue(extracted);
+    const ingestion = new IngestionService(config(directory), scoped, { process } as never, webExtractor);
 
     await expect(ingestion.ingest(item)).resolves.toMatchObject({ accepted: true });
     expect(process).toHaveBeenCalledTimes(2);
+    expect(webExtractor).toHaveBeenCalledTimes(1);
+    expect(process.mock.calls[0]?.[3]).toEqual([extracted]);
     expect(process.mock.calls[1]?.[4]).toEqual({ tenantId: owner.id });
     expect(scoped.getMessage(item.id)).toMatchObject({
       agentStatus: "completed",

@@ -89,6 +89,15 @@ export type WechatMcpBinding = {
   lastMessageAt?: string;
 };
 
+export type WechatMcpUserBindingStatus = {
+  tenantId: string;
+  username: string;
+  userDisplayName: string;
+  role: OwnerProfile["role"];
+  disabled: boolean;
+  binding?: WechatMcpBinding;
+};
+
 export type AgentSettings = {
   enabled: boolean;
   baseUrl: string;
@@ -1985,6 +1994,47 @@ export class AppDatabase {
     ).map((row) => this.mapWechatMcpBinding(row));
   }
 
+  listWechatMcpUserBindingStatuses(): WechatMcpUserBindingStatus[] {
+    this.requireAdmin();
+    return this.all(
+      `SELECT
+        u.id AS user_tenant_id,u.username,u.display_name AS user_display_name,
+        u.role,u.disabled_at,
+        b.id AS binding_id,b.source_id,b.tenant_id,b.account,b.wechat_username,
+        b.wechat_display_name,b.avatar,b.bound_at,b.last_message_id,b.last_message_at
+       FROM users u
+       LEFT JOIN wechat_mcp_bindings b ON b.source_id='default' AND b.tenant_id=u.id
+       ORDER BY CASE WHEN u.role='admin' THEN 0 ELSE 1 END,u.created_at`,
+    ).map((row) => {
+      const tenantId = rowString(row, "user_tenant_id");
+      const username = rowString(row, "username");
+      const userDisplayName = rowString(row, "user_display_name");
+      const bindingId = rowString(row, "binding_id");
+      return {
+        tenantId,
+        username,
+        userDisplayName,
+        role: rowString(row, "role") === "admin" ? "admin" as const : "member" as const,
+        disabled: Boolean(rowString(row, "disabled_at")),
+        ...(bindingId ? {
+          binding: {
+            id: bindingId,
+            tenantId,
+            username,
+            userDisplayName,
+            account: rowString(row, "account"),
+            wechatUsername: rowString(row, "wechat_username"),
+            wechatDisplayName: rowString(row, "wechat_display_name"),
+            avatar: rowString(row, "avatar") || undefined,
+            boundAt: rowString(row, "bound_at"),
+            lastMessageId: rowString(row, "last_message_id") || undefined,
+            lastMessageAt: rowString(row, "last_message_at") || undefined,
+          },
+        } : {}),
+      };
+    });
+  }
+
   deleteWechatMcpBindingForTenant(tenantId = this.requireOwnerId()): boolean {
     return Number(this.run("DELETE FROM wechat_mcp_bindings WHERE source_id='default' AND tenant_id=?", tenantId).changes) > 0;
   }
@@ -2192,6 +2242,18 @@ export class AppDatabase {
 
   saveCapture(capture: CaptureInput, note: ProcessedNote): boolean {
     if (this.hasMessage(capture.id)) return false;
+    const ownerId = this.requireOwnerId();
+    const connectionId = capture.source.connectionId;
+    // Shared WeChat assistant intake uses the WeChat channel for source
+    // semantics, but it is not an iLink bot account. Only persist the optional
+    // bot foreign key when the connection really belongs to this tenant.
+    const botAccountId = capture.source.channel === "wechat" && connectionId
+      ? rowString(this.maybeOne(
+        "SELECT id FROM bot_accounts WHERE id=? AND tenant_id=?",
+        connectionId,
+        ownerId,
+      ) || {}, "id") || null
+      : null;
     const createdAt = now();
     this.transaction(() => {
       this.run(
@@ -2203,8 +2265,8 @@ export class AppDatabase {
           created_at,updated_at
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         capture.id,
-        this.requireOwnerId(),
-        capture.source.channel === "wechat" ? capture.source.connectionId || null : null,
+        ownerId,
+        botAccountId,
         capture.source.externalId || capture.id,
         capture.source.channel,
         capture.source.type,

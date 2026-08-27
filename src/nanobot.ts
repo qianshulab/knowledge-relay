@@ -911,7 +911,9 @@ export class NanobotClient {
       runtimeSkills.length
         ? `本次已按来源和意图筛选出的 workspace Skills：${runtimeSkills.join("、")}。只在这个候选集合内选择并执行；专用解析器优先于通用解析器，只有专用解析器明确失败时才使用已列出的回退 Skill。`
         : "本次没有匹配到需要执行的 workspace Skill；不要猜测网页、附件或工具内容。",
-      sourceUrl && isWechatArticle && runtimeSkills.includes("wechat-article-extractor")
+      extractedDocuments.length
+        ? "知流服务端已经提供按原网页结构提取的正文，其中图片位置也已保留。直接以 extractedDocuments 为事实来源完成理解和整理，不要再次联网抓取，也不要重写正文或另生成一份网页 Markdown。"
+        : sourceUrl && isWechatArticle && runtimeSkills.includes("wechat-article-extractor")
         ? "这是微信公众号文章：先按 wechat-article-extractor 原版 Skill 解析；若未得到有意义的标题和正文，必须再按 fetch-skill 原版流程尝试备用提取。只有实际读到正文才可声称解析成功。"
         : sourceUrl && runtimeSkills.includes("fetch-skill")
           ? "这是网页资源：按 fetch-skill 原版流程执行完整的正文提取和备用策略；不得把 URL 本身当成网页正文。"

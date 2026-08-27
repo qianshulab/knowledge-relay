@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Settings2, Shield, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
+import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Search, Settings2, Shield, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
 import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
@@ -39,6 +39,7 @@ function WechatAssistantSettings() {
   const [connection, setConnection] = useState<WechatMcpCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const [bindingCode, setBindingCode] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [bindingSearch, setBindingSearch] = useState("");
   const qrInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -105,6 +106,15 @@ function WechatAssistantSettings() {
   const latestError = source?.lastError || state.data?.source?.lastError;
   const latestPoll = source?.lastPollAt || state.data?.source?.lastPollAt;
   const qrConfigured = source?.qrConfigured ?? state.data?.source?.qrConfigured ?? false;
+  const adminUsers = admin.data?.users || [];
+  const boundUsers = adminUsers.filter((item) => Boolean(item.binding));
+  const visibleAdminUsers = adminUsers.filter((item) => {
+    const needle = bindingSearch.trim().toLocaleLowerCase("zh-CN");
+    if (!needle) return true;
+    return [item.username, item.userDisplayName, item.binding?.wechatDisplayName]
+      .filter(Boolean)
+      .some((value) => value!.toLocaleLowerCase("zh-CN").includes(needle));
+  });
   const runtimeLabel = !source && owner.role === "admin"
     ? "尚未配置"
     : latestError
@@ -118,7 +128,7 @@ function WechatAssistantSettings() {
       <div><span>接收服务</span><strong>{runtimeLabel}</strong><small>{latestError ? "最近轮询失败" : source?.enabled || state.data?.available ? "后台持续接收新消息" : "保存并启用后开始接收"}</small></div>
       <div><span>服务轮询</span><strong>{latestPoll ? "已建立" : "尚未建立"}</strong><small>{latestPoll ? `最近 ${formatDate(latestPoll)}` : "等待首次成功连接"}</small></div>
       <div><span>助手二维码</span><strong>{qrConfigured ? "已配置" : "未配置"}</strong><small>{qrConfigured ? "用户可扫码添加助手" : "需由管理员上传"}</small></div>
-      <div><span>用户绑定</span><strong>{owner.role === "admin" ? `${admin.data?.bindings.length || 0} 个账户` : binding ? "已绑定" : "未绑定"}</strong><small>{binding ? binding.wechatDisplayName : "绑定后才会路由消息"}</small></div>
+      <div><span>用户绑定</span><strong>{owner.role === "admin" ? admin.isLoading ? "正在读取" : `${boundUsers.length}/${adminUsers.length} 已绑定` : binding ? "已绑定" : "未绑定"}</strong><small>{binding ? binding.wechatDisplayName : "绑定后才会路由消息"}</small></div>
     </div>
     {owner.role === "admin" && <div className="wechat-mcp-admin">
       <div className="section-caption"><strong>连接配置</strong><span>仅管理员可修改；Authorization 加密保存在服务器，不会返回浏览器。</span></div>
@@ -138,7 +148,21 @@ function WechatAssistantSettings() {
       <div className="wechat-assistant-qr">{state.data?.source?.qrConfigured ? <img src={`/api/wechat-mcp/assistant-qr?v=${source?.updatedAt || "current"}`} alt="知流助手微信二维码" /> : <div className="qr-placeholder"><QrCode size={42} /><span>{owner.role === "admin" ? "请上传助手二维码" : "管理员尚未配置二维码"}</span></div>}</div>
       <div className="wechat-bind-copy"><strong>{binding ? `已绑定：${binding.wechatDisplayName}` : "添加助手并绑定账户"}</strong>{binding ? <><p>这个微信联系人发送给助手的新消息，会进入当前账户。最近收件：{binding.lastMessageAt ? formatDate(binding.lastMessageAt) : "尚无"}</p><button className="button button-secondary" onClick={() => void unbind()}>解除我的绑定</button></> : <><ol><li>使用微信扫描二维码，添加知流助手。</li><li>生成一次性绑定码，并原样发送给助手。</li><li>绑定成功后，再发送链接、文字或附件。</li></ol>{bindingCode ? <div className="binding-code"><div><span>15 分钟内有效</span><strong>{bindingCode.code}</strong><small>有效至 {formatDate(bindingCode.expiresAt)}</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(bindingCode.code)}><Copy size={16} />复制</button></div> : <button className="button button-primary" disabled={!state.data?.available} onClick={() => void generateCode()}><KeyRound size={17} />生成绑定码</button>}</>}</div>
     </div>
-    {owner.role === "admin" && Boolean(admin.data?.bindings.length) && <div className="compact-list wechat-binding-list"><div className="section-caption"><strong>当前绑定</strong><span>{admin.data?.bindings.length} 个用户</span></div>{admin.data?.bindings.map((item) => <div key={item.id}><div><strong>{item.userDisplayName || item.username} ↔ {item.wechatDisplayName}</strong><span>绑定于 {formatDate(item.boundAt)}{item.lastMessageAt ? ` · 最近收件 ${formatDate(item.lastMessageAt)}` : ""}</span></div><button className="icon-button danger-text" onClick={() => void unbind(item.id)} aria-label="解除用户微信绑定"><Trash2 size={17} /></button></div>)}</div>}
+    {owner.role === "admin" && <div className="wechat-binding-overview">
+      <div className="section-caption"><strong>全部用户绑定状态</strong><span>{boundUsers.length} 个已绑定 · {adminUsers.length - boundUsers.length} 个未绑定</span></div>
+      {adminUsers.length > 5 && <label className="binding-search"><Search size={16} /><input value={bindingSearch} onChange={(event) => setBindingSearch(event.target.value)} placeholder="搜索用户名或微信联系人" aria-label="搜索微信助手绑定用户" /></label>}
+      {visibleAdminUsers.length ? <div className="compact-list wechat-binding-list">
+        {visibleAdminUsers.map((item) => {
+          const routeMismatch = Boolean(item.binding && source?.account && item.binding.account && item.binding.account !== source.account);
+          return <div key={item.tenantId}>
+            <UserRound size={18} />
+            <div><strong>{item.userDisplayName || item.username}<small>@{item.username}</small></strong><span>{item.binding ? `微信联系人：${item.binding.wechatDisplayName} · 绑定于 ${formatDate(item.binding.boundAt)}${item.binding.lastMessageAt ? ` · 最近收件 ${formatDate(item.binding.lastMessageAt)}` : " · 尚无收件"}` : "尚未绑定微信联系人"}</span></div>
+            <span className={`status-badge ${item.disabled || routeMismatch ? "warning" : item.binding ? "success" : ""}`}>{item.disabled ? "账户已停用" : routeMismatch ? "需重新绑定" : item.binding ? "已绑定" : "未绑定"}</span>
+            {item.binding && <button className="icon-button danger-text" onClick={() => void unbind(item.binding?.id)} aria-label={`解除 ${item.userDisplayName || item.username} 的微信绑定`}><Trash2 size={17} /></button>}
+          </div>;
+        })}
+      </div> : <EmptyState title={admin.isLoading ? "正在读取用户状态" : "没有匹配用户"} description={admin.isLoading ? "绑定状态将在加载完成后显示。" : "请更换用户名或微信联系人关键词。"} />}
+    </div>}
   </section>;
 }
 
