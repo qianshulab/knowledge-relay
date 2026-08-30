@@ -21,6 +21,7 @@ jobs:
           node-version: 22.13.1
           cache: npm
       - run: npm ci
+      - run: npm run build:sqlite-native
       - run: npm run verify
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run package:plugin

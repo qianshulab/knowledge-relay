@@ -1,13 +1,20 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
+RUN apk add --no-cache python3 make g++
 COPY package*.json ./
-RUN npm ci && node -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&minor<13))throw new Error('Node.js 22.13+ required')"
+COPY scripts/build-sqlite-native.mjs ./scripts/build-sqlite-native.mjs
+RUN npm ci \
+    && npm run build:sqlite-native \
+    && node -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&minor<13))throw new Error('Node.js 22.13+ required')"
 COPY tsconfig.json ./
 COPY src ./src
 COPY frontend ./frontend
 COPY scripts ./scripts
 COPY obsidian-plugin ./obsidian-plugin
-RUN npm run build && npm run package:plugin && npm prune --omit=dev
+RUN npm run build \
+    && npm run package:plugin \
+    && npm prune --omit=dev \
+    && npm run verify:sqlite
 
 FROM node:22-alpine
 WORKDIR /app

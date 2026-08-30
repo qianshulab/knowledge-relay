@@ -4,7 +4,7 @@ set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_dir"
 
-for command_name in git node npm python3; do
+for command_name in git node npm python3 make c++; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "缺少运行依赖：$command_name" >&2
     exit 1
@@ -26,6 +26,7 @@ if [ ! -f .env ]; then
 fi
 
 npm ci
+npm run build:sqlite-native
 npm run setup:nanobot
 npm run build
 
