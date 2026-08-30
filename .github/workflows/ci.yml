@@ -33,24 +33,33 @@ jobs:
             release/knowledge-relay-obsidian.sha256
 
   docker:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build Knowledge Relay
+      - name: Build Knowledge Relay (${{ matrix.architecture }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: false
-          platforms: linux/amd64,linux/arm64
-      - name: Build Nanobot Runtime
+          platforms: ${{ matrix.platform }}
+      - name: Build Nanobot Runtime (${{ matrix.architecture }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.nanobot
           push: false
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
