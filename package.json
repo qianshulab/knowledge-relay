@@ -15,7 +15,8 @@
     "deploy:source": "sh scripts/deploy-source.sh",
     "setup:nanobot": "node scripts/setup-nanobot.mjs",
     "test": "npm run build:web && vitest run",
-    "verify": "npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && node --check scripts/harden-nanobot-config.mjs && sh -n scripts/deploy-docker.sh scripts/deploy-source.sh scripts/update-docker.sh scripts/backup-docker.sh scripts/restore-docker.sh scripts/doctor-docker.sh scripts/docker-entrypoint.sh nanobot/entrypoint.sh && python3 -c \"from pathlib import Path; [compile(Path(file).read_text(), file, 'exec') for file in ('nanobot/model-catalog.py','nanobot/search-runtime.py')]\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/tests/template.verify.cjs && node obsidian-plugin/scripts/verify-bundle.mjs",
+    "verify:sqlite": "node --input-type=module -e \"import Database from 'better-sqlite3';const db=new Database(':memory:');db.exec('CREATE VIRTUAL TABLE docs USING fts5(body)');db.close();\"",
+    "verify": "npm run verify:sqlite && npm run typecheck && npm test && npm run build && node --check scripts/run-with-nanobot.mjs && node --check scripts/run-nanobot-runtime.mjs && node --check scripts/setup-nanobot.mjs && node --check scripts/harden-nanobot-config.mjs && sh -n scripts/deploy-docker.sh scripts/deploy-source.sh scripts/update-docker.sh scripts/backup-docker.sh scripts/restore-docker.sh scripts/doctor-docker.sh scripts/docker-entrypoint.sh nanobot/entrypoint.sh && python3 -c \"from pathlib import Path; [compile(Path(file).read_text(), file, 'exec') for file in ('nanobot/model-catalog.py','nanobot/search-runtime.py')]\" && node --check nanobot/run-wechat-extractor.cjs && node --check nanobot/extract-wechat-isolated.cjs && node --check obsidian-plugin/main.js && node --test obsidian-plugin/tests/template.verify.cjs && node obsidian-plugin/scripts/verify-bundle.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit"
   },
@@ -27,6 +28,7 @@
     "@fastify/static": "^10.1.3",
     "@tanstack/react-query": "^5.102.3",
     "adm-zip": "^0.6.0",
+    "better-sqlite3": "^13.0.3",
     "cheerio": "^1.2.0",
     "dotenv": "^17.2.1",
     "fastify": "^5.4.0",
@@ -42,6 +44,7 @@
     "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.0.15",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.18",

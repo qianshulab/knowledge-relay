@@ -29,5 +29,6 @@ document extraction. Their original licenses and notices remain available in the
 | Package | License | Usage |
 | --- | --- | --- |
 | `@fastify/multipart` | MIT | Bounded, streaming multipart uploads |
+| `better-sqlite3` | MIT | Bundled SQLite runtime with FTS5 enabled on supported Linux, macOS and Windows targets |
 | `pdfjs-dist` | Apache-2.0 | Local PDF text extraction |
 | `turndown-plugin-gfm` | MIT | Preserve tables and other GitHub Flavored Markdown structures |

@@ -96,6 +96,7 @@ jobs:
           curl --fail --retry 30 --retry-all-errors --retry-delay 2 http://127.0.0.1:8787/health
           curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8787/
           curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8787/api/bootstrap
+          docker compose exec -T knowledge-relay npm run verify:sqlite
           docker compose ps
       - name: Show logs on failure
         if: failure()

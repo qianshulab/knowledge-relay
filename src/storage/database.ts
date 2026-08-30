@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+
+import Database from "better-sqlite3";
 
 import {
   canonicalCaptureUrl,
@@ -893,7 +894,7 @@ export class AppDatabase {
   private constructor(
     readonly dataDir: string,
     private readonly nanobotWorkspace: string,
-    private readonly database: DatabaseSync,
+    private readonly database: Database.Database,
     private readonly secrets: SecretBox,
     private readonly tenantId?: string,
     private readonly ownsConnection = true,
@@ -907,7 +908,7 @@ export class AppDatabase {
   ): Promise<AppDatabase> {
     await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
     const secrets = await SecretBox.load(dataDir);
-    const database = new DatabaseSync(path.join(dataDir, "inbox.sqlite"));
+    const database = new Database(path.join(dataDir, "inbox.sqlite"), { timeout: 5_000 });
     database.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     database.function("compact_knowledge_point", (value) => compactKnowledgePoint(value));
     let ftsEnabled = false;
@@ -5327,11 +5328,11 @@ export class AppDatabase {
     }
   }
 
-  private prepare(sql: string): StatementSync {
+  private prepare(sql: string): Database.Statement {
     return this.database.prepare(sql);
   }
 
-  private run(sql: string, ...parameters: SqlValue[]): ReturnType<StatementSync["run"]> {
+  private run(sql: string, ...parameters: SqlValue[]): Database.RunResult {
     return this.prepare(sql).run(...parameters);
   }
 

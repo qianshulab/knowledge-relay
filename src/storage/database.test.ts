@@ -877,6 +877,7 @@ describe("AppDatabase", () => {
     expect(database.rebuildTenantSearchIndex()).toMatchObject({
       coverage: 100,
       indexedMessages: 1,
+      engine: "fts5",
     });
     expect(database.searchInbox("增量索引")[0]?.id).toBe(message.id);
     expect(database.finishBackgroundJob(queued.id)).toMatchObject({ status: "completed", progress: 100 });
