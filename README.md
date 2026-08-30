@@ -235,7 +235,7 @@ KNOWLEDGE_RELAY_LOCAL_BUILD=1 ./scripts/deploy-docker.sh
 
 ### 源码运行
 
-源码方式适合开发和调试。需要 Node.js 22.13+、npm、Python 3.11+、Git 和 Python `venv`。
+源码方式适合开发和调试。需要 Node.js 22.23.2+、npm、Python 3.11+、Git、C/C++ 构建工具和 Python `venv`。
 
 ```bash
 git clone --recurse-submodules https://github.com/qianshulab/knowledge-relay.git

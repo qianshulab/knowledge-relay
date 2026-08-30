@@ -1,11 +1,11 @@
-FROM node:22-alpine AS build
+FROM node:22.23.2-alpine AS build
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 COPY scripts/build-sqlite-native.mjs ./scripts/build-sqlite-native.mjs
 RUN npm ci \
     && npm run build:sqlite-native \
-    && node -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&minor<13))throw new Error('Node.js 22.13+ required')"
+    && node -e "const [major,minor,patch]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&(minor<23||(minor===23&&patch<2))))throw new Error('Node.js 22.23.2+ required')"
 COPY tsconfig.json ./
 COPY src ./src
 COPY frontend ./frontend
@@ -16,7 +16,7 @@ RUN npm run build \
     && npm prune --omit=dev \
     && npm run verify:sqlite
 
-FROM node:22-alpine
+FROM node:22.23.2-alpine
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/app/data NANOBOT_MANAGED=false
 COPY --from=build /app/package*.json ./

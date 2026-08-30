@@ -22,7 +22,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.23.2"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.1",

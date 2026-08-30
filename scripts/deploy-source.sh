@@ -11,7 +11,7 @@ for command_name in git node npm python3 make c++; do
   fi
 done
 
-node -e "const [major,minor]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&minor<13)){console.error('需要 Node.js 22.13 或更高版本');process.exit(1)}"
+node -e "const [major,minor,patch]=process.versions.node.split('.').map(Number);if(major<22||(major===22&&(minor<23||(minor===23&&patch<2)))){console.error('需要 Node.js 22.23.2 或更高版本');process.exit(1)}"
 git submodule update --init --recursive
 
 if [ ! -d .nanobot-venv ]; then
