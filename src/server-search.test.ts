@@ -244,7 +244,17 @@ describe("收件箱 AI 检索链路", () => {
     vi.stubGlobal("fetch", fetchMock);
     const app = createServer(testConfig, database, {} as BotManager, {} as AccountLoginManager);
     const authorization = { Authorization: `Bearer ${session.token}` };
-    const created = await app.inject({ method: "POST", url: "/api/knowledge/chats", headers: authorization, payload: {} });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/knowledge/chats",
+      headers: authorization,
+      payload: { scopeType: "domain", scopeValue: "数据存储" },
+    });
+    expect(created.json().conversation).toMatchObject({
+      scopeType: "domain",
+      scopeValue: "数据存储",
+      scopeLabel: "数据存储",
+    });
     const conversationId = created.json().conversation.id;
     const answer = await app.inject({
       method: "POST",
@@ -268,6 +278,8 @@ describe("收件箱 AI 检索链路", () => {
     });
     expect(stored.json().conversation).toMatchObject({
       title: expect.stringContaining("家庭 NAS"),
+      scopeType: "domain",
+      scopeLabel: "数据存储",
       messageCount: 2,
       messages: [
         expect.objectContaining({ role: "user" }),

@@ -393,7 +393,11 @@ export type PublicHtmlResponse = {
  * used by article images. Keeping page extraction server-side must not turn a
  * user supplied bookmark URL into an SSRF primitive.
  */
-export async function requestPublicHtml(value: string, redirects = 0): Promise<PublicHtmlResponse> {
+export async function requestPublicHtml(
+  value: string,
+  redirects = 0,
+  contentKind: "html" | "feed" = "html",
+): Promise<PublicHtmlResponse> {
   const url = validateRemoteImageUrl(value);
   const resolved = await resolvePublicAddresses(url.hostname);
   return await new Promise<PublicHtmlResponse>((resolve, reject) => {
@@ -413,7 +417,9 @@ export async function requestPublicHtml(value: string, redirects = 0): Promise<P
       path: `${url.pathname}${url.search}`,
       method: "GET",
       headers: {
-        Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+        Accept: contentKind === "feed"
+          ? "application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,text/html;q=0.4,*/*;q=0.1"
+          : "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
         "Accept-Encoding": "identity",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -436,7 +442,7 @@ export async function requestPublicHtml(value: string, redirects = 0): Promise<P
           finish(error instanceof Error ? error : new Error("网页重定向无效"));
           return;
         }
-        void requestPublicHtml(redirect.toString(), redirects + 1).then(
+        void requestPublicHtml(redirect.toString(), redirects + 1, contentKind).then(
           (result) => finish(undefined, result),
           (error) => finish(error),
         );
@@ -448,9 +454,12 @@ export async function requestPublicHtml(value: string, redirects = 0): Promise<P
         return;
       }
       const contentType = String(response.headers["content-type"] || "").toLowerCase();
-      if (contentType && !/text\/html|application\/xhtml\+xml/.test(contentType)) {
+      const validContent = contentKind === "feed"
+        ? /text\/html|text\/xml|application\/(?:rss\+xml|atom\+xml|xml|xhtml\+xml)/.test(contentType)
+        : /text\/html|application\/xhtml\+xml/.test(contentType);
+      if (contentType && !validContent) {
         response.resume();
-        finish(new Error("远程内容不是 HTML 网页"));
+        finish(new Error(contentKind === "feed" ? "远程内容不是 RSS 或 Atom 订阅" : "远程内容不是 HTML 网页"));
         return;
       }
       const declaredLength = Number(response.headers["content-length"] || 0);

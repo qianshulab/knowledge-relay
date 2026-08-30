@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import { BotManager } from "./bot-manager.js";
 import { loadConfig } from "./config.js";
+import { FeedSourceManager } from "./feed-source-manager.js";
 import { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { configureLogger, errorDetails, logger } from "./logger.js";
 import { createServer } from "./server.js";
@@ -19,7 +20,8 @@ async function main(): Promise<void> {
   const bots = new BotManager(config, database);
   const login = new AccountLoginManager(config, database, bots);
   const wechatMcp = new WechatMcpIntakeManager(config, database, bots);
-  const server = createServer(config, database, bots, login, wechatMcp);
+  const feeds = new FeedSourceManager(database, bots);
+  const server = createServer(config, database, bots, login, wechatMcp, feeds);
 
   await server.listen({ host: config.host, port: config.port });
   logger.info("管理页面已启动", {
@@ -28,12 +30,14 @@ async function main(): Promise<void> {
   });
   await bots.startAll();
   await wechatMcp.start();
+  feeds.start();
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("正在停止服务", { signal });
+    await feeds.stop();
     await wechatMcp.stop();
     await bots.stopAll();
     await server.close();

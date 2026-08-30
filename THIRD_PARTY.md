@@ -20,3 +20,14 @@ The Axton Obsidian Visual Skills repository is distributed under the MIT License
 copyright and license remain in the pinned submodule. Knowledge Relay uses the Skills as Nanobot
 workspace instructions and implements its own deterministic, validated web renderer and export
 pipeline; it does not embed executable code from the generated diagram content.
+
+## Document ingestion libraries
+
+The application also uses the following runtime libraries for browser uploads and deterministic
+document extraction. Their original licenses and notices remain available in their npm packages.
+
+| Package | License | Usage |
+| --- | --- | --- |
+| `@fastify/multipart` | MIT | Bounded, streaming multipart uploads |
+| `pdfjs-dist` | Apache-2.0 | Local PDF text extraction |
+| `turndown-plugin-gfm` | MIT | Preserve tables and other GitHub Flavored Markdown structures |

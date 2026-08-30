@@ -20,6 +20,16 @@ function markdownFromHtml(html, skillRoot) {
     if (tag === "div") return `\n${inner.trim()}\n`;
     if (tag === "li") return inner.trim() ? `\n- ${inner.trim()}` : "";
     if (tag === "ul" || tag === "ol") return `\n${inner.trim()}\n`;
+    if (tag === "table") {
+      const rows = $(node).find("tr").toArray().map((row) => $(row).find("th,td").toArray()
+        .map((cell) => $(cell).text().replace(/\s+/g, " ").trim().replace(/\|/g, "\\|")));
+      const width = Math.max(0, ...rows.map((row) => row.length));
+      if (!width || !rows.length) return "";
+      const normalized = rows.map((row) => Array.from({ length: width }, (_unused, index) => row[index] || ""));
+      const header = normalized[0];
+      const body = normalized.slice(1);
+      return `\n\n| ${header.join(" | ")} |\n| ${header.map(() => "---").join(" | ")} |${body.length ? `\n${body.map((row) => `| ${row.join(" | ")} |`).join("\n")}` : ""}\n\n`;
+    }
     if (tag === "blockquote") {
       return `\n\n${inner.trim().split(/\n+/).map((line) => `> ${line.trim()}`).join("\n")}\n\n`;
     }

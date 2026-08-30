@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, BookOpenCheck, Check, Copy, MessageCircleQuestion, Plus, Search, Send, ShieldCheck, Sparkles, Square, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -6,11 +6,12 @@ import remarkGfm from "remark-gfm";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, streamApi } from "../api";
 import { useApp } from "../App";
-import type { KnowledgeChatMessage, KnowledgeConversation } from "../types";
+import type { KnowledgeChatMessage, KnowledgeConversation, KnowledgeFacets, SmartCollection } from "../types";
 import { LoadingState, PageHeader, formatDate } from "../components/ui";
 
 type ConversationList = { conversations: KnowledgeConversation[]; total: number; hasMore: boolean };
 type ConversationDetail = { conversation: KnowledgeConversation & { messages: KnowledgeChatMessage[] } };
+type ScopeOption = { key: string; type: KnowledgeConversation["scopeType"]; value: string; label: string };
 type KnowledgeChatStreamEvent =
   | { type: "status"; phase: "retrieving" | "reading" | "generating"; message: string }
   | { type: "delta"; content: string }
@@ -40,6 +41,8 @@ export default function KnowledgeChatPage() {
   const [followUps, setFollowUps] = useState<string[]>([]);
   const [conversationSearch, setConversationSearch] = useState("");
   const [copiedId, setCopiedId] = useState("");
+  const [scopeKey, setScopeKey] = useState("library:");
+  const [linkedScope, setLinkedScope] = useState<ScopeOption | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamControllerRef = useRef<AbortController | null>(null);
 
@@ -47,6 +50,16 @@ export default function KnowledgeChatPage() {
     queryKey: ["knowledge-chats"],
     queryFn: () => api<ConversationList>("/api/knowledge/chats?limit=30"),
     refetchOnWindowFocus: true,
+  });
+  const facets = useQuery({
+    queryKey: ["knowledge-facets", "chat-scopes"],
+    queryFn: () => api<KnowledgeFacets>("/api/knowledge/facets?organized=1&limit=30"),
+    staleTime: 60_000,
+  });
+  const collections = useQuery({
+    queryKey: ["smart-collections"],
+    queryFn: () => api<{ collections: SmartCollection[] }>("/api/collections"),
+    staleTime: 30_000,
   });
   const detail = useQuery({
     queryKey: ["knowledge-chat", activeId],
@@ -58,11 +71,26 @@ export default function KnowledgeChatPage() {
     if (!activeId && conversations.data?.conversations[0]) setActiveId(conversations.data.conversations[0].id);
   }, [activeId, conversations.data]);
   useEffect(() => {
+    const conversation = detail.data?.conversation;
+    if (conversation) setScopeKey(`${conversation.scopeType}:${conversation.scopeValue}`);
+  }, [detail.data?.conversation]);
+  useEffect(() => {
     const initialQuestion = searchParams.get("question")?.trim();
-    if (!initialQuestion) return;
-    setQuestion(initialQuestion);
+    const linkedType = searchParams.get("scopeType");
+    const linkedValue = searchParams.get("scopeValue")?.trim() || "";
+    const linkedLabel = searchParams.get("scopeLabel")?.trim() || "当前内容";
+    if (!initialQuestion && !(linkedType === "message" && linkedValue)) return;
+    if (initialQuestion) setQuestion(initialQuestion);
+    if (linkedType === "message" && linkedValue) {
+      const option: ScopeOption = { key: `message:${linkedValue}`, type: "message", value: linkedValue, label: `本篇 · ${linkedLabel}` };
+      setLinkedScope(option);
+      setScopeKey(option.key);
+    }
     const next = new URLSearchParams(searchParams);
     next.delete("question");
+    next.delete("scopeType");
+    next.delete("scopeValue");
+    next.delete("scopeLabel");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
   useEffect(() => {
@@ -71,13 +99,42 @@ export default function KnowledgeChatPage() {
   }, [detail.data?.conversation.messages.length, pendingQuestion, streamedAnswer]);
   useEffect(() => () => streamControllerRef.current?.abort(), []);
 
+  const scopeOptions = useMemo<ScopeOption[]>(() => {
+    const options: ScopeOption[] = [
+      { key: "library:", type: "library", value: "", label: "全部知识库" },
+    ...(linkedScope ? [linkedScope] : []),
+    ...(collections.data?.collections || []).map((collection) => ({
+      key: `collection:${collection.id}`,
+      type: "collection" as const,
+      value: collection.id,
+      label: `集合 · ${collection.name}`,
+    })),
+    ...(facets.data?.domains || []).map((domain) => ({
+      key: `domain:${domain.name}`,
+      type: "domain" as const,
+      value: domain.name,
+      label: `领域 · ${domain.name}`,
+    })),
+    ];
+    const current = detail.data?.conversation;
+    if (current) {
+      const key = `${current.scopeType}:${current.scopeValue}`;
+      if (!options.some((item) => item.key === key)) {
+        options.splice(1, 0, { key, type: current.scopeType, value: current.scopeValue, label: current.scopeLabel });
+      }
+    }
+    return options;
+  }, [collections.data?.collections, detail.data?.conversation, facets.data?.domains, linkedScope]);
+  const selectedScope = scopeOptions.find((item) => item.key === scopeKey) || scopeOptions[0]!;
+
   const createConversation = useMutation({
-    mutationFn: () => api<{ conversation: KnowledgeConversation }>("/api/knowledge/chats", {
+    mutationFn: (scope: ScopeOption = selectedScope) => api<{ conversation: KnowledgeConversation }>("/api/knowledge/chats", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ scopeType: scope.type, scopeValue: scope.value }),
     }),
     onSuccess: ({ conversation }) => {
       setActiveId(conversation.id);
+      setScopeKey(`${conversation.scopeType}:${conversation.scopeValue}`);
       setFollowUps([]);
       void queryClient.invalidateQueries({ queryKey: ["knowledge-chats"] });
     },
@@ -88,10 +145,12 @@ export default function KnowledgeChatPage() {
     const content = question.trim();
     if (!content || streaming) return;
     let conversationId = activeId;
-    if (!conversationId) {
+    const activeConversation = detail.data?.conversation;
+    const activeScopeKey = activeConversation ? `${activeConversation.scopeType}:${activeConversation.scopeValue}` : "";
+    if (!conversationId || activeScopeKey !== selectedScope.key) {
       const created = await api<{ conversation: KnowledgeConversation }>("/api/knowledge/chats", {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ scopeType: selectedScope.type, scopeValue: selectedScope.value }),
       });
       conversationId = created.conversation.id;
       setActiveId(conversationId);
@@ -171,14 +230,14 @@ export default function KnowledgeChatPage() {
     <PageHeader eyebrow="GROUNDED KNOWLEDGE CHAT" title="知识问答" description="围绕你已整理的收藏内容持续提问，回答会标明知识库依据。" />
     <section className="knowledge-chat-shell panel">
       <aside className="chat-history-panel">
-        <div className="chat-history-head"><div><strong>问答记录</strong><small>{conversations.data?.total || 0} 个会话</small></div><button className="icon-button" aria-label="新建问答" title="新建问答" onClick={() => createConversation.mutate()} disabled={createConversation.isPending}><Plus size={19} /></button></div>
+        <div className="chat-history-head"><div><strong>问答记录</strong><small>{conversations.data?.total || 0} 个会话</small></div><button className="icon-button" aria-label="新建问答" title="使用当前范围新建问答" onClick={() => createConversation.mutate(selectedScope)} disabled={createConversation.isPending}><Plus size={19} /></button></div>
         <label className="chat-history-search"><Search size={15} /><input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder="搜索会话" /></label>
         <div className={`chat-history-list ${filteredConversations.length ? "" : "empty"}`}>
-          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : filteredConversations.length ? filteredConversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversation.lastMessage || "尚未提问"}</span><small>{formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">{conversationSearch ? "没有匹配的会话" : "还没有问答记录"}</p>}
+          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : filteredConversations.length ? filteredConversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setScopeKey(`${conversation.scopeType}:${conversation.scopeValue}`); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversation.lastMessage || "尚未提问"}</span><small>{conversation.scopeLabel} · {formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">{conversationSearch ? "没有匹配的会话" : "还没有问答记录"}</p>}
         </div>
       </aside>
       <div className="chat-main">
-        <div className="chat-scope-banner"><ShieldCheck size={18} /><div><strong>仅依据个人知识库</strong><span>不会用网络信息或模型记忆补充事实；资料不足时会明确说明。</span></div></div>
+        <div className="chat-scope-banner"><ShieldCheck size={18} /><div><strong>仅依据：{detail.data?.conversation.scopeLabel || selectedScope.label}</strong><span>不会用网络信息或模型记忆补充事实；资料不足时会明确说明。</span></div><label className="chat-scope-picker"><span>问答范围</span><select value={scopeKey} disabled={streaming} onChange={(event) => setScopeKey(event.target.value)}>{scopeOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}</select></label></div>
         <div className="chat-transcript" aria-live="polite">
           {!messages.length && !pendingForActiveConversation ? <div className="chat-welcome"><span><MessageCircleQuestion size={30} /></span><h2>从收藏中获得答案</h2><p>适合归纳多篇文章、比较观点、提炼方法，或者围绕同一主题连续追问。</p><div>{examples.map((example) => <button key={example} onClick={() => setQuestion(example)}>{example}</button>)}</div></div> : null}
           {messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>
@@ -192,7 +251,7 @@ export default function KnowledgeChatPage() {
         {followUps.length ? <div className="chat-follow-ups"><span>可以继续问</span>{followUps.map((item) => <button key={item} onClick={() => setQuestion(item)}>{item}</button>)}</div> : null}
         <form className="chat-composer" onSubmit={(event) => void submit(event)}>
           <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} rows={2} maxLength={2000} disabled={streaming} placeholder="基于我的收藏提问；Enter 发送，Shift + Enter 换行" />
-          <div><span>回答只使用已完成 AI 整理的个人资料</span>{streaming ? <button className="button button-secondary" type="button" onClick={stopStreaming}><Square size={15} />停止生成</button> : <button className="button button-primary" disabled={!question.trim()}><Send size={17} />发送</button>}</div>
+          <div><span>{detail.data?.conversation && `${detail.data.conversation.scopeType}:${detail.data.conversation.scopeValue}` !== selectedScope.key ? `发送时将新建“${selectedScope.label}”范围对话` : `回答只使用“${detail.data?.conversation.scopeLabel || selectedScope.label}”内已整理的资料`}</span>{streaming ? <button className="button button-secondary" type="button" onClick={stopStreaming}><Square size={15} />停止生成</button> : <button className="button button-primary" disabled={!question.trim()}><Send size={17} />发送</button>}</div>
         </form>
       </div>
     </section>

@@ -25,6 +25,21 @@ export type CreatedInvitation = {
   expiresAt: string;
 };
 
+export type FeedSource = {
+  id: string;
+  name: string;
+  feedUrl: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  lastCheckedAt?: string;
+  lastSuccessAt?: string;
+  lastItemAt?: string;
+  lastError?: string;
+  nextCheckAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type KnowledgeChatCitation = {
   messageId: string;
   title: string;
@@ -43,6 +58,9 @@ export type KnowledgeChatMessage = {
 export type KnowledgeConversation = {
   id: string;
   title: string;
+  scopeType: "library" | "message" | "domain" | "collection";
+  scopeValue: string;
+  scopeLabel: string;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -87,6 +105,8 @@ export type MessageItem = {
   readAt?: string;
   coverAttachmentId?: string;
   coverMimeType?: string;
+  duplicateCount: number;
+  lastDuplicateAt?: string;
 };
 
 export type Attachment = {
@@ -110,7 +130,24 @@ export type MessageDetail = MessageItem & {
   warnings: string[];
   source: { type: string; name: string; url: string };
   captureType: string;
+  integrity: {
+    score: number;
+    bodyCharacters: number;
+    imageReferences: number;
+    localImages: number;
+    missingImageReferences: string[];
+    issues: Array<"missing_body" | "broken_asset" | "missing_summary" | "missing_cover" | "unindexed">;
+  };
   attachments: Attachment[];
+};
+
+export type ContentRevision = {
+  revision: number;
+  createdAt: string;
+  title: string;
+  summary: string;
+  status: string;
+  current: boolean;
 };
 
 export type MessageAnnotation = {
@@ -150,7 +187,7 @@ export type ReviewSuggestion = MessageItem & {
 };
 
 export type QualityIssue = MessageItem & {
-  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "warning" | "unindexed">;
+  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "missing_body" | "broken_asset" | "warning" | "unindexed">;
 };
 
 export type QualityOverview = {
@@ -161,9 +198,60 @@ export type QualityOverview = {
   fallback: number;
   missingSummary: number;
   missingCover: number;
+  missingBody: number;
+  brokenAssets: number;
+  duplicateMessages: number;
+  duplicateReceipts: number;
   unindexed: number;
   warnings: number;
   issues: QualityIssue[];
+};
+
+export type BackgroundJobType = "ingestion" | "reprocess" | "diagram" | "index" | "sync" | "source_check";
+export type BackgroundJobStatus = "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled";
+
+export type BackgroundJob = {
+  id: string;
+  type: BackgroundJobType;
+  resourceId: string;
+  title: string;
+  status: BackgroundJobStatus;
+  phase: string;
+  progress: number;
+  message: string;
+  attempts: number;
+  maxAttempts: number;
+  error?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type BackgroundJobOverview = {
+  active: number;
+  queued: number;
+  running: number;
+  retrying: number;
+  failed: number;
+  completedToday: number;
+  jobs: BackgroundJob[];
+};
+
+export type SearchIndexHealth = {
+  completedMessages: number;
+  indexedMessages: number;
+  indexedChunks: number;
+  missingMessages: number;
+  coverage: number;
+  engine: "fts5";
+};
+
+export type BackgroundJobResponse = {
+  overview: BackgroundJobOverview;
+  jobs: BackgroundJob[];
+  searchIndex: SearchIndexHealth;
 };
 
 export type Dashboard = {
@@ -183,6 +271,8 @@ export type Dashboard = {
     startedAt: string;
     updatedAt: string;
   }>;
+  jobs: BackgroundJobOverview;
+  searchIndex: SearchIndexHealth;
   agentEnabled: boolean;
   accounts: BotAccount[];
   wechatAssistant: {

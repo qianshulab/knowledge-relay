@@ -1,11 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArrowRight, BookOpen, Bot, Inbox, RefreshCw } from "lucide-react";
+import { Archive, ArrowRight, BookOpen, Bot, FileArchive, FileText, Image as ImageIcon, Inbox, RefreshCw, Upload, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Dashboard, MessageItem } from "../types";
 import KnowledgeRelay from "../components/KnowledgeRelay";
 import { EmptyState, LoadingState, PageHeader, StatusBadge, formatDate, formatLabels } from "../components/ui";
+import { useApp } from "../App";
 
 type MessageResponse = { messages: MessageItem[]; pagination: { total: number; hasMore: boolean; nextBefore?: number } };
 type InboxState = "inbox" | "archived";
@@ -28,12 +29,17 @@ function loadMessagePage(state: InboxState, cursor?: number) {
 export default function InboxPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { notify } = useApp();
   const [view, setView] = useState<InboxView>({ state: "inbox", page: 0, cursors: [undefined] });
   const [pageNavigation, setPageNavigation] = useState<string | null>(null);
   const [pageNavigationError, setPageNavigationError] = useState("");
   const navigationLock = useRef(false);
   const messagePage = useRef<HTMLDivElement>(null);
   const [messagePageMinHeight, setMessagePageMinHeight] = useState(0);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadNote, setUploadNote] = useState("");
+  const [uploading, setUploading] = useState(false);
   const cursor = view.cursors[view.page];
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Dashboard>("/api/dashboard"), refetchInterval: (query) => query.state.data?.diagramProcessing ? 3_000 : 15_000 });
   const messages = useQuery({
@@ -117,6 +123,34 @@ export default function InboxPage() {
     void Promise.all([queryClient.invalidateQueries({ queryKey: ["dashboard"] }), queryClient.invalidateQueries({ queryKey: ["messages"] })]);
   }
 
+  async function submitUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!uploadFiles.length && !uploadNote.trim()) {
+      notify("请选择文件或填写文字说明", "danger");
+      return;
+    }
+    const body = new FormData();
+    body.set("note", uploadNote.trim());
+    uploadFiles.forEach((file) => body.append("files", file, file.name));
+    setUploading(true);
+    try {
+      await api("/api/captures/upload", { method: "POST", body });
+      notify(`${uploadFiles.length ? `已接收 ${uploadFiles.length} 个文件` : "内容已接收"}，正在整理`, "success");
+      setUploadFiles([]);
+      setUploadNote("");
+      setUploadOpen(false);
+      setView({ state: "inbox", page: 0, cursors: [undefined] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["messages"] }),
+      ]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "上传失败，请重试", "danger");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function openPage(target: number, targetCursor: number | undefined, nextCursors: (number | undefined)[], label: string) {
     if (navigationLock.current) return;
     navigationLock.current = true;
@@ -176,7 +210,7 @@ export default function InboxPage() {
   }
 
   return <main className="page inbox-page">
-    <PageHeader eyebrow="INBOX" title="收件台" description="所有新捕获的链接、文字和附件都会先来到这里，整理状态实时更新。" actions={<button className="button button-secondary" onClick={refresh}><RefreshCw size={17} />刷新内容</button>} />
+    <PageHeader eyebrow="INBOX" title="收件台" description="所有新捕获的链接、文字和附件都会先来到这里，整理状态实时更新。" actions={<div className="page-header-actions"><button className="button button-primary" onClick={() => setUploadOpen(true)}><Upload size={17} />添加内容</button><button className="button button-secondary" onClick={refresh}><RefreshCw size={17} />刷新内容</button></div>} />
     <section className="metrics-grid" aria-label="收件台概览">
       <article className="metric-card"><span><Inbox size={18} />全部收件</span><strong>{dashboardData?.messages ?? "—"}</strong><small>当前工作区的全部内容</small></article>
       <article className="metric-card"><span><Bot size={18} />待整理</span><strong>{dashboardData?.pending ?? "—"}</strong><small>全工作区排队或整理中的内容</small></article>
@@ -192,15 +226,16 @@ export default function InboxPage() {
           <div><span>智能整理</span><strong>{agentStatus}</strong></div>
           <div><span>Obsidian 同步</span><strong title={primarySyncTarget?.lastSeenAt ? `最近同步：${formatDate(primarySyncTarget.lastSeenAt)}` : undefined}>{syncStatus}</strong></div>
         </div>
-        <div className="status-actions"><button className="text-link" onClick={() => navigate("/settings/intake")}>管理内容来源 <ArrowRight size={16} /></button><button className="text-link" onClick={() => navigate("/obsidian")}>查看同步设置 <ArrowRight size={16} /></button></div>
+        <div className="status-actions"><button className="text-link" onClick={() => navigate("/tasks")}>查看任务中心 <ArrowRight size={16} /></button><button className="text-link" onClick={() => navigate("/settings/intake")}>管理内容来源 <ArrowRight size={16} /></button><button className="text-link" onClick={() => navigate("/obsidian")}>查看同步设置 <ArrowRight size={16} /></button></div>
       </article>
     </section>
     <section className="content-section">
       <div className="section-heading"><div><span className="eyebrow">RECENT CAPTURES</span><h2>最近捕获</h2><p>点击任意内容即可查看整理结果与原始资料。</p></div><div className="segmented-control" aria-busy={Boolean(pageNavigation)}><button className={view.state === "inbox" ? "active" : ""} disabled={Boolean(pageNavigation)} onClick={() => void switchState("inbox")}>当前内容</button><button className={view.state === "archived" ? "active" : ""} disabled={Boolean(pageNavigation)} onClick={() => void switchState("archived")}>已归档</button></div></div>
       <div ref={messagePage} className="message-page" style={messagePageMinHeight ? { minHeight: messagePageMinHeight } : undefined} aria-busy={messages.isLoading || Boolean(pageNavigation)}>
-        {messages.isLoading ? <LoadingState label="正在加载收件内容" /> : messages.data?.messages.length ? <div className="message-list">{messages.data.messages.map((item) => <button className="message-row" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}><div className="message-format">{formatLabels[item.contentFormat]?.slice(0, 2) || "内容"}</div><div className="message-main"><div className="message-title-line"><strong>{item.title || item.text.slice(0, 80) || "未命名内容"}</strong><StatusBadge status={item.agentStatus} /></div><p>{item.summary || item.text || "等待整理后生成摘要"}</p><div className="message-meta"><span>{formatLabels[item.contentFormat] || item.contentFormat}</span><span>{formatDate(item.receivedAt)}</span>{item.attachmentCount > 0 && <span>{item.attachmentCount} 个附件</span>}</div></div><ArrowRight className="row-arrow" size={19} /></button>)}</div> : <EmptyState icon={<Inbox size={28} />} title={view.state === "archived" ? "还没有归档内容" : "收件台是空的"} description={view.state === "archived" ? "归档后的内容会显示在这里。" : "通过微信 iLink、微信助手或 API 发送内容后，会自动出现在这里。"} />}
+        {messages.isLoading ? <LoadingState label="正在加载收件内容" /> : messages.data?.messages.length ? <div className="message-list">{messages.data.messages.map((item) => <button className="message-row" key={item.id} onClick={() => navigate(`/reader/${encodeURIComponent(item.id)}`)}><div className="message-format">{formatLabels[item.contentFormat]?.slice(0, 2) || "内容"}</div><div className="message-main"><div className="message-title-line"><strong>{item.title || item.text.slice(0, 80) || "未命名内容"}</strong><StatusBadge status={item.agentStatus} /></div><p>{item.summary || item.text || "等待整理后生成摘要"}</p><div className="message-meta"><span>{formatLabels[item.contentFormat] || item.contentFormat}</span><span>{formatDate(item.receivedAt)}</span>{item.attachmentCount > 0 && <span>{item.attachmentCount} 个附件</span>}</div></div><ArrowRight className="row-arrow" size={19} /></button>)}</div> : <EmptyState icon={<Inbox size={28} />} title={view.state === "archived" ? "还没有归档内容" : "收件台是空的"} description={view.state === "archived" ? "归档后的内容会显示在这里。" : "可以直接上传图片、文档和网页资源包，也可以通过微信或 API 发送内容。"} action={view.state === "inbox" ? <button className="button button-primary" onClick={() => setUploadOpen(true)}><Upload size={17} />添加第一条内容</button> : undefined} />}
       </div>
       <div className="pagination"><button className="button button-secondary" disabled={view.page === 0 || Boolean(pageNavigation)} onClick={previousPage}>上一页</button><span className={`pagination-status ${pageNavigationError ? "error" : ""}`} role="status" aria-live="polite">{pageNavigation ? <><RefreshCw className="spin" size={14} />{pageNavigation}</> : pageNavigationError || `第 ${view.page + 1} / ${totalPages} 页`}</span><button className="button button-secondary" disabled={!messages.data?.pagination.hasMore || Boolean(pageNavigation)} onClick={nextPage}>下一页</button></div>
     </section>
+    {uploadOpen && <div className="modal-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !uploading) setUploadOpen(false); }}><section className="capture-upload-modal" role="dialog" aria-modal="true" aria-label="添加收件内容"><header><div><span className="eyebrow">ADD TO INBOX</span><h2>添加内容</h2><p>上传后会自动提取正文、图片与表格，再进入智能整理和知识库。</p></div><button className="icon-button" disabled={uploading} onClick={() => setUploadOpen(false)} aria-label="关闭"><X size={20} /></button></header><form onSubmit={submitUpload}><label className="capture-dropzone"><input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.md,.markdown,.txt,.csv,.tsv,.html,.htm,.xhtml,.zip,.json,.yaml,.yml,.log" onChange={(event) => setUploadFiles(Array.from(event.target.files || []).slice(0, 10))} /><Upload size={28} /><span><strong>{uploadFiles.length ? `已选择 ${uploadFiles.length} 个文件` : "选择图片、文档或资源包"}</strong><small>支持图片、PDF、DOCX、XLSX、Markdown、HTML、ZIP；一次最多 10 个、总计 100 MB</small></span></label>{uploadFiles.length > 0 && <div className="capture-file-list">{uploadFiles.map((file, index) => <div key={`${file.name}-${file.lastModified}-${index}`}>{file.type.startsWith("image/") ? <ImageIcon size={18} /> : file.name.toLowerCase().endsWith(".zip") ? <FileArchive size={18} /> : <FileText size={18} />}<span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(file.size > 1024 * 1024 ? 1 : 2)} MB</small></span><button type="button" onClick={() => setUploadFiles((current) => current.filter((_item, itemIndex) => itemIndex !== index))} aria-label={`移除 ${file.name}`}><X size={16} /></button></div>)}</div>}<label className="capture-note"><span>补充说明（可选）</span><textarea value={uploadNote} onChange={(event) => setUploadNote(event.target.value)} placeholder="例如：请重点整理部署步骤、风险和关键结论" rows={3} /></label><footer><button type="button" className="button button-secondary" disabled={uploading} onClick={() => setUploadOpen(false)}>取消</button><button className="button button-primary" disabled={uploading || (!uploadFiles.length && !uploadNote.trim())}>{uploading ? <RefreshCw className="spin" size={17} /> : <Upload size={17} />}{uploading ? "正在上传…" : "加入收件台"}</button></footer></form></section></div>}
   </main>;
 }

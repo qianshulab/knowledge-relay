@@ -57,8 +57,10 @@ describe("component frontend", () => {
     expect(reader).toContain("ReactMarkdown");
     expect(reader).toContain('attachment.kind === "derived" && attachment.mimeType === "text/markdown"');
     expect(reader).toContain('["article-markdown", messageId, articleAttachment?.id]');
-    expect(reader).toContain("normalizeLooseCodeBlocks(children).replace(/attachment:");
+    expect(reader).toContain("normalizeReadingMarkdown(children).replace(/attachment:");
     expect(reader).toContain("attachment.sha256.toLowerCase() === hash.toLowerCase()");
+    expect(reader).toContain('className="prose-table-scroll"');
+    expect(reader).toContain('className="prose-code-block"');
     expect(reader).not.toContain("article-image-strip");
     expect(reader).not.toContain("rehypeRaw");
     const diagram = read("frontend/src/components/KnowledgeDiagram.tsx");
@@ -81,7 +83,8 @@ describe("component frontend", () => {
     expect(settings).toContain("重置用户密码");
     expect(settings).toContain("invitationPageSize");
     const knowledgeChat = read("frontend/src/pages/KnowledgeChatPage.tsx");
-    expect(knowledgeChat).toContain("仅依据个人知识库");
+    expect(knowledgeChat).toContain("不会用网络信息或模型记忆补充事实");
+    expect(knowledgeChat).toContain("问答范围");
     expect(knowledgeChat).toContain("回答依据");
     expect(knowledgeChat).toContain("/api/knowledge/chats");
     expect(knowledgeChat).toContain("/messages/stream");
@@ -92,6 +95,7 @@ describe("component frontend", () => {
     expect(knowledgeChat).toContain("chat-progress");
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/knowledge-chat"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/review"');
+    expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/tasks"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('label: "Obsidian 同步"');
     const search = read("frontend/src/components/SearchDialog.tsx");
     expect(search).toContain("随知识库动态变化");
@@ -126,11 +130,17 @@ describe("component frontend", () => {
     expect(review).toContain("一周后提醒");
     expect(reader).toContain("标注选中文字");
     expect(reader).toContain("阅读标注已保存");
+    expect(reader).toContain("版本记录");
+    expect(reader).toContain("文章目录");
+    expect(reader).toContain("内容完整性");
     expect(library).toContain("保存为智能集合");
     expect(library).toContain("/api/collections");
     expect(settings).toContain("内容质量");
     expect(settings).toContain("数据与备份");
     expect(settings).toContain("/api/account/export");
+    expect(settings).toContain("自动来源");
+    expect(settings).toContain("/api/feed-sources");
+    expect(settings).toContain("来源检查已进入任务中心");
   });
 
   it("uses a high-contrast reading system without blurred glass surfaces", () => {
@@ -139,7 +149,9 @@ describe("component frontend", () => {
     expect(styles).toContain("--surface: #ffffff");
     expect(styles).toContain("font-size: 16px");
     expect(styles).toContain("font-size: 18px");
-    expect(styles).toContain("line-height: 1.88");
+    expect(styles).toContain("line-height: 1.78");
+    expect(styles).toContain(".prose-table-scroll");
+    expect(styles).toContain(".prose-code-block");
     expect(styles).toContain(".reader-tabs { position: static;");
     expect(styles).not.toContain(".reader-tabs { position: sticky;");
     expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain('"捕获"');
@@ -149,6 +161,8 @@ describe("component frontend", () => {
     expect(styles).toContain("prefers-reduced-motion: reduce");
     expect(styles).toContain("height: calc(100dvh - 76px)");
     expect(styles).toContain(".stream-caret");
+    expect(styles).toContain(".reading-progress");
+    expect(styles).toContain(".reader-toc");
     expect(styles).not.toContain("backdrop-filter");
     expect(styles).not.toContain("@import url(");
   });

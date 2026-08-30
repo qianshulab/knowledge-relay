@@ -10,6 +10,7 @@ const ReviewPage = lazy(() => import("./pages/ReviewPage"));
 const LibraryPage = lazy(() => import("./pages/LibraryPage"));
 const ReaderPage = lazy(() => import("./pages/ReaderPage"));
 const KnowledgeChatPage = lazy(() => import("./pages/KnowledgeChatPage"));
+const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage"));
 const ObsidianPage = lazy(() => import("./pages/ObsidianPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
@@ -124,6 +125,7 @@ export default function App() {
           <Route path="/review" element={<Suspense fallback={<RouteLoading />}><ReviewPage /></Suspense>} />
           <Route path="/library" element={<Suspense fallback={<RouteLoading />}><LibraryPage /></Suspense>} />
           <Route path="/knowledge-chat" element={<Suspense fallback={<RouteLoading />}><KnowledgeChatPage /></Suspense>} />
+          <Route path="/tasks" element={<Suspense fallback={<RouteLoading />}><TaskCenterPage /></Suspense>} />
           <Route path="/reader/:id" element={<Suspense fallback={<RouteLoading />}><ReaderPage /></Suspense>} />
           <Route path="/obsidian" element={<Suspense fallback={<RouteLoading />}><ObsidianPage /></Suspense>} />
           <Route path="/settings" element={<Navigate to="/settings/intake" replace />} />

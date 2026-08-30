@@ -2,11 +2,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BotManager } from "./bot-manager.js";
 import type { CaptureInput } from "./capture.js";
 import type { AppConfig } from "./config.js";
+import type { FeedSourceManager } from "./feed-source-manager.js";
 import type { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { defaultNote } from "./notes.js";
 import { createServer } from "./server.js";
@@ -76,7 +77,24 @@ describe("个人知识工作流 API", () => {
       summary: "通过回顾重新激活收藏内容。",
       domains: ["知识管理"],
     }, "completed");
-    const app = createServer(config(directory), database, {} as BotManager, {} as AccountLoginManager);
+    scoped.publishMessage(capture.id);
+    const firstRevision = scoped.getMessage(capture.id)!.revision;
+    scoped.updateProcessedNote(capture.id, {
+      ...defaultNote(capture),
+      title: "定期回顾知识（新版）",
+      summary: "新版回顾摘要。",
+      domains: ["知识管理"],
+    }, "completed");
+    scoped.publishMessage(capture.id);
+    const refreshFeed = vi.fn(async () => ({ accepted: 0, discovered: 0 }));
+    const app = createServer(
+      config(directory),
+      database,
+      {} as BotManager,
+      {} as AccountLoginManager,
+      undefined,
+      { refresh: refreshFeed } as unknown as FeedSourceManager,
+    );
     const authorization = { Authorization: `Bearer ${session.token}` };
 
     const annotation = await app.inject({ method: "POST", url: `/api/messages/${encodeURIComponent(capture.id)}/annotations`, headers: authorization, payload: { quote: "定期回顾", note: "每周执行", color: "amber" } });
@@ -93,9 +111,68 @@ describe("个人知识工作流 API", () => {
     expect(afterReview.json().suggestions).toEqual([]);
     const quality = await app.inject({ method: "GET", url: "/api/quality/overview", headers: authorization });
     expect(quality.json()).toMatchObject({ total: 1, healthy: 1 });
+    const revisions = await app.inject({ method: "GET", url: `/api/messages/${encodeURIComponent(capture.id)}/revisions`, headers: authorization });
+    expect(revisions.json().revisions).toHaveLength(2);
+    const restored = await app.inject({ method: "POST", url: `/api/messages/${encodeURIComponent(capture.id)}/revisions/${firstRevision}/restore`, headers: authorization });
+    expect(restored.json()).toMatchObject({ restoredFrom: firstRevision, message: { title: "定期回顾知识" } });
+    const feed = await app.inject({ method: "POST", url: "/api/feed-sources", headers: authorization, payload: { name: "测试订阅", feedUrl: "https://example.com/feed.xml", intervalMinutes: 30 } });
+    expect(feed.statusCode).toBe(201);
+    expect(feed.json().source).toMatchObject({ name: "测试订阅", enabled: true });
+    const feedList = await app.inject({ method: "GET", url: "/api/feed-sources", headers: authorization });
+    expect(feedList.json().sources).toHaveLength(1);
+    const feedCheck = await app.inject({ method: "POST", url: `/api/feed-sources/${feed.json().source.id}/check`, headers: authorization });
+    expect(feedCheck.statusCode).toBe(202);
+    expect(feedCheck.json()).toMatchObject({ sourceId: feed.json().source.id, accepted: true });
+    expect(refreshFeed).toHaveBeenCalledTimes(2);
     const exported = await app.inject({ method: "GET", url: "/api/account/export", headers: authorization });
     expect(exported.headers["content-disposition"]).toContain("knowledge-relay-");
     expect(JSON.parse(exported.body)).toMatchObject({ format: "knowledge-relay-personal-export" });
+
+    await app.close();
+    database.close();
+  });
+
+  it("accepts browser document uploads into the same tenant ingestion pipeline", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-upload-api-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    const owner = database.createOwner({ displayName: "Owner", password: "test-password" });
+    const session = database.createSessionFor(owner.id, 30);
+    const acceptCapture = vi.fn().mockReturnValue({ accepted: true });
+    const app = createServer(config(directory), database, { acceptCapture } as unknown as BotManager, {} as AccountLoginManager);
+    const boundary = "----knowledge-relay-upload";
+    const payload = Buffer.from([
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="note"',
+      "",
+      "重点整理部署步骤",
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="files"; filename="guide.md"',
+      "Content-Type: text/markdown",
+      "",
+      "# 部署指南\n\n使用 Docker Compose 部署。",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/captures/upload",
+      headers: {
+        Authorization: `Bearer ${session.token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(acceptCapture).toHaveBeenCalledWith(owner.id, expect.objectContaining({
+      text: "重点整理部署步骤",
+      captureType: "mixed",
+      attachments: [expect.objectContaining({ fileName: "guide.md", mimeType: "text/markdown" })],
+    }));
+    const capture = acceptCapture.mock.calls[0]?.[1] as CaptureInput;
+    await expect(fs.readFile(capture.attachments[0]!.path, "utf8")).resolves.toContain("Docker Compose");
 
     await app.close();
     database.close();

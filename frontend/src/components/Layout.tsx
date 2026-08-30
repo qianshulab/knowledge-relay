@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Bot, ChevronDown, DatabaseBackup, DatabaseZap, HeartPulse, Inbox, Link2, LogOut, Menu, MessageCircleQuestion, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, ChevronDown, DatabaseBackup, DatabaseZap, HeartPulse, Inbox, Link2, ListTodo, LogOut, Menu, MessageCircleQuestion, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "../App";
 import SearchDialog from "./SearchDialog";
@@ -9,6 +9,7 @@ const navigation = [
   { to: "/review", label: "回顾", icon: HeartPulse },
   { to: "/library", label: "知识库", icon: BookOpen },
   { to: "/knowledge-chat", label: "知识问答", icon: MessageCircleQuestion },
+  { to: "/tasks", label: "任务中心", icon: ListTodo },
 ];
 
 const settingsNavigation: Array<{ to: string; label: string; icon: LucideIcon; admin?: boolean }> = [
@@ -37,6 +38,7 @@ export default function Layout() {
     if (location.pathname.startsWith("/library")) return { section: "知识空间", title: "知识库" };
     if (location.pathname.startsWith("/review")) return { section: "知识空间", title: "回顾" };
     if (location.pathname.startsWith("/knowledge-chat")) return { section: "知识空间", title: "知识问答" };
+    if (location.pathname.startsWith("/tasks")) return { section: "知识空间", title: "任务中心" };
     if (location.pathname.startsWith("/obsidian")) return { section: "系统设置", title: "Obsidian 同步" };
     if (location.pathname.startsWith("/settings")) return { section: "系统设置", title: settingsNavigation.find((item) => location.pathname.startsWith(item.to))?.label || "设置" };
     return { section: "工作空间", title: "收件台" };

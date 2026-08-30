@@ -804,6 +804,169 @@ describe("AppDatabase", () => {
     database.close();
   });
 
+  it("持久化后台任务状态并可按租户重建全文检索索引", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:background-index",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: new Date().toISOString(),
+      text: "增量索引让知识检索在内容增长后仍保持稳定。",
+      attachments: [],
+    };
+    const note = defaultNote(message);
+    database.saveMessage(botId, "background-index", message, note);
+    database.updateProcessedNote(message.id, {
+      ...note,
+      title: "知识库增量索引",
+      summary: "通过全文索引持续检索新增内容。",
+      knowledgePoints: ["增量索引"],
+      domains: ["知识管理"],
+    }, "completed");
+
+    const queued = database.enqueueBackgroundJob({
+      type: "index",
+      resourceId: "tenant:test:index",
+      title: "重建检索索引",
+    });
+    expect(database.enqueueBackgroundJob({
+      type: "index",
+      resourceId: "tenant:test:index",
+      title: "不会重复创建",
+    }).id).toBe(queued.id);
+    expect(database.startBackgroundJob(queued.id, "indexing", "正在索引")).toMatchObject({
+      status: "running",
+      attempts: 1,
+    });
+    database.updateBackgroundJob(queued.id, { progress: 62, message: "已处理一半以上" });
+    expect(database.getBackgroundJob(queued.id)).toMatchObject({ progress: 62, message: "已处理一半以上" });
+    expect(database.rebuildTenantSearchIndex()).toMatchObject({
+      coverage: 100,
+      indexedMessages: 1,
+    });
+    expect(database.searchInbox("增量索引")[0]?.id).toBe(message.id);
+    expect(database.finishBackgroundJob(queued.id)).toMatchObject({ status: "completed", progress: 100 });
+    expect(database.backgroundJobOverview()).toMatchObject({ active: 0, completedToday: 1 });
+    database.close();
+  });
+
+  it("服务重启后只恢复可安全续跑的任务并释放需重新提交的索引任务", async () => {
+    const { directory, database } = await setup();
+    const ingestion = database.enqueueBackgroundJob({
+      type: "ingestion",
+      resourceId: "message:recoverable",
+      title: "恢复内容整理",
+    });
+    const index = database.enqueueBackgroundJob({
+      type: "index",
+      resourceId: "tenant:restart:index",
+      title: "重建索引",
+    });
+    database.startBackgroundJob(ingestion.id, "organizing", "正在整理");
+    database.startBackgroundJob(index.id, "indexing", "正在索引");
+    database.close();
+
+    const reopened = await AppDatabase.open(directory);
+    expect(reopened.getBackgroundJob(ingestion.id)).toMatchObject({
+      status: "queued",
+      phase: "recovering",
+    });
+    expect(reopened.getBackgroundJob(index.id)).toMatchObject({
+      status: "failed",
+      phase: "interrupted",
+    });
+    expect(reopened.activeBackgroundJob("index", "tenant:restart:index")).toBeUndefined();
+    reopened.close();
+  });
+
+  it("相同链接只整理一次并记录后续重复收件", async () => {
+    const { database, botId } = await setup();
+    const first: PublicInboundMessage = {
+      id: "bot-1:duplicate-first",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "https://example.com/article?utm_source=wechat",
+      attachments: [],
+    };
+    const second: PublicInboundMessage = {
+      ...first,
+      id: "bot-1:duplicate-second",
+      receivedAt: "2026-08-14T02:03:04.000Z",
+      text: "https://example.com/article",
+    };
+    expect(database.saveMessage(botId, "duplicate-first", first, defaultNote(first))).toBe(true);
+    expect(database.saveMessage(botId, "duplicate-second", second, defaultNote(second))).toBe(false);
+    const stored = database.getMessage(first.id)!;
+    expect(stored).toMatchObject({ duplicateCount: 1, lastDuplicateAt: second.receivedAt });
+    expect(database.listMessages()).toHaveLength(1);
+    expect(database.qualityOverview()).toMatchObject({ duplicateMessages: 1, duplicateReceipts: 1 });
+    database.close();
+  });
+
+  it("按租户管理可暂停和定期检查的自动来源", async () => {
+    const { database } = await setup();
+    const source = database.createFeedSource({
+      name: "产品更新",
+      feedUrl: "https://example.com/feed.xml#latest",
+      intervalMinutes: 30,
+    });
+    expect(source).toMatchObject({
+      name: "产品更新",
+      feedUrl: "https://example.com/feed.xml",
+      enabled: true,
+      intervalMinutes: 30,
+    });
+    expect(database.dueFeedSources().map((item) => item.id)).toContain(source.id);
+    database.markFeedSourceChecked(source.id, { success: false, error: "暂时无法连接" });
+    expect(database.listFeedSources()[0]?.lastError).toBe("暂时无法连接");
+    expect(database.updateFeedSource(source.id, { enabled: false })?.enabled).toBe(false);
+    expect(database.deleteFeedSource(source.id)).toBe(true);
+    expect(database.listFeedSources()).toEqual([]);
+    database.close();
+  });
+
+  it("保留整理版本、检测正文资源完整性并可恢复历史版本", async () => {
+    const { database, botId } = await setup();
+    const message: PublicInboundMessage = {
+      id: "bot-1:version-history",
+      senderId: "wx-1",
+      botId: "bot-1",
+      receivedAt: "2026-08-13T01:02:03.000Z",
+      text: "https://example.com/versioned",
+      attachments: [],
+    };
+    database.saveMessage(botId, "version-history", message, defaultNote(message));
+    database.updateProcessedNote(message.id, {
+      ...defaultNote(message),
+      title: "第一版标题",
+      summary: "第一版摘要",
+      markdown: "# 第一版标题\n\n这是第一版完整正文，用来验证历史版本恢复不会删除之后生成的内容。".repeat(3),
+      domains: ["版本管理"],
+    }, "completed");
+    database.publishMessage(message.id);
+    const firstRevision = database.getMessage(message.id)!.revision;
+    database.updateProcessedNote(message.id, {
+      ...defaultNote(message),
+      title: "第二版标题",
+      summary: "第二版摘要",
+      markdown: "# 第二版标题\n\n![缺失图片](missing-image.png)\n\n第二版正文内容。",
+    }, "completed");
+    database.publishMessage(message.id);
+
+    expect(database.listMessageRevisions(message.id)).toHaveLength(2);
+    expect(database.getMessageDetail(message.id)?.integrity.issues).toEqual(expect.arrayContaining([
+      "missing_body",
+      "broken_asset",
+      "missing_cover",
+    ]));
+    const restored = database.restoreMessageRevision(message.id, firstRevision)!;
+    expect(restored.title).toBe("第一版标题");
+    expect(restored.revision).toBeGreaterThan(firstRevision);
+    expect(database.listMessageRevisions(message.id)).toHaveLength(3);
+    database.close();
+  });
+
   it("管理员删除成员时要求用户名确认并清理成员工作区数据", async () => {
     const { directory, database } = await setup();
     const invitation = database.createInvitation(1);

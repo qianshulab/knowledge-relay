@@ -60,3 +60,37 @@ export function normalizeLooseCodeBlocks(value: string): string {
   }
   return output.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
 }
+
+function looksLikeTableRow(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && (trimmed.match(/\|/g)?.length || 0) >= 3;
+}
+
+function isTableDivider(value: string): boolean {
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|){1,}\s*:?-{3,}:?\s*\|?\s*$/.test(value);
+}
+
+export function normalizeReadingMarkdown(value: string): string {
+  const normalized = normalizeLooseCodeBlocks(value.replace(/[\u200b\u200c\u200d\ufeff]/g, ""));
+  const lines = normalized.split("\n");
+  const output: string[] = [];
+  let insideFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^\s*```/.test(line)) insideFence = !insideFence;
+    output.push(line);
+    if (
+      !insideFence
+      && looksLikeTableRow(line)
+      && looksLikeTableRow(lines[index + 1] || "")
+      && !looksLikeTableRow(lines[index - 1] || "")
+      && !isTableDivider(lines[index + 1] || "")
+      && !isTableDivider(lines[index - 1] || "")
+    ) {
+      const columns = Math.max(1, (line.match(/\|/g)?.length || 2) - 1);
+      output.push(`| ${Array.from({ length: columns }, () => "---").join(" | ")} |`);
+    }
+  }
+  if (insideFence) output.push("```");
+  return output.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
+}

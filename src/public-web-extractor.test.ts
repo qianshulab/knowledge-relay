@@ -45,4 +45,28 @@ describe("public web article extraction", () => {
       "https://example.org/",
     )).toBeUndefined();
   });
+
+  it("preserves HTML tables and source code as structured Markdown", () => {
+    const result = extractWebContentFromHtml(`
+      <html><head><title>Compatibility</title></head><body>
+        <article>
+          <h1>多平台兼容</h1>
+          <p>以下为安装支持情况。</p>
+          <table>
+            <thead><tr><th>平台</th><th>状态</th><th>安装方式</th></tr></thead>
+            <tbody>
+              <tr><td>Claude Code</td><td>原生</td><td>插件市场</td></tr>
+              <tr><td>Cursor</td><td>支持</td><td>自动发现</td></tr>
+            </tbody>
+          </table>
+          <pre><code class="language-js">const enabled = true;\nconsole.log(enabled);</code></pre>
+          <p>${"正文长度用于通过提取阈值。".repeat(50)}</p>
+        </article>
+      </body></html>
+    `, "https://example.com/compatibility");
+
+    expect(result?.markdown).toContain("| 平台 | 状态 | 安装方式 |");
+    expect(result?.markdown).toContain("| Claude Code | 原生 | 插件市场 |");
+    expect(result?.markdown).toContain("```js\nconst enabled = true;");
+  });
 });

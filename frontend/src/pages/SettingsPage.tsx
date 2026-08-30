@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, DatabaseBackup, Download, ExternalLink, FileWarning, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Search, Settings2, Shield, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, DatabaseBackup, Download, ExternalLink, FileWarning, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Rss, Search, Settings2, Shield, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, QualityOverview, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
+import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, FeedSource, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, QualityOverview, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
 import { useApp } from "../App";
 import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
 
@@ -21,6 +21,8 @@ const qualityIssueLabels: Record<string, string> = {
   fallback: "使用了基础整理",
   missing_summary: "缺少摘要",
   missing_cover: "缺少正文图片",
+  missing_body: "正文内容不完整",
+  broken_asset: "存在失效图片引用",
   warning: "存在内容警告",
   unindexed: "尚未建立问答索引",
 };
@@ -49,8 +51,9 @@ function QualitySettings() {
         <div className="settings-card"><ShieldCheck size={20} /><span>健康内容</span><strong>{value.healthy}</strong><small>共 {value.total} 条</small></div>
         <div className="settings-card"><Activity size={20} /><span>正在处理</span><strong>{value.processing}</strong><small>后台任务会自动更新</small></div>
         <div className="settings-card"><AlertTriangle size={20} /><span>需要处理</span><strong>{value.issues.length}</strong><small>{value.failed + value.fallback} 条整理异常</small></div>
-        <div className="settings-card"><FileWarning size={20} /><span>内容完整性</span><strong>{value.missingCover + value.missingSummary}</strong><small>{value.unindexed} 条未建问答索引</small></div>
+        <div className="settings-card"><FileWarning size={20} /><span>内容完整性</span><strong>{value.missingCover + value.missingSummary + value.missingBody + value.brokenAssets}</strong><small>{value.unindexed} 条未建问答索引</small></div>
       </section>
+      {value.duplicateReceipts > 0 && <InlineMessage tone="default">已自动合并 {value.duplicateReceipts} 次重复收件，涉及 {value.duplicateMessages} 条内容；相同链接不会重复调用 AI。</InlineMessage>}
       <section className="settings-card quality-list-card">
         <div className="settings-card-title"><Activity size={19} /><div><h3>问题清单</h3><p>只展示需要关注的内容；正文图片缺失通常需要重新抓取原网页。</p></div>{repairable.length > 0 && <button className="button button-secondary" disabled={reprocess.isPending} onClick={() => reprocess.mutate(selected.length ? selected : repairable.map((item) => item.id))}><RefreshCw className={reprocess.isPending ? "spin" : ""} size={16} />{selected.length ? `重新整理 ${selected.length} 条` : "修复可处理项"}</button>}</div>
         {repairable.length > 1 && <label className="quality-select-all"><input type="checkbox" checked={allSelected} onChange={(event) => setSelected(event.target.checked ? repairable.map((item) => item.id) : [])} />选择全部可重新整理的内容</label>}
@@ -89,7 +92,42 @@ function DataSettings() {
 }
 
 function IntakeSettings() {
-  return <><SettingsHeader title="收件接入" description="通过微信 iLink、微信助手或开放 API，把链接、文字与附件汇入同一个收件台。" /><div className="intake-stack"><SourcesSettings /><WechatAssistantSettings /><ApiSettings /></div></>;
+  return <><SettingsHeader title="收件接入" description="通过微信、自动订阅或开放 API，把链接、文字与附件汇入同一个收件台。" /><div className="intake-stack"><SourcesSettings /><FeedSourcesSettings /><WechatAssistantSettings /><ApiSettings /></div></>;
+}
+
+function FeedSourcesSettings() {
+  const { notify } = useApp();
+  const queryClient = useQueryClient();
+  const sources = useQuery({ queryKey: ["feed-sources"], queryFn: () => api<{ sources: FeedSource[] }>("/api/feed-sources"), refetchInterval: 30_000 });
+  const create = useMutation({
+    mutationFn: (input: { name: string; feedUrl: string; intervalMinutes: number }) => api<{ source: FeedSource }>("/api/feed-sources", { method: "POST", body: JSON.stringify(input) }),
+    onSuccess: () => { notify("自动来源已添加，正在执行首次检查", "success"); void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }); },
+    onError: (error) => notify(error instanceof Error ? error.message : "添加自动来源失败", "danger"),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, ...input }: { id: string; enabled: boolean }) => api(`/api/feed-sources/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }),
+  });
+  const check = useMutation({
+    mutationFn: (id: string) => api<{ accepted: boolean; sourceId: string }>(`/api/feed-sources/${encodeURIComponent(id)}/check`, { method: "POST" }),
+    onSuccess: () => { notify("来源检查已进入任务中心", "success"); void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }); void queryClient.invalidateQueries({ queryKey: ["background-jobs"] }); },
+    onError: (error) => notify(error instanceof Error ? error.message : "订阅检查失败", "danger"),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/api/feed-sources/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => { notify("自动来源已移除，已接收内容不会删除", "success"); void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }); },
+  });
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    create.mutate({
+      name: String(form.get("name") || ""),
+      feedUrl: String(form.get("feedUrl") || ""),
+      intervalMinutes: Number(form.get("intervalMinutes")) || 60,
+    });
+    event.currentTarget.reset();
+  }
+  return <section className="settings-card feed-source-card"><div className="settings-card-head"><Rss size={20} /><div><h3>自动来源</h3><p>订阅 RSS 或 Atom，新文章会自动进入收件台并沿用同一套整理与去重流程。</p></div></div><form className="feed-source-create" onSubmit={submit}><label>来源名称<input name="name" maxLength={80} placeholder="例如：团队技术博客" /></label><label className="feed-url-field">订阅地址<input name="feedUrl" type="url" required placeholder="https://example.com/feed.xml" /></label><label>检查频率<select name="intervalMinutes" defaultValue="60"><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="1440">每天</option></select></label><button className="button button-primary" disabled={create.isPending}><Plus size={16} />{create.isPending ? "添加中…" : "添加来源"}</button></form>{sources.isLoading ? <LoadingState label="正在读取自动来源" /> : sources.data?.sources.length ? <div className="feed-source-list">{sources.data.sources.map((source) => <article key={source.id}><div className={`source-health ${source.lastError ? "error" : source.enabled ? "active" : "paused"}`}><Rss size={17} /></div><div><div className="source-title"><strong>{source.name}</strong><span className={`status-badge ${source.lastError ? "danger" : source.enabled ? "success" : ""}`}>{source.lastError ? "检查异常" : source.enabled ? "自动检查" : "已暂停"}</span></div><a href={source.feedUrl} target="_blank" rel="noreferrer">{source.feedUrl}</a><small>{source.lastError || (source.lastCheckedAt ? `最近检查 ${formatDate(source.lastCheckedAt)}` : "等待首次检查")} · 每 {source.intervalMinutes < 60 ? `${source.intervalMinutes} 分钟` : source.intervalMinutes === 60 ? "小时" : source.intervalMinutes === 1440 ? "天" : `${source.intervalMinutes / 60} 小时`}</small></div><div className="source-actions"><button className="button button-secondary" disabled={check.isPending} onClick={() => check.mutate(source.id)}><RefreshCw className={check.isPending ? "spin" : ""} size={15} />立即检查</button><button className="button button-secondary" onClick={() => update.mutate({ id: source.id, enabled: !source.enabled })}>{source.enabled ? "暂停" : "启用"}</button><button className="icon-button danger-text" aria-label={`删除来源${source.name}`} onClick={() => { if (window.confirm(`移除自动来源“${source.name}”？已经接收的内容会保留。`)) remove.mutate(source.id); }}><Trash2 size={16} /></button></div></article>)}</div> : <EmptyState icon={<Rss size={26} />} title="尚未添加自动来源" description="添加博客、新闻站或项目更新的 RSS / Atom 地址后，系统会定期检查新内容。" />}</section>;
 }
 
 function SourcesSettings() {

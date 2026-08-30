@@ -1,16 +1,19 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import { PassThrough } from "node:stream";
+import { pipeline as streamPipeline } from "node:stream/promises";
 import path from "node:path";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import QRCode from "qrcode";
 
 import type { BotManager } from "./bot-manager.js";
 import { inferCaptureType, type CaptureInput } from "./capture.js";
 import type { AppConfig } from "./config.js";
+import type { FeedSourceManager } from "./feed-source-manager.js";
 import type { AccountLoginManager } from "./ilink/account-login-manager.js";
 import { errorDetails, logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
@@ -25,7 +28,15 @@ import {
   publishPluginRelease,
   resolvePluginRelease,
 } from "./plugin-release.js";
-import type { AppDatabase, ContentFormat, InboxSearchResult, OwnerProfile } from "./storage/database.js";
+import type {
+  AppDatabase,
+  BackgroundJob,
+  BackgroundJobStatus,
+  BackgroundJobType,
+  ContentFormat,
+  InboxSearchResult,
+  OwnerProfile,
+} from "./storage/database.js";
 import { adminUiVersion, loadWebIndex, webRoot } from "./web-ui.js";
 import type { WechatMcpIntakeManager } from "./wechat-mcp-intake.js";
 
@@ -57,6 +68,20 @@ function publicDiagramGeneration(job: DiagramGenerationJob) {
       phase: job.phase,
       message: job.message,
       startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      ...(job.error ? { error: job.error } : {}),
+    },
+  };
+}
+
+function publicDiagramBackgroundJob(job: BackgroundJob) {
+  return {
+    status: job.status === "failed" || job.status === "cancelled" ? "failed" : "generating",
+    cached: false,
+    generation: {
+      phase: job.phase === "saving" || job.phase === "persisting" ? "saving" : "analyzing",
+      message: job.message,
+      startedAt: job.startedAt || job.createdAt,
       updatedAt: job.updatedAt,
       ...(job.error ? { error: job.error } : {}),
     },
@@ -100,6 +125,21 @@ function stringBody(value: unknown, maximum = 500): string {
 
 function booleanBody(value: unknown): boolean {
   return value === true;
+}
+
+const MANUAL_UPLOAD_EXTENSIONS = new Set([
+  ".jpg", ".jpeg", ".png", ".gif", ".webp",
+  ".pdf", ".docx", ".xlsx", ".md", ".markdown", ".txt", ".csv", ".tsv",
+  ".html", ".htm", ".xhtml", ".zip", ".json", ".yaml", ".yml", ".log",
+]);
+
+function safeUploadName(value: string): string {
+  const name = path.basename(value || "attachment")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return name || "attachment";
 }
 
 function syncSchema(request: FastifyRequest): "1.1" | "1.2" {
@@ -153,6 +193,7 @@ export function createServer(
   bots: BotManager,
   login: AccountLoginManager,
   wechatMcp?: WechatMcpIntakeManager,
+  feeds?: FeedSourceManager,
 ): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
   const nanobot = new NanobotClient(config);
@@ -170,6 +211,14 @@ export function createServer(
     cacheControl: true,
     maxAge: "1h",
     immutable: false,
+  });
+  void app.register(fastifyMultipart, {
+    limits: {
+      files: 10,
+      fileSize: Math.min(config.ilink.maxMediaBytes, 100 * 1024 * 1024),
+      fields: 8,
+      parts: 18,
+    },
   });
 
   for (const contentType of ["application/zip", "application/octet-stream", "application/x-zip-compressed", "image/jpeg", "image/png", "image/webp"]) {
@@ -363,6 +412,75 @@ export function createServer(
     const accepted = bots.acceptCapture(tenantId, capture);
     if (!accepted.accepted) return reply.code(200).send({ id, accepted: false, duplicate: true });
     return reply.code(202).send({ id, accepted: true, status: "processing" });
+  });
+
+  app.post("/api/captures/upload", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    const tenantId = scoped.currentTenantId()!;
+    const externalId = crypto.randomUUID();
+    const id = `manual:${crypto.createHash("sha256").update(`${tenantId}:${externalId}`).digest("hex").slice(0, 32)}`;
+    const tenantDirectory = crypto.createHash("sha256").update(tenantId).digest("hex").slice(0, 16);
+    const folder = path.join(config.dataDir, "media", "tenants", tenantDirectory, new Date().toISOString().slice(0, 10), id.replace(/[^a-z0-9_-]/gi, "_"));
+    const attachments: CaptureInput["attachments"] = [];
+    let text = "";
+    let totalBytes = 0;
+    try {
+      await fs.mkdir(folder, { recursive: true });
+      for await (const part of request.parts()) {
+        if (part.type === "field") {
+          if (part.fieldname === "note") text = stringBody(part.value, 100_000);
+          continue;
+        }
+        const fileName = safeUploadName(part.filename);
+        const extension = path.extname(fileName).toLowerCase();
+        if (!MANUAL_UPLOAD_EXTENSIONS.has(extension)) {
+          part.file.resume();
+          throw new Error(`暂不支持 ${extension || "无扩展名"} 文件：${fileName}`);
+        }
+        const storageName = `${String(attachments.length + 1).padStart(2, "0")}-${crypto.randomUUID().slice(0, 8)}-${fileName}`;
+        const storagePath = path.join(folder, storageName);
+        await streamPipeline(part.file, createWriteStream(storagePath, { mode: 0o600, flags: "wx" }));
+        if (part.file.truncated) throw new Error(`${fileName} 超过单文件大小限制`);
+        const stat = await fs.stat(storagePath);
+        totalBytes += stat.size;
+        if (totalBytes > Math.min(config.ilink.maxMediaBytes, 100 * 1024 * 1024)) {
+          throw new Error("一次上传的文件总大小不能超过 100 MB");
+        }
+        attachments.push({
+          kind: part.mimetype.startsWith("image/") ? "image" : "file",
+          fileName,
+          path: storagePath,
+          size: stat.size,
+          mimeType: part.mimetype || "application/octet-stream",
+        });
+      }
+      if (!attachments.length && !text) return reply.code(400).send({ error: "请选择文件或填写文字说明" });
+      const capture: CaptureInput = {
+        id,
+        source: {
+          channel: "manual",
+          type: "manual",
+          externalId,
+          connectionId: "browser-upload",
+          name: "浏览器上传",
+        },
+        captureType: inferCaptureType(text, attachments),
+        actorId: tenantId,
+        receivedAt: new Date().toISOString(),
+        text,
+        attachments,
+      };
+      const accepted = bots.acceptCapture(tenantId, capture);
+      if (!accepted.accepted) {
+        await fs.rm(folder, { recursive: true, force: true });
+        return reply.code(200).send({ id, accepted: false, duplicate: true });
+      }
+      return reply.code(202).send({ id, accepted: true, status: "processing", files: attachments.length });
+    } catch (error) {
+      await fs.rm(folder, { recursive: true, force: true });
+      const message = error instanceof Error ? error.message : "文件上传失败";
+      return reply.code(/暂不支持|请选择|超过/.test(message) ? 400 : 500).send({ error: message });
+    }
   });
 
   app.post("/api/logout", async (request, reply) => {
@@ -637,21 +755,21 @@ export function createServer(
   app.get("/api/dashboard", async (request) => {
     const scoped = tenantDatabase(request);
     const agentSettings = scoped.getAgentSettings(config.nanobot);
-    const tenantId = scoped.currentTenantId();
-    const diagramJobs = tenantId
-      ? [...diagramGenerations.values()]
-        .filter((job) => job.tenantId === tenantId && job.status === "generating")
-        .map((job) => ({
-          messageId: job.messageId,
-          title: job.title,
-          phase: job.phase,
-          message: job.message,
-          startedAt: job.startedAt,
-          updatedAt: job.updatedAt,
-        }))
-      : [];
+    const jobs = scoped.backgroundJobOverview(12);
+    const diagramJobs = jobs.jobs
+      .filter((job) => job.type === "diagram" && ["queued", "running", "retrying"].includes(job.status))
+      .map((job) => ({
+        messageId: job.resourceId,
+        title: job.title,
+        phase: job.phase === "saving" ? "saving" : "analyzing",
+        message: job.message,
+        startedAt: job.startedAt || job.createdAt,
+        updatedAt: job.updatedAt,
+      }));
     return {
       ...scoped.dashboard(),
+      jobs,
+      searchIndex: scoped.searchIndexHealth(),
       agentEnabled: agentSettings.enabled,
       accounts: scoped.getBotAccounts().map((account) => publicAccount(account, bots.isRunning(account.id))),
       wechatAssistant: (() => {
@@ -669,6 +787,68 @@ export function createServer(
       diagramProcessing: diagramJobs.length,
       diagramJobs,
     };
+  });
+
+  app.get<{ Querystring: { limit?: string; status?: string; type?: string } }>("/api/jobs", async (request) => {
+    const allowedStatuses = new Set<BackgroundJobStatus>([
+      "queued", "running", "retrying", "completed", "failed", "cancelled",
+    ]);
+    const allowedTypes = new Set<BackgroundJobType>([
+      "ingestion", "reprocess", "diagram", "index", "sync", "source_check",
+    ]);
+    const requestedStatus = stringBody(request.query.status, 30) as BackgroundJobStatus;
+    const requestedType = stringBody(request.query.type, 30) as BackgroundJobType;
+    const scoped = tenantDatabase(request);
+    return {
+      overview: scoped.backgroundJobOverview(Math.max(1, Math.min(100, Number(request.query.limit) || 50))),
+      jobs: scoped.listBackgroundJobs({
+        limit: Math.max(1, Math.min(100, Number(request.query.limit) || 50)),
+        ...(allowedStatuses.has(requestedStatus) ? { status: requestedStatus } : {}),
+        ...(allowedTypes.has(requestedType) ? { type: requestedType } : {}),
+      }),
+      searchIndex: scoped.searchIndexHealth(),
+    };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/jobs/:id/cancel", async (request, reply) => {
+    const job = tenantDatabase(request).cancelBackgroundJob(request.params.id);
+    if (!job) return reply.code(404).send({ error: "任务不存在" });
+    if (job.status !== "cancelled") return reply.code(409).send({ error: "只有尚未开始的任务可以取消" });
+    return { job };
+  });
+
+  app.post("/api/jobs/index/rebuild", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    const resourceId = `tenant:${scoped.currentTenantId()}:search-index`;
+    const existing = scoped.activeBackgroundJob("index", resourceId);
+    if (existing) return reply.code(202).send({ job: existing, searchIndex: scoped.searchIndexHealth() });
+    const queued = scoped.enqueueBackgroundJob({
+      type: "index",
+      resourceId,
+      title: "重建知识检索索引",
+      message: "正在准备检查全部已整理内容",
+      maxAttempts: 1,
+    });
+    const started = scoped.startBackgroundJob(queued.id, "indexing", "正在重建全文检索索引") || queued;
+    setImmediate(() => {
+      try {
+        const health = scoped.rebuildTenantSearchIndex((completed, total) => {
+          const progress = total ? Math.max(8, Math.min(95, Math.round(completed / total * 95))) : 95;
+          scoped.updateBackgroundJob(started.id, {
+            phase: "indexing",
+            progress,
+            message: total ? `已索引 ${completed}/${total} 篇内容` : "当前没有需要索引的内容",
+          });
+        });
+        scoped.finishBackgroundJob(started.id, {
+          message: `检索索引已更新：${health.indexedMessages} 篇内容、${health.indexedChunks} 个片段`,
+          metadata: { searchIndex: health },
+        });
+      } catch (error) {
+        scoped.failBackgroundJob(started.id, diagramGenerationError(error), "检索索引重建失败");
+      }
+    });
+    return reply.code(202).send({ job: started, searchIndex: scoped.searchIndexHealth() });
   });
 
   app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; unread?: string; format?: string; category?: string; domain?: string; knowledgePoint?: string; tool?: string; organized?: string; q?: string } }>("/api/messages", async (request) => {
@@ -755,6 +935,49 @@ export function createServer(
     tenantDatabase(request).deleteSmartCollection(request.params.id)
       ? { ok: true }
       : reply.code(404).send({ error: "集合不存在" }),
+  );
+
+  app.get("/api/feed-sources", async (request) => ({
+    sources: tenantDatabase(request).listFeedSources(),
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/feed-sources", async (request, reply) => {
+    const feedUrl = stringBody(request.body?.feedUrl, 2_000);
+    if (!feedUrl) return reply.code(400).send({ error: "请输入 RSS 或 Atom 订阅地址" });
+    const source = tenantDatabase(request).createFeedSource({
+      name: stringBody(request.body?.name, 80),
+      feedUrl,
+      intervalMinutes: Math.max(15, Math.min(1440, Number(request.body?.intervalMinutes) || 60)),
+      enabled: request.body?.enabled !== false,
+    });
+    if (feeds && source.enabled) void feeds.refresh(source).catch((error) => logger.warn("首次订阅检查失败", { sourceId: source.id, ...errorDetails(error) }));
+    return reply.code(201).send({ source });
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/feed-sources/:id", async (request, reply) => {
+    const source = tenantDatabase(request).updateFeedSource(request.params.id, {
+      ...(request.body?.name !== undefined ? { name: stringBody(request.body.name, 80) } : {}),
+      ...(request.body?.feedUrl !== undefined ? { feedUrl: stringBody(request.body.feedUrl, 2_000) } : {}),
+      ...(typeof request.body?.enabled === "boolean" ? { enabled: request.body.enabled } : {}),
+      ...(request.body?.intervalMinutes !== undefined
+        ? { intervalMinutes: Math.max(15, Math.min(1440, Number(request.body.intervalMinutes) || 60)) }
+        : {}),
+    });
+    return source ? { source } : reply.code(404).send({ error: "自动来源不存在" });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/feed-sources/:id/check", async (request, reply) => {
+    const source = tenantDatabase(request).listFeedSources().find((item) => item.id === request.params.id);
+    if (!source) return reply.code(404).send({ error: "自动来源不存在" });
+    if (!feeds) return reply.code(503).send({ error: "自动来源服务尚未启动" });
+    void feeds.refresh(source).catch((error) => logger.warn("手动订阅检查失败", { sourceId: source.id, ...errorDetails(error) }));
+    return reply.code(202).send({ sourceId: source.id, accepted: true });
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/feed-sources/:id", async (request, reply) =>
+    tenantDatabase(request).deleteFeedSource(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "自动来源不存在" }),
   );
 
   app.get<{ Querystring: { limit?: string } }>("/api/review", async (request) => {
@@ -1020,9 +1243,32 @@ export function createServer(
     return { ...result, hasMore: result.conversations.length + (Number(request.query.offset) || 0) < result.total };
   });
 
-  app.post<{ Body: Record<string, unknown> }>("/api/knowledge/chats", async (request) => ({
-    conversation: tenantDatabase(request).createKnowledgeConversation(stringBody(request.body?.title, 80)),
-  }));
+  app.post<{ Body: Record<string, unknown> }>("/api/knowledge/chats", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    const requestedType = stringBody(request.body?.scopeType, 30);
+    const scopeType = (["message", "domain", "collection"] as const).find((value) => value === requestedType) || "library";
+    const scopeValue = scopeType === "library" ? "" : stringBody(request.body?.scopeValue, 300);
+    let scopeLabel = "全部知识库";
+    if (scopeType === "message") {
+      const message = scoped.getMessage(scopeValue);
+      if (!message || message.agentStatus !== "completed") return reply.code(400).send({ error: "指定内容不存在或尚未完成整理" });
+      scopeLabel = message.title;
+    } else if (scopeType === "domain") {
+      if (!scopeValue) return reply.code(400).send({ error: "请选择知识领域" });
+      scopeLabel = scopeValue;
+    } else if (scopeType === "collection") {
+      const collection = scoped.listSmartCollections().find((item) => item.id === scopeValue);
+      if (!collection) return reply.code(400).send({ error: "指定集合不存在" });
+      scopeLabel = collection.name;
+    }
+    return {
+      conversation: scoped.createKnowledgeConversation(stringBody(request.body?.title, 80), {
+        type: scopeType,
+        value: scopeValue,
+        label: scopeLabel,
+      }),
+    };
+  });
 
   app.get<{ Params: { id: string } }>("/api/knowledge/chats/:id", async (request, reply) => {
     const conversation = tenantDatabase(request).getKnowledgeConversation(request.params.id);
@@ -1052,8 +1298,11 @@ export function createServer(
       try {
         const settings = scoped.getAgentSettings(config.nanobot);
         if (!settings.enabled) throw new Error("请先在系统设置中启用 AI 智能整理");
+        const scopedMessageIds = scoped.knowledgeConversationScopeMessageIds(conversation);
+        const allowedMessageIds = scopedMessageIds ? new Set(scopedMessageIds) : undefined;
+        const inScope = (messageId: string): boolean => !allowedMessageIds || allowedMessageIds.has(messageId);
         scoped.appendKnowledgeChatMessage(conversation.id, "user", question);
-        onUpdate?.({ type: "status", phase: "retrieving", message: "正在理解问题并检索知识库…" });
+        onUpdate?.({ type: "status", phase: "retrieving", message: `正在“${conversation.scopeLabel}”范围内理解问题并检索…` });
         const recentHistory = conversation.messages.slice(-10);
         const previousQuestions = recentHistory
           .filter((message) => message.role === "user")
@@ -1074,12 +1323,14 @@ export function createServer(
         const rankedChunks = new Map<string, RankedKnowledgeChunk>();
         const addMatches = (items: InboxSearchResult[], score: number): void => {
           for (const item of items) {
+            if (!inScope(item.id)) continue;
             const current = ranked.get(item.id);
             ranked.set(item.id, { item, score: (current?.score || 0) + score });
           }
         };
         const addChunkMatches = (query: string, score: number): void => {
           for (const item of scoped.searchKnowledgeChunks(query, 40)) {
+            if (!inScope(item.messageId)) continue;
             const key = `${item.messageId}:${item.ordinal}`;
             const current = rankedChunks.get(key);
             rankedChunks.set(key, { ...item, combinedScore: (current?.combinedScore || 0) + score + item.score });
@@ -1094,10 +1345,19 @@ export function createServer(
         plan?.domains.forEach((domain) => addMatches(scoped.searchInbox("", { organized: true, domain, limit: 12 }), 12));
         plan?.knowledgePoints.forEach((knowledgePoint) => addMatches(scoped.searchInbox("", { organized: true, knowledgePoint, limit: 12 }), 12));
         plan?.tools.forEach((tool) => addMatches(scoped.searchInbox("", { organized: true, tool, limit: 12 }), 12));
+        if (conversation.scopeType === "message" && conversation.scopeValue && inScope(conversation.scopeValue)) {
+          const detail = scoped.getMessage(conversation.scopeValue);
+          if (detail) addMatches([{ ...detail, excerpt: detail.summary || detail.text.slice(0, 240) }], 100);
+          for (const item of scoped.knowledgeChunksForMessage(conversation.scopeValue, 12)) {
+            const key = `${item.messageId}:${item.ordinal}`;
+            rankedChunks.set(key, { ...item, combinedScore: 100 + item.score });
+          }
+        }
         const previousCitationIds = recentHistory
           .filter((message) => message.role === "assistant")
           .slice(-1)
-          .flatMap((message) => message.citations.map((citation) => citation.messageId));
+          .flatMap((message) => message.citations.map((citation) => citation.messageId))
+          .filter(inScope);
         const chunksByMessage = new Map<string, RankedKnowledgeChunk[]>();
         Array.from(rankedChunks.values())
           .sort((left, right) => right.combinedScore - left.combinedScore || left.ordinal - right.ordinal)
@@ -1134,7 +1394,7 @@ export function createServer(
           }];
         });
         if (!sources.length) {
-          const content = "当前知识库中没有找到足够依据回答这个问题。可以换用更明确的主题、人物、工具名称，或先把相关资料发送到收件台完成整理。";
+          const content = `当前“${conversation.scopeLabel}”范围内没有找到足够依据回答这个问题。可以换用更明确的主题、人物、工具名称，扩大问答范围，或先把相关资料完成整理。`;
           onUpdate?.({ type: "delta", content });
           const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", content);
           return { message, followUps: [] };
@@ -1247,6 +1507,32 @@ export function createServer(
       : reply.code(404).send({ error: "消息不存在" });
   });
 
+  app.get<{ Params: { id: string } }>("/api/messages/:id/revisions", async (request, reply) => {
+    const scoped = tenantDatabase(request);
+    if (!scoped.getMessage(request.params.id)) return reply.code(404).send({ error: "消息不存在" });
+    return { revisions: scoped.listMessageRevisions(request.params.id) };
+  });
+
+  app.get<{ Params: { id: string; revision: string } }>(
+    "/api/messages/:id/revisions/:revision",
+    async (request, reply) => {
+      const revision = Math.max(1, Math.floor(Number(request.params.revision) || 0));
+      const value = tenantDatabase(request).getMessageRevision(request.params.id, revision);
+      return value ? { revision: value } : reply.code(404).send({ error: "历史版本不存在" });
+    },
+  );
+
+  app.post<{ Params: { id: string; revision: string } }>(
+    "/api/messages/:id/revisions/:revision/restore",
+    async (request, reply) => {
+      const revision = Math.max(1, Math.floor(Number(request.params.revision) || 0));
+      const message = tenantDatabase(request).restoreMessageRevision(request.params.id, revision);
+      return message
+        ? { message, restoredFrom: revision }
+        : reply.code(404).send({ error: "历史版本不存在" });
+    },
+  );
+
   app.post<{ Params: { id: string } }>("/api/messages/:id/reprocess", async (request, reply) => {
     const scoped = tenantDatabase(request);
     if (!scoped.getMessage(request.params.id)) return reply.code(404).send({ error: "消息不存在" });
@@ -1266,9 +1552,13 @@ export function createServer(
     const tenantId = scoped.currentTenantId();
     const generation = tenantId ? diagramGenerations.get(`${tenantId}:${request.params.id}`) : undefined;
     if (generation) return publicDiagramGeneration(generation);
+    const activeJob = scoped.activeBackgroundJob("diagram", request.params.id);
+    if (activeJob) return publicDiagramBackgroundJob(activeJob);
     const diagram = scoped.getKnowledgeDiagram(request.params.id);
-    return diagram
-      ? { status: "ready", cached: true, diagram }
+    if (diagram) return { status: "ready", cached: true, diagram };
+    const latestJob = scoped.latestBackgroundJob("diagram", request.params.id);
+    return latestJob?.status === "failed"
+      ? publicDiagramBackgroundJob(latestJob)
       : { status: "not_generated", cached: false };
   });
 
@@ -1290,7 +1580,18 @@ export function createServer(
       if (existing?.status === "generating") {
         return reply.code(202).send(publicDiagramGeneration(existing));
       }
+      const activeJob = scoped.activeBackgroundJob("diagram", message.id);
+      if (activeJob) return reply.code(202).send(publicDiagramBackgroundJob(activeJob));
       const now = new Date().toISOString();
+      const backgroundJob = scoped.enqueueBackgroundJob({
+        type: "diagram",
+        resourceId: message.id,
+        title: message.title || message.text.slice(0, 80) || "未命名内容",
+        message: "正在分析资料结构并选择合适的图形",
+        maxAttempts: 3,
+        metadata: { noteRevision: message.revision },
+      });
+      scoped.startBackgroundJob(backgroundJob.id, "analyzing", "正在分析资料结构并选择合适的图形");
       const generation: DiagramGenerationJob = {
         tenantId,
         messageId: message.id,
@@ -1315,6 +1616,12 @@ export function createServer(
                 onRetry: (attempt, maximumAttempts) => {
                   generation.message = `模型输出未完整，正在自动修复（第 ${attempt}/${maximumAttempts} 次）`;
                   generation.updatedAt = new Date().toISOString();
+                  scoped.updateBackgroundJob(backgroundJob.id, {
+                    status: "retrying",
+                    phase: "repairing",
+                    progress: Math.min(72, 34 + attempt * 14),
+                    message: generation.message,
+                  });
                 },
               },
             );
@@ -1322,6 +1629,12 @@ export function createServer(
             generation.phase = "saving";
             generation.message = "模型生成未完成，正在使用已整理内容构建稳定图解";
             generation.updatedAt = new Date().toISOString();
+            scoped.updateBackgroundJob(backgroundJob.id, {
+              phase: "fallback",
+              progress: 76,
+              message: generation.message,
+              error: diagramGenerationError(modelError),
+            });
             result = scoped.knowledgeMap(message.id);
             result.selectionReason = "模型未返回可用结构，已根据已整理的摘要、要点和知识索引生成稳定图解";
             if (result.nodes.length < 2) {
@@ -1344,13 +1657,24 @@ export function createServer(
           generation.phase = "saving";
           generation.message = "图解结构已生成，正在保存结果";
           generation.updatedAt = new Date().toISOString();
+          scoped.updateBackgroundJob(backgroundJob.id, {
+            status: "running",
+            phase: "saving",
+            progress: 90,
+            message: generation.message,
+          });
           scoped.saveKnowledgeDiagram(message.id, result, message.revision);
+          scoped.finishBackgroundJob(backgroundJob.id, {
+            message: "智能图解已生成并保存",
+            metadata: { diagramType: result.diagramType, nodes: result.nodes.length, edges: result.edges.length },
+          });
           if (diagramGenerations.get(generationKey) === generation) diagramGenerations.delete(generationKey);
         } catch (error) {
           generation.status = "failed";
           generation.message = "智能图解生成失败，可重新尝试";
           generation.error = diagramGenerationError(error);
           generation.updatedAt = new Date().toISOString();
+          scoped.failBackgroundJob(backgroundJob.id, generation.error, generation.message);
           logger.warn("智能图解生成失败", {
             tenantId,
             messageId: message.id,

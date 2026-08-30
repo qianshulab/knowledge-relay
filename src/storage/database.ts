@@ -99,6 +99,22 @@ export type WechatMcpUserBindingStatus = {
   binding?: WechatMcpBinding;
 };
 
+export type FeedSource = {
+  id: string;
+  tenantId: string;
+  name: string;
+  feedUrl: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  lastCheckedAt?: string;
+  lastSuccessAt?: string;
+  lastItemAt?: string;
+  lastError?: string;
+  nextCheckAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AgentSettings = {
   enabled: boolean;
   baseUrl: string;
@@ -172,6 +188,8 @@ export type MessageListItem = {
   readAt?: string;
   coverAttachmentId?: string;
   coverMimeType?: string;
+  duplicateCount: number;
+  lastDuplicateAt?: string;
 };
 
 export type ContentFormat =
@@ -198,6 +216,29 @@ export type MessageDetail = MessageListItem & {
     url: string;
   };
   captureType: CaptureType;
+  integrity: ContentIntegrity;
+};
+
+export type ContentIntegrity = {
+  score: number;
+  bodyCharacters: number;
+  imageReferences: number;
+  localImages: number;
+  missingImageReferences: string[];
+  issues: Array<"missing_body" | "broken_asset" | "missing_summary" | "missing_cover" | "unindexed">;
+};
+
+export type ContentRevision = {
+  revision: number;
+  createdAt: string;
+  title: string;
+  summary: string;
+  status: string;
+  current: boolean;
+};
+
+export type ContentRevisionDetail = ContentRevision & {
+  snapshot: Record<string, unknown>;
 };
 
 export type MessageAnnotation = {
@@ -232,7 +273,7 @@ export type ReviewSuggestion = MessageListItem & {
 };
 
 export type QualityIssue = MessageListItem & {
-  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "warning" | "unindexed">;
+  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "missing_body" | "broken_asset" | "warning" | "unindexed">;
 };
 
 export type QualityOverview = {
@@ -243,9 +284,54 @@ export type QualityOverview = {
   fallback: number;
   missingSummary: number;
   missingCover: number;
+  missingBody: number;
+  brokenAssets: number;
+  duplicateMessages: number;
+  duplicateReceipts: number;
   unindexed: number;
   warnings: number;
   issues: QualityIssue[];
+};
+
+export type BackgroundJobType = "ingestion" | "reprocess" | "diagram" | "index" | "sync" | "source_check";
+export type BackgroundJobStatus = "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled";
+
+export type BackgroundJob = {
+  id: string;
+  type: BackgroundJobType;
+  resourceId: string;
+  title: string;
+  status: BackgroundJobStatus;
+  phase: string;
+  progress: number;
+  message: string;
+  attempts: number;
+  maxAttempts: number;
+  error?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type BackgroundJobOverview = {
+  active: number;
+  queued: number;
+  running: number;
+  retrying: number;
+  failed: number;
+  completedToday: number;
+  jobs: BackgroundJob[];
+};
+
+export type SearchIndexHealth = {
+  completedMessages: number;
+  indexedMessages: number;
+  indexedChunks: number;
+  missingMessages: number;
+  coverage: number;
+  engine: "fts5";
 };
 
 export type KnowledgeMapNode = {
@@ -385,6 +471,9 @@ export type KnowledgeChatMessage = {
 export type KnowledgeConversation = {
   id: string;
   title: string;
+  scopeType: "library" | "message" | "domain" | "collection";
+  scopeValue: string;
+  scopeLabel: string;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -619,6 +708,12 @@ function querySearchTokens(value: string): string[] {
 
 function likeValue(value: string): string {
   return `%${value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+}
+
+function ftsQuery(terms: string[], operator: "AND" | "OR" = "AND"): string {
+  return terms
+    .map((term) => `"${term.replace(/"/g, '""')}"`)
+    .join(` ${operator} `);
 }
 
 function cleanFacetValue(value: unknown): string {
@@ -990,6 +1085,23 @@ export class AppDatabase {
         UNIQUE(source_id, tenant_id)
       );
       CREATE INDEX IF NOT EXISTS idx_wechat_mcp_bindings_tenant ON wechat_mcp_bindings(tenant_id);
+      CREATE TABLE IF NOT EXISTS feed_sources (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        feed_url TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        interval_minutes INTEGER NOT NULL DEFAULT 60,
+        last_checked_at TEXT,
+        last_success_at TEXT,
+        last_item_at TEXT,
+        last_error TEXT,
+        next_check_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(tenant_id, feed_url)
+      );
+      CREATE INDEX IF NOT EXISTS idx_feed_sources_due ON feed_sources(enabled, next_check_at);
       CREATE TABLE IF NOT EXISTS messages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         id TEXT NOT NULL UNIQUE,
@@ -1033,6 +1145,8 @@ export class AppDatabase {
         library_state TEXT NOT NULL DEFAULT 'inbox',
         is_favorite INTEGER NOT NULL DEFAULT 0,
         read_at TEXT,
+        duplicate_count INTEGER NOT NULL DEFAULT 0,
+        last_duplicate_at TEXT,
         published_revision INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -1098,6 +1212,9 @@ export class AppDatabase {
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
+        scope_type TEXT NOT NULL DEFAULT 'library',
+        scope_value TEXT NOT NULL DEFAULT '',
+        scope_label TEXT NOT NULL DEFAULT '全部知识库',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -1125,6 +1242,30 @@ export class AppDatabase {
         UNIQUE(message_id, ordinal)
       );
       CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tenant ON knowledge_chunks(tenant_id, message_id);
+      CREATE TABLE IF NOT EXISTS background_jobs (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        resource_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('queued','running','retrying','completed','failed','cancelled')),
+        phase TEXT NOT NULL DEFAULT 'queued',
+        progress INTEGER NOT NULL DEFAULT 0,
+        message TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        error TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_background_jobs_tenant_updated
+        ON background_jobs(tenant_id, updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_background_jobs_active_resource
+        ON background_jobs(tenant_id, type, resource_id)
+        WHERE status IN ('queued','running','retrying') AND resource_id<>'';
       CREATE TABLE IF NOT EXISTS sync_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1247,6 +1388,11 @@ export class AppDatabase {
       "ALTER TABLE messages ADD COLUMN library_state TEXT NOT NULL DEFAULT 'inbox'",
       "ALTER TABLE messages ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE messages ADD COLUMN read_at TEXT",
+      "ALTER TABLE messages ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE messages ADD COLUMN last_duplicate_at TEXT",
+      "ALTER TABLE knowledge_conversations ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'library'",
+      "ALTER TABLE knowledge_conversations ADD COLUMN scope_value TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE knowledge_conversations ADD COLUMN scope_label TEXT NOT NULL DEFAULT '全部知识库'",
     ]) {
       try {
         this.database.exec(statement);
@@ -1316,6 +1462,40 @@ export class AppDatabase {
         all_text TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_message_search_tenant ON message_search(tenant_id);
+    `);
+    this.database.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_search_fts USING fts5(
+        message_id UNINDEXED,
+        tenant_id UNINDEXED,
+        title,
+        summary,
+        body,
+        metadata,
+        all_text,
+        tokenize='unicode61 remove_diacritics 2'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+        message_id UNINDEXED,
+        tenant_id UNINDEXED,
+        ordinal UNINDEXED,
+        heading,
+        content,
+        indexed_text,
+        tokenize='unicode61 remove_diacritics 2'
+      );
+    `);
+    this.database.exec(`
+      UPDATE background_jobs SET
+        status='failed',phase='interrupted',message=CASE
+          WHEN type='diagram' THEN '服务重启后需要重新提交图解任务'
+          WHEN type='index' THEN '服务重启后需要重新启动索引检查'
+          ELSE '服务重启前同步任务未完成，需要重新提交'
+        END,
+        error=COALESCE(error,'服务在任务完成前重新启动'),completed_at=COALESCE(completed_at,updated_at)
+      WHERE type IN ('diagram','index','sync') AND status IN ('queued','running','retrying');
+      UPDATE background_jobs SET
+        status='queued',phase='recovering',progress=MIN(progress,10),message='服务已恢复，等待继续处理',started_at=NULL
+      WHERE type IN ('ingestion','reprocess','source_check') AND status IN ('running','retrying');
     `);
     this.rebuildSearchIndexIfNeeded();
     // Older releases stored a model-provider key and model choice here. The official
@@ -1660,6 +1840,9 @@ export class AppDatabase {
     ).map((row) => ({
       id: rowString(row, "id"),
       title: rowString(row, "title"),
+      scopeType: this.knowledgeConversationScopeType(rowString(row, "scope_type")),
+      scopeValue: rowString(row, "scope_value"),
+      scopeLabel: rowString(row, "scope_label") || "全部知识库",
       createdAt: rowString(row, "created_at"),
       updatedAt: rowString(row, "updated_at"),
       messageCount: rowNumber(row, "message_count"),
@@ -1668,20 +1851,41 @@ export class AppDatabase {
     return { conversations, total };
   }
 
-  createKnowledgeConversation(title = "新对话"): KnowledgeConversation {
+  createKnowledgeConversation(
+    title = "新对话",
+    scope: { type?: "library" | "message" | "domain" | "collection"; value?: string; label?: string } = {},
+  ): KnowledgeConversation {
     const tenantId = this.requireOwnerId();
     const id = crypto.randomUUID();
     const timestamp = now();
     const normalizedTitle = title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) || "新对话";
+    const scopeType = this.knowledgeConversationScopeType(scope.type || "library");
+    const scopeValue = scopeType === "library" ? "" : (scope.value || "").trim().slice(0, 300);
+    const scopeLabel = (scope.label || (scopeType === "library" ? "全部知识库" : scopeValue))
+      .replace(/[\r\n\t]+/g, " ").trim().slice(0, 120) || "全部知识库";
     this.run(
-      "INSERT INTO knowledge_conversations(id,tenant_id,title,created_at,updated_at) VALUES(?,?,?,?,?)",
+      `INSERT INTO knowledge_conversations(
+        id,tenant_id,title,scope_type,scope_value,scope_label,created_at,updated_at
+       ) VALUES(?,?,?,?,?,?,?,?)`,
       id,
       tenantId,
       normalizedTitle,
+      scopeType,
+      scopeValue,
+      scopeLabel,
       timestamp,
       timestamp,
     );
-    return { id, title: normalizedTitle, createdAt: timestamp, updatedAt: timestamp, messageCount: 0 };
+    return {
+      id,
+      title: normalizedTitle,
+      scopeType,
+      scopeValue,
+      scopeLabel,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      messageCount: 0,
+    };
   }
 
   getKnowledgeConversation(id: string): (KnowledgeConversation & { messages: KnowledgeChatMessage[] }) | undefined {
@@ -1709,6 +1913,9 @@ export class AppDatabase {
     return {
       id: rowString(row, "id"),
       title: rowString(row, "title"),
+      scopeType: this.knowledgeConversationScopeType(rowString(row, "scope_type")),
+      scopeValue: rowString(row, "scope_value"),
+      scopeLabel: rowString(row, "scope_label") || "全部知识库",
       createdAt: rowString(row, "created_at"),
       updatedAt: rowString(row, "updated_at"),
       messageCount: rowNumber(row, "message_count"),
@@ -1767,6 +1974,29 @@ export class AppDatabase {
       id,
       this.requireOwnerId(),
     ).changes) === 1;
+  }
+
+  knowledgeConversationScopeMessageIds(conversation: KnowledgeConversation, limit = 5_000): string[] | undefined {
+    if (conversation.scopeType === "library") return undefined;
+    if (conversation.scopeType === "message") {
+      return this.getMessage(conversation.scopeValue) ? [conversation.scopeValue] : [];
+    }
+    if (conversation.scopeType === "domain") {
+      return this.listMessages(limit, undefined, { organized: true, domain: conversation.scopeValue })
+        .map((item) => item.id);
+    }
+    const collection = this.listSmartCollections().find((item) => item.id === conversation.scopeValue);
+    if (!collection) return [];
+    return this.listMessages(limit, undefined, {
+      organized: true,
+      ...(collection.rules.favorite ? { favorite: true } : {}),
+      ...(collection.rules.unread ? { unread: true } : {}),
+      ...(collection.rules.format ? { format: collection.rules.format } : {}),
+      ...(collection.rules.domain ? { domain: collection.rules.domain } : {}),
+      ...(collection.rules.knowledgePoint ? { knowledgePoint: collection.rules.knowledgePoint } : {}),
+      ...(collection.rules.tool ? { tool: collection.rules.tool } : {}),
+      ...(collection.rules.query ? { query: collection.rules.query } : {}),
+    }).map((item) => item.id);
   }
 
   registerWithInvitation(input: {
@@ -2001,6 +2231,111 @@ export class AppDatabase {
       input.lastError === undefined ? source.lastError || null : input.lastError,
       source.id,
     );
+  }
+
+  listFeedSources(): FeedSource[] {
+    return this.all(
+      "SELECT * FROM feed_sources WHERE tenant_id=? ORDER BY enabled DESC,updated_at DESC",
+      this.requireOwnerId(),
+    ).map((row) => this.mapFeedSource(row));
+  }
+
+  createFeedSource(input: { name: string; feedUrl: string; intervalMinutes?: number; enabled?: boolean }): FeedSource {
+    const feedUrl = normalizeFeedUrl(input.feedUrl);
+    const createdAt = now();
+    const id = crypto.randomUUID();
+    this.run(
+      `INSERT INTO feed_sources(
+        id,tenant_id,name,feed_url,enabled,interval_minutes,next_check_at,created_at,updated_at
+       ) VALUES(?,?,?,?,?,?,?,?,?)`,
+      id,
+      this.requireOwnerId(),
+      input.name.trim().slice(0, 80) || new URL(feedUrl).hostname,
+      feedUrl,
+      input.enabled === false ? 0 : 1,
+      Math.max(15, Math.min(1440, Math.floor(input.intervalMinutes || 60))),
+      createdAt,
+      createdAt,
+      createdAt,
+    );
+    return this.listFeedSources().find((item) => item.id === id)!;
+  }
+
+  updateFeedSource(sourceId: string, input: Partial<Pick<FeedSource, "name" | "feedUrl" | "enabled" | "intervalMinutes">>): FeedSource | undefined {
+    const tenantId = this.requireOwnerId();
+    const row = this.maybeOne("SELECT * FROM feed_sources WHERE id=? AND tenant_id=?", sourceId, tenantId);
+    if (!row) return undefined;
+    const feedUrl = input.feedUrl === undefined ? rowString(row, "feed_url") : normalizeFeedUrl(input.feedUrl);
+    const enabled = input.enabled === undefined ? Boolean(rowNumber(row, "enabled")) : input.enabled;
+    this.run(
+      `UPDATE feed_sources SET name=?,feed_url=?,enabled=?,interval_minutes=?,next_check_at=?,updated_at=?
+       WHERE id=? AND tenant_id=?`,
+      input.name === undefined ? rowString(row, "name") : input.name.trim().slice(0, 80) || new URL(feedUrl).hostname,
+      feedUrl,
+      enabled ? 1 : 0,
+      input.intervalMinutes === undefined
+        ? rowNumber(row, "interval_minutes")
+        : Math.max(15, Math.min(1440, Math.floor(input.intervalMinutes || 60))),
+      enabled ? now() : rowString(row, "next_check_at"),
+      now(),
+      sourceId,
+      tenantId,
+    );
+    return this.listFeedSources().find((item) => item.id === sourceId);
+  }
+
+  deleteFeedSource(sourceId: string): boolean {
+    return this.run(
+      "DELETE FROM feed_sources WHERE id=? AND tenant_id=?",
+      sourceId,
+      this.requireOwnerId(),
+    ).changes > 0;
+  }
+
+  dueFeedSources(limit = 20): FeedSource[] {
+    return this.all(
+      `SELECT f.* FROM feed_sources f JOIN users u ON u.id=f.tenant_id
+       WHERE f.enabled=1 AND f.next_check_at<=? AND u.disabled_at IS NULL
+       ORDER BY f.next_check_at LIMIT ?`,
+      now(),
+      Math.max(1, Math.min(100, limit)),
+    ).map((row) => this.mapFeedSource(row));
+  }
+
+  markFeedSourceChecked(sourceId: string, input: { success: boolean; lastItemAt?: string; error?: string }): void {
+    const row = this.maybeOne("SELECT interval_minutes FROM feed_sources WHERE id=?", sourceId);
+    if (!row) return;
+    const checkedAt = now();
+    const nextCheckAt = new Date(Date.now() + Math.max(15, rowNumber(row, "interval_minutes")) * 60_000).toISOString();
+    this.run(
+      `UPDATE feed_sources SET last_checked_at=?,last_success_at=CASE WHEN ?=1 THEN ? ELSE last_success_at END,
+       last_item_at=COALESCE(?,last_item_at),last_error=?,next_check_at=?,updated_at=? WHERE id=?`,
+      checkedAt,
+      input.success ? 1 : 0,
+      checkedAt,
+      input.lastItemAt || null,
+      input.success ? null : (input.error || "订阅检查失败").slice(0, 500),
+      nextCheckAt,
+      checkedAt,
+      sourceId,
+    );
+  }
+
+  hasFeedEntry(sourceId: string, externalId: string, url?: string): boolean {
+    const sourceUrlKey = canonicalCaptureUrl(url);
+    const identity = this.maybeOne(
+      `SELECT id FROM messages WHERE tenant_id=? AND source_channel='rss'
+       AND source_connection_id=? AND source_external_id=? LIMIT 1`,
+      this.requireOwnerId(),
+      sourceId,
+      externalId,
+    );
+    if (identity) return true;
+    return Boolean(sourceUrlKey && this.maybeOne(
+      "SELECT id FROM messages WHERE tenant_id=? AND source_url_key=? LIMIT 1",
+      this.requireOwnerId(),
+      sourceUrlKey,
+    ));
   }
 
   createWechatMcpBindingCode(minutes = 15): { code: string; expiresAt: string } {
@@ -2341,15 +2676,27 @@ export class AppDatabase {
   }
 
   saveCapture(capture: CaptureInput, note: ProcessedNote): boolean {
-    if (this.hasMessage(capture.id)) return false;
     const ownerId = this.requireOwnerId();
+    const sameId = this.maybeOne(
+      "SELECT id FROM messages WHERE tenant_id=? AND id=? LIMIT 1",
+      ownerId,
+      capture.id,
+    );
+    if (sameId) {
+      this.recordDuplicateCapture(rowString(sameId, "id"), capture.receivedAt);
+      return false;
+    }
     const sourceUrl = capture.source.url || firstHttpUrl(capture.text) || "";
     const sourceUrlKey = canonicalCaptureUrl(sourceUrl);
-    if (sourceUrlKey && this.maybeOne(
+    const sameUrl = sourceUrlKey ? this.maybeOne(
       "SELECT id FROM messages WHERE tenant_id=? AND source_url_key=? LIMIT 1",
       ownerId,
       sourceUrlKey,
-    )) return false;
+    ) : undefined;
+    if (sameUrl) {
+      this.recordDuplicateCapture(rowString(sameUrl, "id"), capture.receivedAt);
+      return false;
+    }
     const connectionId = capture.source.connectionId;
     // Shared WeChat assistant intake uses the WeChat channel for source
     // semantics, but it is not an iLink bot account. Only persist the optional
@@ -2430,6 +2777,17 @@ export class AppDatabase {
     return true;
   }
 
+  private recordDuplicateCapture(messageId: string, receivedAt?: string): void {
+    this.run(
+      `UPDATE messages SET duplicate_count=duplicate_count+1,last_duplicate_at=?,updated_at=?
+       WHERE id=? AND tenant_id=?`,
+      receivedAt || now(),
+      now(),
+      messageId,
+      this.requireOwnerId(),
+    );
+  }
+
   addAttachment(messageId: string, attachment: PublicInboundMessage["attachments"][number]): string {
     const ownerId = this.requireOwnerId();
     const message = this.maybeOne("SELECT id FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId);
@@ -2470,6 +2828,22 @@ export class AppDatabase {
       // A reprocess produces one coherent derived bundle. Keeping obsolete
       // Markdown or images would make the reader and Obsidian show two
       // different article versions, so replace only generated attachments.
+      this.run(
+        `DELETE FROM attachments WHERE message_id=? AND kind='derived'
+         AND EXISTS(SELECT 1 FROM messages WHERE id=? AND tenant_id=?)`,
+        messageId,
+        messageId,
+        this.requireOwnerId(),
+      );
+      for (const attachment of attachments) this.addAttachment(messageId, attachment);
+    });
+  }
+
+  replaceDerivedAttachments(
+    messageId: string,
+    attachments: PublicInboundMessage["attachments"],
+  ): void {
+    this.transaction(() => {
       this.run(
         `DELETE FROM attachments WHERE message_id=? AND kind='derived'
          AND EXISTS(SELECT 1 FROM messages WHERE id=? AND tenant_id=?)`,
@@ -2591,6 +2965,9 @@ export class AppDatabase {
     const category = rowString(row, "category");
     const tags = safeJson<string[]>(rowString(row, "tags_json"), []).slice(0, 10);
     const keyPoints = safeJson<string[]>(rowString(row, "key_points_json"), []).slice(0, 8);
+    const knowledgePoints = safeJson<string[]>(rowString(row, "knowledge_points_json"), []).slice(0, 20);
+    const domains = safeJson<string[]>(rowString(row, "domains_json"), []).slice(0, 20);
+    const tools = safeJson<string[]>(rowString(row, "tools_json"), []).slice(0, 20);
     const sourceUrl = rowString(row, "source_url") || firstWebUrl(rowString(row, "text"));
     const sourceType = (rowString(row, "source_type") || (sourceUrl ? "web" : "manual")) as CaptureSourceType;
     const agentStatus = rowString(row, "agent_status");
@@ -2622,6 +2999,9 @@ export class AppDatabase {
       category,
       tags,
       keyPoints,
+      knowledgePoints,
+      domains,
+      tools,
       detailsMarkdown: rowString(row, "details_markdown"),
       reason: rowString(row, "reason"),
       suggestedAction,
@@ -2655,6 +3035,10 @@ export class AppDatabase {
       updatedAt,
       summary: noteSummary(markdown, title),
       keyPoints,
+      category,
+      knowledgePoints,
+      domains,
+      tools,
       detailsMarkdown: rowString(row, "details_markdown"),
       reason: processing === "enriched" ? rowString(row, "reason") || noteReason(markdown) : "",
       suggestedAction: processing === "enriched" ? suggestedAction : syncAction(category),
@@ -2916,12 +3300,15 @@ export class AppDatabase {
     const values: SqlValue[] = [];
     const where: string[] = [];
     let sql = `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
-      0 AS archived FROM messages m ${terms.length ? "JOIN message_search ON message_search.message_id=m.id" : ""}`;
+      0 AS archived${terms.length ? ",bm25(message_search_fts,0,0,10,7,2,5,1) AS fts_rank" : ""}
+      FROM messages m ${terms.length ? "JOIN message_search_fts ON message_search_fts.message_id=m.id" : ""}`;
     where.push("m.tenant_id=?");
     values.push(this.requireOwnerId());
-    for (const term of terms) {
-      where.push("message_search.all_text LIKE ? ESCAPE '\\'");
-      values.push(likeValue(term));
+    if (terms.length) {
+      where.push("message_search_fts.tenant_id=?");
+      values.push(this.requireOwnerId());
+      where.push("message_search_fts MATCH ?");
+      values.push(ftsQuery(terms));
     }
     if (options.organized === true) where.push("m.agent_status='completed'");
     if (options.organized === false) where.push("m.agent_status<>'completed'");
@@ -2975,7 +3362,7 @@ export class AppDatabase {
           ].join(" "));
           return score + (title.includes(term) ? 12 : 0) + (summary.includes(term) ? 8 : 0) +
             (metadata.includes(term) ? 9 : 0) + (indexedSearchText(item.text).includes(term) ? 3 : 0);
-        }, 0),
+        }, Math.max(0, -rowNumber(row, "fts_rank") * 100)),
       };
     }).sort((left, right) => right.searchScore - left.searchScore || right.seq - left.seq)
       .slice(0, resultLimit)
@@ -2987,14 +3374,19 @@ export class AppDatabase {
     if (!terms.length) return [];
     const tenantId = this.requireOwnerId();
     const rows = this.all(
-      `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq
-       FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id
+      `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq,
+        bm25(knowledge_chunks_fts,0,0,0,8,3,1) AS fts_rank
+       FROM knowledge_chunks k
+       JOIN knowledge_chunks_fts ON knowledge_chunks_fts.message_id=k.message_id
+        AND CAST(knowledge_chunks_fts.ordinal AS INTEGER)=k.ordinal
+       JOIN messages m ON m.id=k.message_id
        WHERE k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
-         AND (${terms.map(() => "k.indexed_text LIKE ? ESCAPE '\\'").join(" OR ")})
+         AND knowledge_chunks_fts.tenant_id=? AND knowledge_chunks_fts MATCH ?
        ORDER BY m.seq DESC,k.ordinal LIMIT 1200`,
       tenantId,
       tenantId,
-      ...terms.map(likeValue),
+      tenantId,
+      ftsQuery(terms, "OR"),
     );
     const safeLimit = Math.max(1, Math.min(80, Math.floor(limit) || 30));
     return rows.map((row) => {
@@ -3013,7 +3405,7 @@ export class AppDatabase {
         knowledgePoints: safeJson<string[]>(rowString(row, "knowledge_points_json"), [])
           .map(compactKnowledgePoint)
           .filter(Boolean),
-        score: matchedTerms.length * 3
+        score: Math.max(0, -rowNumber(row, "fts_rank") * 100) + matchedTerms.length * 3
           + matchedTerms.filter((term) => titleIndex.includes(term)).length * 9
           + matchedTerms.filter((term) => headingIndex.includes(term)).length * 7,
       };
@@ -3090,7 +3482,77 @@ export class AppDatabase {
         url: sourceUrl,
       },
       captureType: (rowString(row, "capture_type") || inferCaptureType(message.text, [])) as CaptureType,
+      integrity: this.contentIntegrityFromRow(row),
     };
+  }
+
+  listMessageRevisions(messageId: string): ContentRevision[] {
+    const current = this.getMessage(messageId);
+    if (!current) return [];
+    this.publishMessage(messageId);
+    return this.all(
+      `SELECT revision,snapshot_json,created_at FROM sync_events
+       WHERE tenant_id=? AND message_id=? ORDER BY revision DESC`,
+      this.requireOwnerId(),
+      messageId,
+    ).map((row) => this.mapContentRevision(row, current.revision));
+  }
+
+  getMessageRevision(messageId: string, revision: number): ContentRevisionDetail | undefined {
+    const current = this.getMessage(messageId);
+    if (!current) return undefined;
+    this.publishMessage(messageId);
+    const row = this.maybeOne(
+      `SELECT revision,snapshot_json,created_at FROM sync_events
+       WHERE tenant_id=? AND message_id=? AND revision=?`,
+      this.requireOwnerId(),
+      messageId,
+      revision,
+    );
+    if (!row) return undefined;
+    return {
+      ...this.mapContentRevision(row, current.revision),
+      snapshot: safeJson<Record<string, unknown>>(rowString(row, "snapshot_json"), {}),
+    };
+  }
+
+  restoreMessageRevision(messageId: string, revision: number): MessageDetail | undefined {
+    const current = this.getMessageDetail(messageId);
+    const historical = this.getMessageRevision(messageId, revision);
+    if (!current || !historical) return undefined;
+    if (historical.current) return current;
+    const snapshot = historical.snapshot;
+    const processing = snapshot.processing && typeof snapshot.processing === "object"
+      ? snapshot.processing as Record<string, unknown>
+      : {};
+    const stringList = (value: unknown, fallback: string[]) => Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : fallback;
+    const title = typeof snapshot.title === "string" && snapshot.title.trim() ? snapshot.title : current.title;
+    const markdown = typeof snapshot.markdown === "string" && snapshot.markdown.trim() ? snapshot.markdown : current.markdown;
+    const status = processing.status === "fallback" ? "fallback" : "completed";
+    this.updateProcessedNote(messageId, {
+      title,
+      markdown,
+      category: typeof snapshot.category === "string" ? snapshot.category : current.category,
+      tags: stringList(snapshot.tags, current.tags),
+      summary: typeof snapshot.summary === "string" ? snapshot.summary : current.summary,
+      keyPoints: stringList(snapshot.keyPoints, current.keyPoints),
+      knowledgePoints: stringList(snapshot.knowledgePoints, current.knowledgePoints),
+      domains: stringList(snapshot.domains, current.domains),
+      tools: stringList(snapshot.tools, current.tools),
+      detailsMarkdown: typeof snapshot.detailsMarkdown === "string" ? snapshot.detailsMarkdown : current.detailsMarkdown,
+      reason: current.reason,
+      suggestedAction: current.suggestedAction,
+      sensitivity: current.sensitivity,
+      confidence: current.confidence,
+      warnings: [
+        ...current.warnings.filter((warning) => !warning.startsWith("已从历史版本")),
+        `已从历史版本 ${revision} 恢复`,
+      ],
+    }, status);
+    this.publishMessage(messageId);
+    return this.getMessageDetail(messageId);
   }
 
   updateResourceState(
@@ -3331,6 +3793,255 @@ export class AppDatabase {
     if (action === "reviewed") this.updateResourceState(messageId, { read: true });
   }
 
+  enqueueBackgroundJob(input: {
+    type: BackgroundJobType;
+    resourceId?: string;
+    title?: string;
+    message?: string;
+    maxAttempts?: number;
+    metadata?: Record<string, unknown>;
+  }): BackgroundJob {
+    const tenantId = this.requireOwnerId();
+    const resourceId = (input.resourceId || "").slice(0, 240);
+    if (resourceId) {
+      const existing = this.maybeOne(
+        `SELECT * FROM background_jobs WHERE tenant_id=? AND type=? AND resource_id=?
+         AND status IN ('queued','running','retrying') ORDER BY created_at DESC LIMIT 1`,
+        tenantId,
+        input.type,
+        resourceId,
+      );
+      if (existing) return this.mapBackgroundJob(existing);
+    }
+    const id = crypto.randomUUID();
+    const timestamp = now();
+    this.run(
+      `INSERT INTO background_jobs(
+        id,tenant_id,type,resource_id,title,status,phase,progress,message,attempts,max_attempts,
+        metadata_json,created_at,updated_at
+       ) VALUES(?,?,?,?,?,'queued','queued',0,?,0,?,?,?,?)`,
+      id,
+      tenantId,
+      input.type,
+      resourceId,
+      (input.title || "后台任务").trim().slice(0, 160),
+      (input.message || "任务已进入队列").trim().slice(0, 500),
+      Math.max(1, Math.min(10, Math.floor(input.maxAttempts || 3))),
+      JSON.stringify(input.metadata || {}),
+      timestamp,
+      timestamp,
+    );
+    return this.getBackgroundJob(id)!;
+  }
+
+  getBackgroundJob(jobId: string): BackgroundJob | undefined {
+    const row = this.maybeOne(
+      "SELECT * FROM background_jobs WHERE id=? AND tenant_id=?",
+      jobId,
+      this.requireOwnerId(),
+    );
+    return row ? this.mapBackgroundJob(row) : undefined;
+  }
+
+  activeBackgroundJob(type: BackgroundJobType, resourceId: string): BackgroundJob | undefined {
+    const row = this.maybeOne(
+      `SELECT * FROM background_jobs WHERE tenant_id=? AND type=? AND resource_id=?
+       AND status IN ('queued','running','retrying') ORDER BY created_at DESC LIMIT 1`,
+      this.requireOwnerId(),
+      type,
+      resourceId,
+    );
+    return row ? this.mapBackgroundJob(row) : undefined;
+  }
+
+  latestBackgroundJob(type: BackgroundJobType, resourceId: string): BackgroundJob | undefined {
+    const row = this.maybeOne(
+      `SELECT * FROM background_jobs WHERE tenant_id=? AND type=? AND resource_id=?
+       ORDER BY created_at DESC LIMIT 1`,
+      this.requireOwnerId(),
+      type,
+      resourceId,
+    );
+    return row ? this.mapBackgroundJob(row) : undefined;
+  }
+
+  startBackgroundJob(jobId: string, phase = "starting", message = "正在开始处理"): BackgroundJob | undefined {
+    const tenantId = this.requireOwnerId();
+    this.run(
+      `UPDATE background_jobs SET status='running',phase=?,progress=MAX(progress,5),message=?,
+       attempts=attempts+1,started_at=COALESCE(started_at,?),updated_at=?,error=NULL
+       WHERE id=? AND tenant_id=? AND status IN ('queued','retrying','running')`,
+      phase.slice(0, 80),
+      message.slice(0, 500),
+      now(),
+      now(),
+      jobId,
+      tenantId,
+    );
+    return this.getBackgroundJob(jobId);
+  }
+
+  updateBackgroundJob(
+    jobId: string,
+    input: {
+      status?: Extract<BackgroundJobStatus, "running" | "retrying">;
+      phase?: string;
+      progress?: number;
+      message?: string;
+      error?: string | null;
+      metadata?: Record<string, unknown>;
+    },
+  ): BackgroundJob | undefined {
+    const current = this.getBackgroundJob(jobId);
+    if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return current;
+    const metadata = input.metadata ? { ...current.metadata, ...input.metadata } : current.metadata;
+    this.run(
+      `UPDATE background_jobs SET status=?,phase=?,progress=?,message=?,error=?,metadata_json=?,updated_at=?
+       WHERE id=? AND tenant_id=?`,
+      input.status || current.status,
+      (input.phase ?? current.phase).slice(0, 80),
+      Math.max(0, Math.min(99, Math.floor(input.progress ?? current.progress))),
+      (input.message ?? current.message).slice(0, 500),
+      input.error === undefined ? current.error || null : input.error?.slice(0, 1000) || null,
+      JSON.stringify(metadata),
+      now(),
+      jobId,
+      this.requireOwnerId(),
+    );
+    return this.getBackgroundJob(jobId);
+  }
+
+  finishBackgroundJob(
+    jobId: string,
+    input: { message?: string; metadata?: Record<string, unknown> } = {},
+  ): BackgroundJob | undefined {
+    const current = this.getBackgroundJob(jobId);
+    if (!current) return undefined;
+    const timestamp = now();
+    this.run(
+      `UPDATE background_jobs SET status='completed',phase='completed',progress=100,message=?,error=NULL,
+       metadata_json=?,updated_at=?,completed_at=? WHERE id=? AND tenant_id=?`,
+      (input.message || "任务已完成").slice(0, 500),
+      JSON.stringify({ ...current.metadata, ...(input.metadata || {}) }),
+      timestamp,
+      timestamp,
+      jobId,
+      this.requireOwnerId(),
+    );
+    return this.getBackgroundJob(jobId);
+  }
+
+  failBackgroundJob(jobId: string, error: string, message = "任务处理失败"): BackgroundJob | undefined {
+    const timestamp = now();
+    this.run(
+      `UPDATE background_jobs SET status='failed',phase='failed',message=?,error=?,updated_at=?,completed_at=?
+       WHERE id=? AND tenant_id=?`,
+      message.slice(0, 500),
+      error.slice(0, 1000),
+      timestamp,
+      timestamp,
+      jobId,
+      this.requireOwnerId(),
+    );
+    return this.getBackgroundJob(jobId);
+  }
+
+  cancelBackgroundJob(jobId: string): BackgroundJob | undefined {
+    const timestamp = now();
+    this.run(
+      `UPDATE background_jobs SET status='cancelled',phase='cancelled',message='任务已取消',updated_at=?,completed_at=?
+       WHERE id=? AND tenant_id=? AND status='queued'`,
+      timestamp,
+      timestamp,
+      jobId,
+      this.requireOwnerId(),
+    );
+    return this.getBackgroundJob(jobId);
+  }
+
+  listBackgroundJobs(options: {
+    limit?: number;
+    status?: BackgroundJobStatus;
+    type?: BackgroundJobType;
+  } = {}): BackgroundJob[] {
+    const where = ["tenant_id=?"];
+    const values: SqlValue[] = [this.requireOwnerId()];
+    if (options.status) { where.push("status=?"); values.push(options.status); }
+    if (options.type) { where.push("type=?"); values.push(options.type); }
+    values.push(Math.max(1, Math.min(200, Math.floor(options.limit || 50))));
+    return this.all(
+      `SELECT * FROM background_jobs WHERE ${where.join(" AND ")}
+       ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'retrying' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,
+       updated_at DESC LIMIT ?`,
+      ...values,
+    ).map((row) => this.mapBackgroundJob(row));
+  }
+
+  backgroundJobOverview(limit = 30): BackgroundJobOverview {
+    const tenantId = this.requireOwnerId();
+    const stats = this.one(
+      `SELECT
+       SUM(CASE WHEN status IN ('queued','running','retrying') THEN 1 ELSE 0 END) AS active,
+       SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued,
+       SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+       SUM(CASE WHEN status='retrying' THEN 1 ELSE 0 END) AS retrying,
+       SUM(CASE WHEN status='failed' AND updated_at>=datetime('now','-7 day') THEN 1 ELSE 0 END) AS failed,
+       SUM(CASE WHEN status='completed' AND completed_at>=datetime('now','start of day') THEN 1 ELSE 0 END) AS completed_today
+       FROM background_jobs WHERE tenant_id=?`,
+      tenantId,
+    );
+    return {
+      active: rowNumber(stats, "active"),
+      queued: rowNumber(stats, "queued"),
+      running: rowNumber(stats, "running"),
+      retrying: rowNumber(stats, "retrying"),
+      failed: rowNumber(stats, "failed"),
+      completedToday: rowNumber(stats, "completed_today"),
+      jobs: this.listBackgroundJobs({ limit }),
+    };
+  }
+
+  searchIndexHealth(): SearchIndexHealth {
+    const tenantId = this.requireOwnerId();
+    const completedMessages = rowNumber(this.one(
+      "SELECT COUNT(*) AS count FROM messages WHERE tenant_id=? AND agent_status='completed'",
+      tenantId,
+    ), "count");
+    const indexedMessages = rowNumber(this.one(
+      "SELECT COUNT(DISTINCT message_id) AS count FROM knowledge_chunks WHERE tenant_id=?",
+      tenantId,
+    ), "count");
+    const indexedChunks = rowNumber(this.one(
+      "SELECT COUNT(*) AS count FROM knowledge_chunks WHERE tenant_id=?",
+      tenantId,
+    ), "count");
+    return {
+      completedMessages,
+      indexedMessages,
+      indexedChunks,
+      missingMessages: Math.max(0, completedMessages - indexedMessages),
+      coverage: completedMessages ? Math.round(indexedMessages / completedMessages * 1000) / 10 : 100,
+      engine: "fts5",
+    };
+  }
+
+  rebuildTenantSearchIndex(onProgress?: (completed: number, total: number) => void): SearchIndexHealth {
+    const tenantId = this.requireOwnerId();
+    const messageIds = this.all("SELECT id FROM messages WHERE tenant_id=? ORDER BY seq", tenantId)
+      .map((row) => rowString(row, "id"));
+    this.transaction(() => {
+      this.run("DELETE FROM message_search WHERE tenant_id=?", tenantId);
+      this.run("DELETE FROM knowledge_chunks WHERE tenant_id=?", tenantId);
+      this.run("DELETE FROM message_search_fts WHERE tenant_id=?", tenantId);
+      this.run("DELETE FROM knowledge_chunks_fts WHERE tenant_id=?", tenantId);
+      messageIds.forEach((messageId, index) => {
+        this.upsertSearchIndex(messageId);
+        onProgress?.(index + 1, messageIds.length);
+      });
+    });
+    return this.searchIndexHealth();
+  }
+
   qualityOverview(): QualityOverview {
     const rows = this.all(
       `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
@@ -3340,10 +4051,12 @@ export class AppDatabase {
       this.requireOwnerId(),
     );
     let processing = 0; let failed = 0; let fallback = 0; let missingSummary = 0;
-    let missingCover = 0; let unindexed = 0; let warnings = 0;
+    let missingCover = 0; let missingBody = 0; let brokenAssets = 0; let unindexed = 0; let warnings = 0;
+    let duplicateMessages = 0; let duplicateReceipts = 0;
     const issues: QualityIssue[] = [];
     for (const row of rows) {
       const item = this.mapMessage(row);
+      const integrity = this.contentIntegrityFromRow(row);
       const itemIssues: QualityIssue["issues"] = [];
       if (["pending", "queued", "processing"].includes(item.agentStatus)) processing += 1;
       if (item.agentStatus === "failed") { failed += 1; itemIssues.push("failed"); }
@@ -3352,8 +4065,14 @@ export class AppDatabase {
       if (item.agentStatus === "completed" && ["wechat_article", "web_article"].includes(item.contentFormat) && rowNumber(row, "image_count") === 0) {
         missingCover += 1; itemIssues.push("missing_cover");
       }
+      if (integrity.issues.includes("missing_body")) { missingBody += 1; itemIssues.push("missing_body"); }
+      if (integrity.issues.includes("broken_asset")) { brokenAssets += 1; itemIssues.push("broken_asset"); }
       if (item.agentStatus === "completed" && rowNumber(row, "chunk_count") === 0) { unindexed += 1; itemIssues.push("unindexed"); }
       if (safeJson<string[]>(rowString(row, "warnings_json"), []).length) { warnings += 1; itemIssues.push("warning"); }
+      if (item.duplicateCount > 0) {
+        duplicateMessages += 1;
+        duplicateReceipts += item.duplicateCount;
+      }
       if (itemIssues.length) issues.push({ ...item, issues: itemIssues });
     }
     const healthy = rows.filter((row) => rowString(row, "agent_status") === "completed"
@@ -3366,6 +4085,10 @@ export class AppDatabase {
       fallback,
       missingSummary,
       missingCover,
+      missingBody,
+      brokenAssets,
+      duplicateMessages,
+      duplicateReceipts,
       unindexed,
       warnings,
       issues: issues.slice(0, 100),
@@ -3401,6 +4124,10 @@ export class AppDatabase {
       messageId,
       ownerId,
     ).map((row) => rowString(row, "storage_path")).filter(Boolean);
+    this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
+    this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
+    this.run("DELETE FROM message_search WHERE message_id=?", messageId);
+    this.run("DELETE FROM background_jobs WHERE tenant_id=? AND resource_id=?", ownerId, messageId);
     this.run("DELETE FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId);
     for (const filePath of paths) {
       try {
@@ -4169,6 +4896,24 @@ export class AppDatabase {
     };
   }
 
+  private mapFeedSource(row: SqlRow): FeedSource {
+    return {
+      id: rowString(row, "id"),
+      tenantId: rowString(row, "tenant_id"),
+      name: rowString(row, "name"),
+      feedUrl: rowString(row, "feed_url"),
+      enabled: Boolean(rowNumber(row, "enabled")),
+      intervalMinutes: Math.max(15, rowNumber(row, "interval_minutes") || 60),
+      lastCheckedAt: rowOptional(row, "last_checked_at"),
+      lastSuccessAt: rowOptional(row, "last_success_at"),
+      lastItemAt: rowOptional(row, "last_item_at"),
+      lastError: rowOptional(row, "last_error"),
+      nextCheckAt: rowString(row, "next_check_at"),
+      createdAt: rowString(row, "created_at"),
+      updatedAt: rowString(row, "updated_at"),
+    };
+  }
+
   private mapMessage(row: SqlRow): MessageListItem {
     return {
       seq: rowNumber(row, "seq"),
@@ -4204,12 +4949,130 @@ export class AppDatabase {
       readAt: rowOptional(row, "read_at"),
       coverAttachmentId: rowOptional(row, "cover_attachment_id"),
       coverMimeType: rowOptional(row, "cover_mime_type"),
+      duplicateCount: rowNumber(row, "duplicate_count"),
+      lastDuplicateAt: rowOptional(row, "last_duplicate_at"),
     };
+  }
+
+  private mapContentRevision(row: SqlRow, currentRevision: number): ContentRevision {
+    const snapshot = safeJson<Record<string, unknown>>(rowString(row, "snapshot_json"), {});
+    const processing = snapshot.processing && typeof snapshot.processing === "object"
+      ? snapshot.processing as Record<string, unknown>
+      : {};
+    return {
+      revision: rowNumber(row, "revision"),
+      createdAt: rowString(row, "created_at"),
+      title: typeof snapshot.title === "string" ? snapshot.title : "未命名版本",
+      summary: typeof snapshot.summary === "string" ? snapshot.summary : "",
+      status: typeof processing.status === "string" ? processing.status : "unknown",
+      current: rowNumber(row, "revision") === currentRevision,
+    };
+  }
+
+  private contentIntegrityFromRow(row: SqlRow): ContentIntegrity {
+    const markdown = rowString(row, "note_markdown");
+    const content = stripNoteEnvelope(markdown);
+    const bodyCharacters = content
+      .replace(/```[\s\S]*?```/g, " code ")
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+      .replace(/[\[\]#>*_`|~-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim().length;
+    const imageMatches = [...content.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g)]
+      .map((match) => match[1] || "")
+      .filter(Boolean);
+    const attachments = this.all(
+      "SELECT id,file_name,mime_type,sha256 FROM attachments WHERE message_id=?",
+      rowString(row, "id"),
+    );
+    const attachmentIds = new Set(attachments.map((item) => rowString(item, "id")));
+    const imageHashes = new Set(attachments
+      .filter((item) => rowString(item, "mime_type").startsWith("image/"))
+      .map((item) => rowString(item, "sha256").toLowerCase()));
+    const imageNames = new Set(attachments
+      .filter((item) => rowString(item, "mime_type").startsWith("image/"))
+      .map((item) => rowString(item, "file_name")));
+    const missingImageReferences = imageMatches.filter((reference) => {
+      if (/^(https?:|data:|blob:)/i.test(reference)) return false;
+      const attachmentId = reference.match(/\/api\/attachments\/([^/?#]+)/)?.[1];
+      if (attachmentId) return !attachmentIds.has(attachmentId);
+      const hash = reference.match(/^attachment:\/\/([a-f0-9]{64})/i)?.[1];
+      if (hash) return !imageHashes.has(hash.toLowerCase());
+      let decoded = reference;
+      try { decoded = decodeURIComponent(reference); } catch { /* retain malformed reference */ }
+      const name = decoded.split(/[\\/]/).at(-1)?.split(/[?#]/)[0] || "";
+      return Boolean(name) && !imageNames.has(name);
+    });
+    const completed = rowString(row, "agent_status") === "completed";
+    const format = contentFormatFromRow(row);
+    const issues: ContentIntegrity["issues"] = [];
+    if (completed && ["wechat_article", "web_article", "document"].includes(format) && bodyCharacters < 120) issues.push("missing_body");
+    if (missingImageReferences.length) issues.push("broken_asset");
+    if (completed && !rowString(row, "summary").trim()) issues.push("missing_summary");
+    if (completed && ["wechat_article", "web_article"].includes(format) && !imageHashes.size) issues.push("missing_cover");
+    if (completed && !this.maybeOne("SELECT 1 AS ok FROM knowledge_chunks WHERE message_id=? LIMIT 1", rowString(row, "id"))) issues.push("unindexed");
+    return {
+      score: Math.max(0, 100 - issues.length * 20),
+      bodyCharacters,
+      imageReferences: imageMatches.length,
+      localImages: imageHashes.size,
+      missingImageReferences: [...new Set(missingImageReferences)].slice(0, 20),
+      issues,
+    };
+  }
+
+  private mapBackgroundJob(row: SqlRow): BackgroundJob {
+    const allowedTypes = new Set<BackgroundJobType>([
+      "ingestion", "reprocess", "diagram", "index", "sync", "source_check",
+    ]);
+    const allowedStatuses = new Set<BackgroundJobStatus>([
+      "queued", "running", "retrying", "completed", "failed", "cancelled",
+    ]);
+    const type = rowString(row, "type") as BackgroundJobType;
+    const status = rowString(row, "status") as BackgroundJobStatus;
+    return {
+      id: rowString(row, "id"),
+      type: allowedTypes.has(type) ? type : "ingestion",
+      resourceId: rowString(row, "resource_id"),
+      title: rowString(row, "title"),
+      status: allowedStatuses.has(status) ? status : "failed",
+      phase: rowString(row, "phase"),
+      progress: Math.max(0, Math.min(100, rowNumber(row, "progress"))),
+      message: rowString(row, "message"),
+      attempts: rowNumber(row, "attempts"),
+      maxAttempts: rowNumber(row, "max_attempts"),
+      error: rowOptional(row, "error"),
+      metadata: safeJson<Record<string, unknown>>(rowString(row, "metadata_json"), {}),
+      createdAt: rowString(row, "created_at"),
+      startedAt: rowOptional(row, "started_at"),
+      updatedAt: rowString(row, "updated_at"),
+      completedAt: rowOptional(row, "completed_at"),
+    };
+  }
+
+  private knowledgeConversationScopeType(value: string): KnowledgeConversation["scopeType"] {
+    return ["message", "domain", "collection"].includes(value)
+      ? value as KnowledgeConversation["scopeType"]
+      : "library";
   }
 
   private upsertSearchIndex(messageId: string): void {
     const row = this.maybeOne("SELECT * FROM messages WHERE id=?", messageId);
     if (!row) return;
+    const indexedFields = [
+      rowString(row, "note_title"),
+      rowString(row, "summary"),
+      `${rowString(row, "text")}\n${rowString(row, "note_markdown")}`,
+      safeJson<string[]>(rowString(row, "tags_json"), []).join(" "),
+      safeJson<string[]>(rowString(row, "domains_json"), []).join(" "),
+      safeJson<string[]>(rowString(row, "knowledge_points_json"), []).join(" "),
+      safeJson<string[]>(rowString(row, "tools_json"), []).join(" "),
+    ].map(indexedSearchText);
+    const allText = indexedSearchText([
+      rowString(row, "note_title"), rowString(row, "summary"), rowString(row, "text"),
+      rowString(row, "note_markdown"), rowString(row, "tags_json"), rowString(row, "domains_json"),
+      rowString(row, "knowledge_points_json"), rowString(row, "tools_json"),
+    ].join("\n"));
     this.run(
       `INSERT INTO message_search(message_id,tenant_id,title,summary,body,tags,domains,knowledge_points,tools,all_text)
        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET
@@ -4218,22 +5081,23 @@ export class AppDatabase {
        tools=excluded.tools,all_text=excluded.all_text`,
       messageId,
       rowString(row, "tenant_id"),
-      ...[
-        rowString(row, "note_title"),
-        rowString(row, "summary"),
-        `${rowString(row, "text")}\n${rowString(row, "note_markdown")}`,
-        safeJson<string[]>(rowString(row, "tags_json"), []).join(" "),
-        safeJson<string[]>(rowString(row, "domains_json"), []).join(" "),
-        safeJson<string[]>(rowString(row, "knowledge_points_json"), []).join(" "),
-        safeJson<string[]>(rowString(row, "tools_json"), []).join(" "),
-      ].map(indexedSearchText),
-      indexedSearchText([
-        rowString(row, "note_title"), rowString(row, "summary"), rowString(row, "text"),
-        rowString(row, "note_markdown"), rowString(row, "tags_json"), rowString(row, "domains_json"),
-        rowString(row, "knowledge_points_json"), rowString(row, "tools_json"),
-      ].join("\n")),
+      ...indexedFields,
+      allText,
+    );
+    this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
+    this.run(
+      `INSERT INTO message_search_fts(message_id,tenant_id,title,summary,body,metadata,all_text)
+       VALUES(?,?,?,?,?,?,?)`,
+      messageId,
+      rowString(row, "tenant_id"),
+      indexedFields[0]!,
+      indexedFields[1]!,
+      indexedFields[2]!,
+      indexedSearchText(indexedFields.slice(3).join(" ")),
+      allText,
     );
     this.run("DELETE FROM knowledge_chunks WHERE message_id=?", messageId);
+    this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
     if (rowString(row, "agent_status") !== "completed") return;
     const title = rowString(row, "note_title");
     const summary = rowString(row, "summary");
@@ -4246,6 +5110,7 @@ export class AppDatabase {
       rowString(row, "details_markdown"),
     );
     chunks.forEach((chunk, ordinal) => {
+      const indexed = indexedSearchText(`${title}\n${chunk.heading}\n${chunk.content}`);
       this.run(
         `INSERT INTO knowledge_chunks(id,message_id,tenant_id,ordinal,heading,content,indexed_text)
          VALUES(?,?,?,?,?,?,?)`,
@@ -4255,18 +5120,30 @@ export class AppDatabase {
         ordinal,
         chunk.heading,
         chunk.content,
-        indexedSearchText(`${title}\n${chunk.heading}\n${chunk.content}`),
+        indexed,
+      );
+      this.run(
+        `INSERT INTO knowledge_chunks_fts(message_id,tenant_id,ordinal,heading,content,indexed_text)
+         VALUES(?,?,?,?,?,?)`,
+        messageId,
+        rowString(row, "tenant_id"),
+        ordinal,
+        indexedSearchText(chunk.heading),
+        indexedSearchText(chunk.content),
+        indexed,
       );
     });
   }
 
   private rebuildSearchIndexIfNeeded(): void {
-    const version = "4";
+    const version = "5";
     const current = this.maybeOne("SELECT value FROM metadata WHERE key='message_search_version'");
     if (current && rowString(current, "value") === version) return;
     this.transaction(() => {
       this.run("DELETE FROM message_search");
       this.run("DELETE FROM knowledge_chunks");
+      this.run("DELETE FROM message_search_fts");
+      this.run("DELETE FROM knowledge_chunks_fts");
       for (const row of this.all("SELECT id FROM messages ORDER BY seq")) {
         this.upsertSearchIndex(rowString(row, "id"));
       }
@@ -4435,6 +5312,20 @@ function normalizeFolder(folder: string): string {
     .filter((part) => part && part !== "." && part !== "..")
     .join("/");
   return normalized.slice(0, 200) || "Inbox/微信";
+}
+
+function normalizeFeedUrl(value: string): string {
+  const url = new URL(value.trim());
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("订阅地址只支持 HTTP 或 HTTPS");
+  if (url.username || url.password) throw new Error("订阅地址不能包含账号凭据");
+  if (url.port && !((url.protocol === "http:" && url.port === "80") || (url.protocol === "https:" && url.port === "443"))) {
+    throw new Error("订阅地址端口不受支持");
+  }
+  if (!url.hostname || url.hostname === "localhost" || url.hostname.endsWith(".localhost")) {
+    throw new Error("订阅地址不可访问");
+  }
+  url.hash = "";
+  return url.toString();
 }
 
 function requireFileBuffer(filePath: string): Buffer {

@@ -1,6 +1,7 @@
 import { load, type Cheerio, type CheerioAPI } from "cheerio";
 import type { AnyNode } from "domhandler";
 import TurndownService from "turndown";
+import { gfm } from "turndown-plugin-gfm";
 
 import { requestPublicHtml } from "./web-assets.js";
 import type { ExtractedWebContent } from "./web-content.js";
@@ -146,6 +147,7 @@ export function extractWebContentFromHtml(
     emDelimiter: "_",
     headingStyle: "atx",
   });
+  turndown.use(gfm);
   turndown.remove(["button", "input", "select", "textarea"]);
   const markdown = turndown.turndown(articleRoot.html() || "")
     .replace(/\n{4,}/g, "\n\n\n")
