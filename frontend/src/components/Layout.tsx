@@ -1,20 +1,23 @@
-import { useEffect, useState } from "react";
-import { BookOpen, Bot, ChevronDown, Gem, Inbox, Link2, LogOut, Menu, MessageCircleQuestion, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { BookOpen, Bot, ChevronDown, DatabaseBackup, DatabaseZap, HeartPulse, Inbox, Link2, LogOut, Menu, MessageCircleQuestion, Moon, Search, Settings, Sparkles, Sun, UserRound, Users, Wrench, X, type LucideIcon } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "../App";
 import SearchDialog from "./SearchDialog";
 
 const navigation = [
   { to: "/inbox", label: "收件台", icon: Inbox },
+  { to: "/review", label: "回顾", icon: HeartPulse },
   { to: "/library", label: "知识库", icon: BookOpen },
   { to: "/knowledge-chat", label: "知识问答", icon: MessageCircleQuestion },
-  { to: "/obsidian", label: "Obsidian", icon: Gem },
 ];
 
 const settingsNavigation: Array<{ to: string; label: string; icon: LucideIcon; admin?: boolean }> = [
   { to: "/settings/intake", label: "收件接入", icon: Link2 },
   { to: "/settings/ai", label: "AI 智能整理", icon: Sparkles },
   { to: "/settings/skills", label: "整理能力", icon: Wrench },
+  { to: "/settings/quality", label: "内容质量", icon: HeartPulse },
+  { to: "/settings/data", label: "数据与备份", icon: DatabaseBackup },
+  { to: "/obsidian", label: "Obsidian 同步", icon: DatabaseZap },
   { to: "/settings/users", label: "用户管理", icon: Users, admin: true },
   { to: "/settings/account", label: "账号与安全", icon: UserRound },
 ];
@@ -29,6 +32,15 @@ export default function Layout() {
   const [accountOpen, setAccountOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const pageContext = useMemo(() => {
+    if (location.pathname.startsWith("/reader/")) return { section: "知识库", title: "内容阅读" };
+    if (location.pathname.startsWith("/library")) return { section: "知识空间", title: "知识库" };
+    if (location.pathname.startsWith("/review")) return { section: "知识空间", title: "回顾" };
+    if (location.pathname.startsWith("/knowledge-chat")) return { section: "知识空间", title: "知识问答" };
+    if (location.pathname.startsWith("/obsidian")) return { section: "系统设置", title: "Obsidian 同步" };
+    if (location.pathname.startsWith("/settings")) return { section: "系统设置", title: settingsNavigation.find((item) => location.pathname.startsWith(item.to))?.label || "设置" };
+    return { section: "工作空间", title: "收件台" };
+  }, [location.pathname]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -53,31 +65,32 @@ export default function Layout() {
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
-        <div className="sidebar-brand" onClick={() => navigate("/inbox")} role="button" tabIndex={0}>
+        <button className="sidebar-brand" type="button" onClick={() => navigate("/inbox")} aria-label="返回收件台">
           <div className="brand-mark">Z</div><div><strong>知流</strong><span>Knowledge Relay</span></div>
-        </div>
+        </button>
         <button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="关闭导航"><X size={20} /></button>
         <nav className="sidebar-nav" aria-label="主要导航">
-          <span className="nav-label">工作空间</span>
+          <span className="nav-label">知识工作台</span>
           {navigation.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} title={label} onClick={() => setMobileOpen(false)} className={({ isActive }) => isActive || (to === "/library" && location.pathname.startsWith("/reader/")) ? "active" : ""}>
               <Icon size={19} /><span>{label}</span>
             </NavLink>
           ))}
-          <NavLink to="/settings/intake" title="系统设置" onClick={() => setMobileOpen(false)} className={location.pathname.startsWith("/settings") ? "active" : ""}>
+          <NavLink to="/settings/intake" title="系统设置" onClick={() => setMobileOpen(false)} className={location.pathname.startsWith("/settings") || location.pathname.startsWith("/obsidian") ? "active" : ""}>
             <Settings size={19} /><span>系统设置</span>
           </NavLink>
-          {location.pathname.startsWith("/settings") && <div className="sidebar-subnav" aria-label="系统设置子菜单">
+          {(location.pathname.startsWith("/settings") || location.pathname.startsWith("/obsidian")) && <div className="sidebar-subnav" aria-label="系统设置子菜单">
             {settingsNavigation.filter((item) => !item.admin || owner.role === "admin").map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} title={label} onClick={() => setMobileOpen(false)}><Icon size={15} /><span>{label}</span></NavLink>)}
           </div>}
         </nav>
-        <div className="sidebar-status"><Bot size={17} /><div><strong>Nanobot Runtime</strong><span>独立知识处理引擎</span></div></div>
+        <div className="sidebar-status"><span className="runtime-signal"><Bot size={16} /></span><div><strong>知识引擎已连接</strong><span>Nanobot Runtime</span></div></div>
       </aside>
       {mobileOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setMobileOpen(false)} />}
       <div className="workspace">
         <header className="workspace-header">
           <button className="icon-button sidebar-toggle" onClick={toggleSidebar} aria-label="切换侧栏" title={sidebarCollapsed ? "展开侧栏" : "折叠侧栏"}><Menu size={21} /></button>
-          <button className="global-search" onClick={() => setSearchOpen(true)}><Search size={18} /><span>搜索你的个人知识</span><kbd>⌘ K</kbd></button>
+          <div className="header-context"><small>{pageContext.section}</small><strong>{pageContext.title}</strong></div>
+          <button className="global-search" onClick={() => setSearchOpen(true)}><Search size={18} /><span>搜索标题、正文、主题或工具</span><kbd>⌘ K</kbd></button>
           <div className="header-tools">
             <button className="icon-button theme-toggle" onClick={toggleTheme} aria-label={theme === "light" ? "切换到深色模式" : "切换到浅色模式"} title={theme === "light" ? "深色模式" : "浅色模式"}>{theme === "light" ? <Moon size={18} /> : <Sun size={18} />}</button>
             <div className="account-wrap">

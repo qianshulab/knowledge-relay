@@ -648,9 +648,13 @@ export class NanobotClient {
     if (onAnswerDelta && answer.length > emittedAnswer.length) {
       onAnswerDelta(answer.slice(emittedAnswer.length));
     }
-    const citedSourceIds = Array.isArray(parsed.cited_source_ids)
+    const modelCitedSourceIds = Array.isArray(parsed.cited_source_ids)
       ? parsed.cited_source_ids.filter((value): value is string => typeof value === "string" && sourceIds.has(value)).slice(0, 8)
       : [];
+    const inlineCitedSourceIds = Array.from(answer.matchAll(/\[S(\d{1,2})\]/g))
+      .map((match) => sources[Number(match[1]) - 1]?.id)
+      .filter((value): value is string => Boolean(value));
+    const citedSourceIds = Array.from(new Set([...inlineCitedSourceIds, ...modelCitedSourceIds])).slice(0, 8);
     const followUps = Array.isArray(parsed.follow_up_questions)
       ? parsed.follow_up_questions
         .filter((value): value is string => typeof value === "string")

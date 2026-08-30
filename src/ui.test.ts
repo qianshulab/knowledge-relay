@@ -19,6 +19,7 @@ describe("component frontend", () => {
     const server = read("src/server.ts");
     expect(app).toContain("<Routes>");
     expect(app).toContain('path="/inbox"');
+    expect(app).toContain('path="/review"');
     expect(app).toContain('path="/library"');
     expect(app).toContain('path="/knowledge-chat"');
     expect(app).toContain('path="/reader/:id"');
@@ -40,6 +41,9 @@ describe("component frontend", () => {
     const library = read("frontend/src/pages/LibraryPage.tsx");
     expect(library).toContain("/api/knowledge/facets?organized=1");
     expect(library).toContain('params.set("format", format)');
+    expect(library).toContain('params.set("knowledgePoint", knowledgePoint)');
+    expect(library).toContain('params.set("tool", tool)');
+    expect(library).toContain("knowledge-relay-library-view");
     expect(library).not.toContain('active=1&organized=1');
     expect(library).toContain('refetchOnMount: "always"');
     expect(library).toContain("refetchInterval: 20_000");
@@ -83,12 +87,23 @@ describe("component frontend", () => {
     expect(knowledgeChat).toContain("/messages/stream");
     expect(knowledgeChat).toContain("streamedAnswer");
     expect(knowledgeChat).toContain("持续提问");
+    expect(knowledgeChat).toContain("停止生成");
+    expect(knowledgeChat).toContain("复制回答");
+    expect(knowledgeChat).toContain("chat-progress");
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/knowledge-chat"');
+    expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/review"');
+    expect(read("frontend/src/components/Layout.tsx")).toContain('label: "Obsidian 同步"');
+    const search = read("frontend/src/components/SearchDialog.tsx");
+    expect(search).toContain("随知识库动态变化");
+    expect(search).toContain("基于结果提问");
+    expect(search).toContain("matchReasons");
     const auth = read("frontend/src/pages/AuthPage.tsx");
     expect(auth).toContain('new URLSearchParams(window.location.search).get("invite")');
     expect(auth).toContain("defaultValue={initialInviteToken}");
     expect(auth).toContain("别让有价值的内容");
     expect(auth).toContain("auth-relay-demo");
+    expect(read("frontend/src/App.tsx")).toContain("lazy(() => import");
+    expect(read("frontend/src/App.tsx")).toContain("<Suspense");
     expect(settings).toContain("/api/nanobot/provider/models?provider=");
     expect(settings).toContain("刷新模型列表");
     expect(settings).toContain("保存并检查连接");
@@ -106,6 +121,16 @@ describe("component frontend", () => {
     expect(settings).toContain('api("/api/skills", { method: "POST"');
     expect(diagram).toContain("在图解中查找");
     expect(diagram).toContain("diagram-node-panel");
+    const review = read("frontend/src/pages/ReviewPage.tsx");
+    expect(review).toContain("今天值得重看的内容");
+    expect(review).toContain("一周后提醒");
+    expect(reader).toContain("标注选中文字");
+    expect(reader).toContain("阅读标注已保存");
+    expect(library).toContain("保存为智能集合");
+    expect(library).toContain("/api/collections");
+    expect(settings).toContain("内容质量");
+    expect(settings).toContain("数据与备份");
+    expect(settings).toContain("/api/account/export");
   });
 
   it("uses a high-contrast reading system without blurred glass surfaces", () => {

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, BookOpenCheck, MessageCircleQuestion, Plus, Send, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { ArrowUpRight, BookOpenCheck, Check, Copy, MessageCircleQuestion, Plus, Search, Send, ShieldCheck, Sparkles, Square, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, streamApi } from "../api";
 import { useApp } from "../App";
 import type { KnowledgeChatMessage, KnowledgeConversation } from "../types";
@@ -27,6 +27,7 @@ const examples = [
 export default function KnowledgeChatPage() {
   const { notify } = useApp();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState("");
   const [question, setQuestion] = useState("");
@@ -34,8 +35,11 @@ export default function KnowledgeChatPage() {
   const [pendingConversationId, setPendingConversationId] = useState("");
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [streamStatus, setStreamStatus] = useState("正在检索知识库并核对资料依据…");
+  const [streamPhase, setStreamPhase] = useState<"retrieving" | "reading" | "generating">("retrieving");
   const [streaming, setStreaming] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [copiedId, setCopiedId] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamControllerRef = useRef<AbortController | null>(null);
 
@@ -54,6 +58,15 @@ export default function KnowledgeChatPage() {
     if (!activeId && conversations.data?.conversations[0]) setActiveId(conversations.data.conversations[0].id);
   }, [activeId, conversations.data]);
   useEffect(() => {
+    const initialQuestion = searchParams.get("question")?.trim();
+    if (!initialQuestion) return;
+    setQuestion(initialQuestion);
+    const next = new URLSearchParams(searchParams);
+    next.delete("question");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  useEffect(() => {
+    if (!(detail.data?.conversation.messages.length || pendingQuestion || streamedAnswer)) return;
     bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [detail.data?.conversation.messages.length, pendingQuestion, streamedAnswer]);
   useEffect(() => () => streamControllerRef.current?.abort(), []);
@@ -89,6 +102,7 @@ export default function KnowledgeChatPage() {
     setPendingConversationId(conversationId);
     setStreamedAnswer("");
     setStreamStatus("正在理解问题并检索知识库…");
+    setStreamPhase("retrieving");
     setFollowUps([]);
     setStreaming(true);
     const controller = new AbortController();
@@ -102,7 +116,7 @@ export default function KnowledgeChatPage() {
           signal: controller.signal,
         },
         (message) => {
-          if (message.type === "status") setStreamStatus(message.message);
+          if (message.type === "status") { setStreamStatus(message.message); setStreamPhase(message.phase); }
           else if (message.type === "delta") setStreamedAnswer((current) => current + message.content);
           else if (message.type === "done") setFollowUps(message.followUps);
           else if (message.type === "error") throw new Error(message.error);
@@ -135,14 +149,32 @@ export default function KnowledgeChatPage() {
 
   const messages = detail.data?.conversation.messages || [];
   const pendingForActiveConversation = Boolean(pendingQuestion && pendingConversationId === activeId);
+  const filteredConversations = (conversations.data?.conversations || []).filter((conversation) => {
+    const term = conversationSearch.trim().toLocaleLowerCase("zh-CN");
+    return !term || `${conversation.title} ${conversation.lastMessage || ""}`.toLocaleLowerCase("zh-CN").includes(term);
+  });
+
+  async function copyAnswer(message: KnowledgeChatMessage) {
+    await navigator.clipboard.writeText(message.content);
+    setCopiedId(message.id);
+    window.setTimeout(() => setCopiedId(""), 1800);
+  }
+
+  function stopStreaming() {
+    streamControllerRef.current?.abort();
+    streamControllerRef.current = null;
+    setStreaming(false);
+    notify("已停止接收本次回答；已生成的内容仍会保留在会话中", "default");
+  }
 
   return <main className="page knowledge-chat-page">
     <PageHeader eyebrow="GROUNDED KNOWLEDGE CHAT" title="知识问答" description="围绕你已整理的收藏内容持续提问，回答会标明知识库依据。" />
     <section className="knowledge-chat-shell panel">
       <aside className="chat-history-panel">
         <div className="chat-history-head"><div><strong>问答记录</strong><small>{conversations.data?.total || 0} 个会话</small></div><button className="icon-button" aria-label="新建问答" title="新建问答" onClick={() => createConversation.mutate()} disabled={createConversation.isPending}><Plus size={19} /></button></div>
-        <div className="chat-history-list">
-          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : conversations.data?.conversations.length ? conversations.data.conversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversation.lastMessage || "尚未提问"}</span><small>{formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">还没有问答记录</p>}
+        <label className="chat-history-search"><Search size={15} /><input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder="搜索会话" /></label>
+        <div className={`chat-history-list ${filteredConversations.length ? "" : "empty"}`}>
+          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : filteredConversations.length ? filteredConversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversation.lastMessage || "尚未提问"}</span><small>{formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">{conversationSearch ? "没有匹配的会话" : "还没有问答记录"}</p>}
         </div>
       </aside>
       <div className="chat-main">
@@ -150,17 +182,17 @@ export default function KnowledgeChatPage() {
         <div className="chat-transcript" aria-live="polite">
           {!messages.length && !pendingForActiveConversation ? <div className="chat-welcome"><span><MessageCircleQuestion size={30} /></span><h2>从收藏中获得答案</h2><p>适合归纳多篇文章、比较观点、提炼方法，或者围绕同一主题连续追问。</p><div>{examples.map((example) => <button key={example} onClick={() => setQuestion(example)}>{example}</button>)}</div></div> : null}
           {messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>
-            <div className="chat-message-label">{message.role === "user" ? "你" : <><Sparkles size={14} />知流</>}</div>
+            <div className="chat-message-label">{message.role === "user" ? "你" : <><Sparkles size={14} />知流{message.role === "assistant" ? <button className="chat-copy" onClick={() => void copyAnswer(message)} aria-label="复制回答">{copiedId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedId === message.id ? "已复制" : "复制"}</button> : null}</>}</div>
             <div className="chat-message-content">{message.role === "assistant" ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : <p>{message.content}</p>}</div>
             {message.citations.length ? <div className="chat-citations"><strong><BookOpenCheck size={15} />回答依据</strong>{message.citations.map((citation, index) => <button key={citation.messageId} onClick={() => navigate(`/reader/${encodeURIComponent(citation.messageId)}`)}><span>{citation.reference || `S${index + 1}`}</span><div><b>{citation.title}</b><small>{citation.excerpt || "打开查看资料"}</small></div><ArrowUpRight size={15} /></button>)}</div> : null}
           </article>)}
-          {pendingForActiveConversation ? <><article className="chat-message user"><div className="chat-message-label">你</div><div className="chat-message-content"><p>{pendingQuestion}</p></div></article><article className="chat-message assistant pending"><div className="chat-message-label"><Sparkles size={14} />知流</div>{streamedAnswer ? <div className="chat-message-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{streamedAnswer}</ReactMarkdown><span className="stream-caret" aria-hidden="true" /></div> : <div className="chat-thinking"><i /><i /><i /><span>{streamStatus}</span></div>}</article></> : null}
+          {pendingForActiveConversation ? <><article className="chat-message user"><div className="chat-message-label">你</div><div className="chat-message-content"><p>{pendingQuestion}</p></div></article><article className="chat-message assistant pending"><div className="chat-message-label"><Sparkles size={14} />知流</div><div className="chat-progress"><span className={streamPhase === "retrieving" ? "active" : "done"}>1 检索</span><span className={streamPhase === "reading" ? "active" : streamPhase === "generating" ? "done" : ""}>2 核对</span><span className={streamPhase === "generating" ? "active" : ""}>3 生成</span><small>{streamStatus}</small></div>{streamedAnswer ? <div className="chat-message-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{streamedAnswer}</ReactMarkdown><span className="stream-caret" aria-hidden="true" /></div> : <div className="chat-thinking"><i /><i /><i /><span>正在准备有依据的回答</span></div>}</article></> : null}
           <div ref={bottomRef} />
         </div>
         {followUps.length ? <div className="chat-follow-ups"><span>可以继续问</span>{followUps.map((item) => <button key={item} onClick={() => setQuestion(item)}>{item}</button>)}</div> : null}
         <form className="chat-composer" onSubmit={(event) => void submit(event)}>
           <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} rows={2} maxLength={2000} disabled={streaming} placeholder="基于我的收藏提问；Enter 发送，Shift + Enter 换行" />
-          <div><span>回答只使用已完成 AI 整理的个人资料</span><button className="button button-primary" disabled={!question.trim() || streaming}><Send size={17} />{streaming ? "回答中" : "发送"}</button></div>
+          <div><span>回答只使用已完成 AI 整理的个人资料</span>{streaming ? <button className="button button-secondary" type="button" onClick={stopStreaming}><Square size={15} />停止生成</button> : <button className="button button-primary" disabled={!question.trim()}><Send size={17} />发送</button>}</div>
         </form>
       </div>
     </section>

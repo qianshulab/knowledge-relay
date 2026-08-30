@@ -200,6 +200,54 @@ export type MessageDetail = MessageListItem & {
   captureType: CaptureType;
 };
 
+export type MessageAnnotation = {
+  id: string;
+  messageId: string;
+  quote: string;
+  note: string;
+  color: "mint" | "amber" | "blue" | "rose";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SmartCollectionRules = Pick<MessageListOptions,
+  "favorite" | "format" | "domain" | "knowledgePoint" | "tool" | "query"> & {
+  unread?: boolean;
+};
+
+export type SmartCollection = {
+  id: string;
+  name: string;
+  description: string;
+  rules: SmartCollectionRules;
+  pinned: boolean;
+  itemCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReviewSuggestion = MessageListItem & {
+  reason: string;
+  priority: number;
+};
+
+export type QualityIssue = MessageListItem & {
+  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "warning" | "unindexed">;
+};
+
+export type QualityOverview = {
+  total: number;
+  healthy: number;
+  processing: number;
+  failed: number;
+  fallback: number;
+  missingSummary: number;
+  missingCover: number;
+  unindexed: number;
+  warnings: number;
+  issues: QualityIssue[];
+};
+
 export type KnowledgeMapNode = {
   id: string;
   label: string;
@@ -347,9 +395,12 @@ export type MessageListOptions = {
   state?: "inbox" | "library" | "archived";
   active?: boolean;
   favorite?: boolean;
+  unread?: boolean;
   format?: ContentFormat;
   category?: string;
   domain?: string;
+  knowledgePoint?: string;
+  tool?: string;
   organized?: boolean;
   query?: string;
 };
@@ -987,6 +1038,38 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_tenant_seq ON messages(tenant_id, seq DESC);
+      CREATE TABLE IF NOT EXISTS message_annotations (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        quote TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT 'mint',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_annotations_message
+        ON message_annotations(tenant_id, message_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS smart_collections (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        rules_json TEXT NOT NULL DEFAULT '{}',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_smart_collections_tenant
+        ON smart_collections(tenant_id, pinned DESC, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS message_reviews (
+        tenant_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        action TEXT NOT NULL CHECK(action IN ('reviewed','snoozed','mastered','dismissed')),
+        snooze_until TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(tenant_id, message_id)
+      );
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -2716,6 +2799,7 @@ export class AppDatabase {
     }
     if (options.active) where.push("m.library_state<>'archived'");
     if (options.favorite) where.push("m.is_favorite=1");
+    if (options.unread) where.push("m.read_at IS NULL");
     if (options.format) {
       where.push(`${contentFormatSql("m") }=?`);
       values.push(options.format);
@@ -2727,6 +2811,15 @@ export class AppDatabase {
     if (options.domain) {
       where.push("EXISTS(SELECT 1 FROM json_each(m.domains_json) domain WHERE domain.value=?)");
       values.push(options.domain);
+    }
+    if (options.knowledgePoint) {
+      const point = compactKnowledgePoint(options.knowledgePoint);
+      where.push("EXISTS(SELECT 1 FROM json_each(m.knowledge_points_json) point WHERE compact_knowledge_point(point.value)=?)");
+      values.push(point);
+    }
+    if (options.tool) {
+      where.push("EXISTS(SELECT 1 FROM json_each(m.tools_json) tool WHERE LOWER(tool.value)=LOWER(?))");
+      values.push(options.tool);
     }
     if (options.organized) where.push("m.agent_status='completed'");
     const query = options.query?.trim().slice(0, 200);
@@ -3024,6 +3117,277 @@ export class AppDatabase {
       ownerId,
     );
     return this.getMessage(messageId)!;
+  }
+
+  listMessageAnnotations(messageId: string): MessageAnnotation[] {
+    const tenantId = this.requireOwnerId();
+    if (!this.maybeOne("SELECT id FROM messages WHERE id=? AND tenant_id=?", messageId, tenantId)) return [];
+    return this.all(
+      "SELECT * FROM message_annotations WHERE tenant_id=? AND message_id=? ORDER BY created_at DESC",
+      tenantId,
+      messageId,
+    ).map((row) => ({
+      id: rowString(row, "id"),
+      messageId: rowString(row, "message_id"),
+      quote: rowString(row, "quote"),
+      note: rowString(row, "note"),
+      color: (["mint", "amber", "blue", "rose"].includes(rowString(row, "color"))
+        ? rowString(row, "color")
+        : "mint") as MessageAnnotation["color"],
+      createdAt: rowString(row, "created_at"),
+      updatedAt: rowString(row, "updated_at"),
+    }));
+  }
+
+  createMessageAnnotation(
+    messageId: string,
+    input: { quote?: string; note?: string; color?: MessageAnnotation["color"] },
+  ): MessageAnnotation {
+    const tenantId = this.requireOwnerId();
+    if (!this.getMessage(messageId)) throw new Error("消息不存在");
+    const quote = (input.quote || "").trim().slice(0, 2000);
+    const note = (input.note || "").trim().slice(0, 5000);
+    if (!quote && !note) throw new Error("请选择正文或填写笔记");
+    const color = input.color && ["mint", "amber", "blue", "rose"].includes(input.color) ? input.color : "mint";
+    const id = crypto.randomUUID();
+    const timestamp = now();
+    this.run(
+      "INSERT INTO message_annotations(id,tenant_id,message_id,quote,note,color,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+      id,
+      tenantId,
+      messageId,
+      quote,
+      note,
+      color,
+      timestamp,
+      timestamp,
+    );
+    return this.listMessageAnnotations(messageId).find((item) => item.id === id)!;
+  }
+
+  updateMessageAnnotation(
+    annotationId: string,
+    input: { note?: string; color?: MessageAnnotation["color"] },
+  ): MessageAnnotation | undefined {
+    const tenantId = this.requireOwnerId();
+    const row = this.maybeOne(
+      "SELECT message_id,note,color FROM message_annotations WHERE id=? AND tenant_id=?",
+      annotationId,
+      tenantId,
+    );
+    if (!row) return undefined;
+    const note = input.note === undefined ? rowString(row, "note") : input.note.trim().slice(0, 5000);
+    const requestedColor = input.color || rowString(row, "color");
+    const color = ["mint", "amber", "blue", "rose"].includes(requestedColor) ? requestedColor : "mint";
+    this.run(
+      "UPDATE message_annotations SET note=?,color=?,updated_at=? WHERE id=? AND tenant_id=?",
+      note,
+      color,
+      now(),
+      annotationId,
+      tenantId,
+    );
+    return this.listMessageAnnotations(rowString(row, "message_id")).find((item) => item.id === annotationId);
+  }
+
+  deleteMessageAnnotation(annotationId: string): boolean {
+    const result = this.run(
+      "DELETE FROM message_annotations WHERE id=? AND tenant_id=?",
+      annotationId,
+      this.requireOwnerId(),
+    );
+    return result.changes > 0;
+  }
+
+  listSmartCollections(): SmartCollection[] {
+    const rows = this.all(
+      "SELECT * FROM smart_collections WHERE tenant_id=? ORDER BY pinned DESC,updated_at DESC",
+      this.requireOwnerId(),
+    );
+    return rows.map((row) => {
+      const rules = safeJson<SmartCollectionRules>(rowString(row, "rules_json"), {});
+      const options: MessageListOptions = {
+        organized: true,
+        ...(rules.favorite ? { favorite: true } : {}),
+        ...(rules.unread ? { unread: true } : {}),
+        ...(rules.format ? { format: rules.format } : {}),
+        ...(rules.domain ? { domain: rules.domain } : {}),
+        ...(rules.knowledgePoint ? { knowledgePoint: rules.knowledgePoint } : {}),
+        ...(rules.tool ? { tool: rules.tool } : {}),
+        ...(rules.query ? { query: rules.query } : {}),
+      };
+      const itemCount = this.countMessages(options);
+      return {
+        id: rowString(row, "id"),
+        name: rowString(row, "name"),
+        description: rowString(row, "description"),
+        rules,
+        pinned: Boolean(rowNumber(row, "pinned")),
+        itemCount,
+        createdAt: rowString(row, "created_at"),
+        updatedAt: rowString(row, "updated_at"),
+      };
+    });
+  }
+
+  createSmartCollection(input: {
+    name: string;
+    description?: string;
+    rules?: SmartCollectionRules;
+    pinned?: boolean;
+  }): SmartCollection {
+    const tenantId = this.requireOwnerId();
+    const name = input.name.trim().slice(0, 60);
+    if (!name) throw new Error("请输入集合名称");
+    const id = crypto.randomUUID();
+    const timestamp = now();
+    this.run(
+      "INSERT INTO smart_collections(id,tenant_id,name,description,rules_json,pinned,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+      id,
+      tenantId,
+      name,
+      (input.description || "").trim().slice(0, 240),
+      JSON.stringify(input.rules || {}),
+      input.pinned ? 1 : 0,
+      timestamp,
+      timestamp,
+    );
+    return this.listSmartCollections().find((item) => item.id === id)!;
+  }
+
+  updateSmartCollection(
+    collectionId: string,
+    input: Partial<Pick<SmartCollection, "name" | "description" | "rules" | "pinned">>,
+  ): SmartCollection | undefined {
+    const tenantId = this.requireOwnerId();
+    const row = this.maybeOne("SELECT * FROM smart_collections WHERE id=? AND tenant_id=?", collectionId, tenantId);
+    if (!row) return undefined;
+    const name = input.name === undefined ? rowString(row, "name") : input.name.trim().slice(0, 60);
+    if (!name) throw new Error("请输入集合名称");
+    this.run(
+      "UPDATE smart_collections SET name=?,description=?,rules_json=?,pinned=?,updated_at=? WHERE id=? AND tenant_id=?",
+      name,
+      input.description === undefined ? rowString(row, "description") : input.description.trim().slice(0, 240),
+      JSON.stringify(input.rules === undefined ? safeJson(rowString(row, "rules_json"), {}) : input.rules),
+      input.pinned === undefined ? rowNumber(row, "pinned") : input.pinned ? 1 : 0,
+      now(),
+      collectionId,
+      tenantId,
+    );
+    return this.listSmartCollections().find((item) => item.id === collectionId);
+  }
+
+  deleteSmartCollection(collectionId: string): boolean {
+    return this.run(
+      "DELETE FROM smart_collections WHERE id=? AND tenant_id=?",
+      collectionId,
+      this.requireOwnerId(),
+    ).changes > 0;
+  }
+
+  listReviewSuggestions(limit = 8): ReviewSuggestion[] {
+    const tenantId = this.requireOwnerId();
+    const rows = this.all(
+      `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
+       0 AS archived,r.action,r.snooze_until,r.updated_at AS review_updated_at
+       FROM messages m LEFT JOIN message_reviews r ON r.tenant_id=m.tenant_id AND r.message_id=m.id
+       WHERE m.tenant_id=? AND m.agent_status='completed' AND m.library_state<>'archived'
+       AND COALESCE(r.action,'') NOT IN ('mastered','dismissed')
+       AND (r.snooze_until IS NULL OR r.snooze_until<=?)
+       ORDER BY m.seq DESC LIMIT 300`,
+      tenantId,
+      now(),
+    );
+    const today = Date.now();
+    return rows.map((row) => {
+      const item = this.mapMessage(row);
+      const ageDays = Math.max(0, Math.floor((today - new Date(item.receivedAt).getTime()) / 86_400_000));
+      const unread = !item.readAt;
+      const lastReviewed = rowOptional(row, "review_updated_at");
+      const sinceReview = lastReviewed
+        ? Math.max(0, Math.floor((today - new Date(String(lastReviewed)).getTime()) / 86_400_000))
+        : ageDays;
+      const priority = (unread ? 30 : 0) + (item.favorite ? 24 : 0) + Math.min(ageDays, 45) + Math.min(sinceReview, 30);
+      const reason = unread
+        ? ageDays >= 7 ? `收藏 ${ageDays} 天后还没有读过` : "这篇内容还没有读过"
+        : item.favorite ? "你曾标记为重点，适合再次回顾"
+          : ageDays >= 30 ? `距离上次收藏已有 ${ageDays} 天` : "根据收藏时间为你重新唤醒";
+      return { ...item, reason, priority };
+    }).sort((left, right) => right.priority - left.priority || right.seq - left.seq).slice(0, Math.max(1, Math.min(limit, 30)));
+  }
+
+  setMessageReview(messageId: string, action: "reviewed" | "snoozed" | "mastered" | "dismissed", snoozeUntil?: string): void {
+    const tenantId = this.requireOwnerId();
+    if (!this.getMessage(messageId)) throw new Error("消息不存在");
+    this.run(
+      `INSERT INTO message_reviews(tenant_id,message_id,action,snooze_until,updated_at) VALUES(?,?,?,?,?)
+       ON CONFLICT(tenant_id,message_id) DO UPDATE SET action=excluded.action,snooze_until=excluded.snooze_until,updated_at=excluded.updated_at`,
+      tenantId,
+      messageId,
+      action,
+      snoozeUntil || null,
+      now(),
+    );
+    if (action === "reviewed") this.updateResourceState(messageId, { read: true });
+  }
+
+  qualityOverview(): QualityOverview {
+    const rows = this.all(
+      `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
+       (SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id AND a.mime_type LIKE 'image/%') AS image_count,
+       (SELECT COUNT(*) FROM knowledge_chunks k WHERE k.message_id=m.id) AS chunk_count,
+       0 AS archived FROM messages m WHERE m.tenant_id=? ORDER BY m.seq DESC`,
+      this.requireOwnerId(),
+    );
+    let processing = 0; let failed = 0; let fallback = 0; let missingSummary = 0;
+    let missingCover = 0; let unindexed = 0; let warnings = 0;
+    const issues: QualityIssue[] = [];
+    for (const row of rows) {
+      const item = this.mapMessage(row);
+      const itemIssues: QualityIssue["issues"] = [];
+      if (["pending", "queued", "processing"].includes(item.agentStatus)) processing += 1;
+      if (item.agentStatus === "failed") { failed += 1; itemIssues.push("failed"); }
+      if (item.agentStatus === "fallback") { fallback += 1; itemIssues.push("fallback"); }
+      if (item.agentStatus === "completed" && !item.summary.trim()) { missingSummary += 1; itemIssues.push("missing_summary"); }
+      if (item.agentStatus === "completed" && ["wechat_article", "web_article"].includes(item.contentFormat) && rowNumber(row, "image_count") === 0) {
+        missingCover += 1; itemIssues.push("missing_cover");
+      }
+      if (item.agentStatus === "completed" && rowNumber(row, "chunk_count") === 0) { unindexed += 1; itemIssues.push("unindexed"); }
+      if (safeJson<string[]>(rowString(row, "warnings_json"), []).length) { warnings += 1; itemIssues.push("warning"); }
+      if (itemIssues.length) issues.push({ ...item, issues: itemIssues });
+    }
+    const healthy = rows.filter((row) => rowString(row, "agent_status") === "completed"
+      && !issues.some((item) => item.id === rowString(row, "id"))).length;
+    return {
+      total: rows.length,
+      healthy,
+      processing,
+      failed,
+      fallback,
+      missingSummary,
+      missingCover,
+      unindexed,
+      warnings,
+      issues: issues.slice(0, 100),
+    };
+  }
+
+  exportPersonalData(): Record<string, unknown> {
+    const tenantId = this.requireOwnerId();
+    const ownerRow = this.maybeOne("SELECT * FROM users WHERE id=?", tenantId);
+    const owner = ownerRow ? mapOwner(ownerRow) : undefined;
+    return {
+      format: "knowledge-relay-personal-export",
+      version: 1,
+      exportedAt: now(),
+      owner: owner ? { username: owner.username, displayName: owner.displayName } : undefined,
+      messages: this.all("SELECT * FROM messages WHERE tenant_id=? ORDER BY seq", tenantId),
+      annotations: this.all("SELECT * FROM message_annotations WHERE tenant_id=? ORDER BY created_at", tenantId),
+      collections: this.all("SELECT * FROM smart_collections WHERE tenant_id=? ORDER BY created_at", tenantId),
+      conversations: this.all("SELECT * FROM knowledge_conversations WHERE tenant_id=? ORDER BY created_at", tenantId),
+      chatMessages: this.all("SELECT * FROM knowledge_chat_messages WHERE tenant_id=? ORDER BY created_at", tenantId),
+      note: "附件二进制文件需配合服务器完整备份恢复。",
+    };
   }
 
   deleteMessage(messageId: string): { attachmentCount: number } | undefined {

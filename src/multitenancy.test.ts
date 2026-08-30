@@ -556,4 +556,44 @@ describe("多用户资源与 Agent 任务边界", () => {
     ]));
     database.close();
   });
+
+  it("按用户隔离阅读标注、智能集合、回顾与质量状态", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-personal-assets-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(directory);
+    const admin = database.createOwner({ displayName: "Admin", password: "test-password" });
+    const member = database.forTenant(admin.id).createUser({ username: "reader", displayName: "Reader", password: "reader-password" });
+    const adminDb = database.forTenant(admin.id);
+    const memberDb = database.forTenant(member.id);
+    const item = capture("review-resource", "值得反复阅读的知识管理方法");
+    adminDb.saveCapture(item, defaultNote(item));
+    adminDb.updateProcessedNote(item.id, {
+      ...defaultNote(item),
+      title: "知识管理方法",
+      summary: "通过定期回顾让收藏重新进入工作记忆。",
+      domains: ["知识管理"],
+    }, "completed");
+
+    const annotation = adminDb.createMessageAnnotation(item.id, { quote: "定期回顾", note: "每周实践", color: "amber" });
+    expect(adminDb.listMessageAnnotations(item.id)).toEqual([annotation]);
+    expect(memberDb.listMessageAnnotations(item.id)).toEqual([]);
+
+    const collection = adminDb.createSmartCollection({ name: "知识管理", rules: { domain: "知识管理", unread: true } });
+    expect(collection.itemCount).toBe(1);
+    expect(memberDb.listSmartCollections()).toEqual([]);
+
+    expect(adminDb.listReviewSuggestions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: item.id, reason: expect.any(String) }),
+    ]));
+    adminDb.setMessageReview(item.id, "mastered");
+    expect(adminDb.listReviewSuggestions().map((value) => value.id)).not.toContain(item.id);
+
+    expect(adminDb.qualityOverview()).toMatchObject({ total: 1, healthy: 1, unindexed: 0 });
+    expect(adminDb.exportPersonalData()).toMatchObject({
+      format: "knowledge-relay-personal-export",
+      messages: expect.arrayContaining([expect.objectContaining({ id: item.id })]),
+      annotations: expect.arrayContaining([expect.objectContaining({ id: annotation.id })]),
+    });
+    database.close();
+  });
 });

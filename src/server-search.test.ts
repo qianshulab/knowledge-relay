@@ -124,7 +124,13 @@ describe("收件箱 AI 检索链路", () => {
     expect(response.json()).toMatchObject({
       mode: "nanobot_planned_search",
       interpretation: "查找与 NAS 家庭存储有关的收藏内容",
-      matches: [expect.objectContaining({ id: message.id })],
+      resultCount: 1,
+      matches: [expect.objectContaining({
+        id: message.id,
+        relevance: 100,
+        matchReasons: expect.arrayContaining([expect.stringContaining("主题")]),
+      })],
+      retrieval: expect.objectContaining({ queries: expect.arrayContaining(["NAS 冷数据归档"]) }),
     });
     const inboxOnlyResponse = await app.inject({
       method: "POST",

@@ -1,15 +1,17 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { api } from "./api";
 import type { Owner } from "./types";
 import AuthPage from "./pages/AuthPage";
-import InboxPage from "./pages/InboxPage";
-import LibraryPage from "./pages/LibraryPage";
-import ReaderPage from "./pages/ReaderPage";
-import KnowledgeChatPage from "./pages/KnowledgeChatPage";
-import ObsidianPage from "./pages/ObsidianPage";
-import SettingsPage from "./pages/SettingsPage";
 import Layout from "./components/Layout";
+
+const InboxPage = lazy(() => import("./pages/InboxPage"));
+const ReviewPage = lazy(() => import("./pages/ReviewPage"));
+const LibraryPage = lazy(() => import("./pages/LibraryPage"));
+const ReaderPage = lazy(() => import("./pages/ReaderPage"));
+const KnowledgeChatPage = lazy(() => import("./pages/KnowledgeChatPage"));
+const ObsidianPage = lazy(() => import("./pages/ObsidianPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 type Toast = { id: number; message: string; tone: "default" | "success" | "danger" };
 type Theme = "light" | "dark";
@@ -31,6 +33,15 @@ function LoadingScreen() {
       <strong>知流正在准备你的知识空间</strong>
       <span>正在连接服务与工作区…</span>
     </div>
+  );
+}
+
+function RouteLoading() {
+  return (
+    <main className="page route-loading" aria-live="polite">
+      <span className="loading-spinner" aria-hidden="true" />
+      <div><strong>正在打开页面</strong><small>知识工作台保持在线</small></div>
+    </main>
   );
 }
 
@@ -109,15 +120,16 @@ export default function App() {
     <AppContext.Provider value={context}>
       <Routes>
         <Route element={<Layout />}>
-          <Route path="/inbox" element={<InboxPage />} />
-          <Route path="/library" element={<LibraryPage />} />
-          <Route path="/knowledge-chat" element={<KnowledgeChatPage />} />
-          <Route path="/reader/:id" element={<ReaderPage />} />
-          <Route path="/obsidian" element={<ObsidianPage />} />
+          <Route path="/inbox" element={<Suspense fallback={<RouteLoading />}><InboxPage /></Suspense>} />
+          <Route path="/review" element={<Suspense fallback={<RouteLoading />}><ReviewPage /></Suspense>} />
+          <Route path="/library" element={<Suspense fallback={<RouteLoading />}><LibraryPage /></Suspense>} />
+          <Route path="/knowledge-chat" element={<Suspense fallback={<RouteLoading />}><KnowledgeChatPage /></Suspense>} />
+          <Route path="/reader/:id" element={<Suspense fallback={<RouteLoading />}><ReaderPage /></Suspense>} />
+          <Route path="/obsidian" element={<Suspense fallback={<RouteLoading />}><ObsidianPage /></Suspense>} />
           <Route path="/settings" element={<Navigate to="/settings/intake" replace />} />
           <Route path="/settings/sources" element={<Navigate to="/settings/intake" replace />} />
           <Route path="/settings/api" element={<Navigate to="/settings/intake" replace />} />
-          <Route path="/settings/:section" element={<SettingsPage />} />
+          <Route path="/settings/:section" element={<Suspense fallback={<RouteLoading />}><SettingsPage /></Suspense>} />
           <Route path="*" element={<Navigate to="/inbox" replace />} />
         </Route>
       </Routes>

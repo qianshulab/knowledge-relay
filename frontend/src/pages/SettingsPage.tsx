@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, ExternalLink, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Search, Settings2, Shield, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, DatabaseBackup, Download, ExternalLink, FileWarning, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Search, Settings2, Shield, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
+import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, QualityOverview, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
 import { useApp } from "../App";
 import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
 
@@ -11,10 +11,82 @@ export default function SettingsPage() {
   const { section = "intake" } = useParams();
   const { owner } = useApp();
   const currentSection = ["sources", "api"].includes(section) ? "intake" : section;
-  return <main className="page settings-page"><PageHeader eyebrow="SYSTEM SETTINGS" title="系统设置" description="管理收件接入、智能整理、用户与账户安全。" /><div className="settings-content">{currentSection === "intake" ? <IntakeSettings /> : currentSection === "ai" ? <AiSettings /> : currentSection === "skills" ? <SkillsSettings /> : currentSection === "users" && owner.role === "admin" ? <UsersSettings /> : <AccountSettings />}</div></main>;
+  return <main className="page settings-page"><PageHeader eyebrow="SYSTEM SETTINGS" title="系统设置" description="管理收件接入、智能整理、内容质量、数据与账户安全。" /><div className="settings-content">{currentSection === "intake" ? <IntakeSettings /> : currentSection === "ai" ? <AiSettings /> : currentSection === "skills" ? <SkillsSettings /> : currentSection === "quality" ? <QualitySettings /> : currentSection === "data" ? <DataSettings /> : currentSection === "users" && owner.role === "admin" ? <UsersSettings /> : <AccountSettings />}</div></main>;
 }
 
 function SettingsHeader({ title, description }: { title: string; description: string }) { return <div className="settings-heading"><h2>{title}</h2><p>{description}</p></div>; }
+
+const qualityIssueLabels: Record<string, string> = {
+  failed: "整理失败",
+  fallback: "使用了基础整理",
+  missing_summary: "缺少摘要",
+  missing_cover: "缺少正文图片",
+  warning: "存在内容警告",
+  unindexed: "尚未建立问答索引",
+};
+
+function QualitySettings() {
+  const { notify } = useApp();
+  const queryClient = useQueryClient();
+  const [selected, setSelected] = useState<string[]>([]);
+  const quality = useQuery({ queryKey: ["quality-overview"], queryFn: () => api<QualityOverview>("/api/quality/overview"), refetchInterval: 20_000 });
+  const reprocess = useMutation({
+    mutationFn: (messageIds: string[]) => api<{ count: number }>("/api/quality/reprocess", { method: "POST", body: JSON.stringify({ messageIds }) }),
+    onSuccess: (result) => {
+      notify(`已将 ${result.count} 条内容加入重新整理队列`, "success");
+      setSelected([]);
+      void queryClient.invalidateQueries({ queryKey: ["quality-overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (error) => notify(error instanceof Error ? error.message : "提交失败", "danger"),
+  });
+  const value = quality.data;
+  const repairable = value?.issues.filter((item) => item.issues.some((issue) => issue !== "missing_cover")) || [];
+  const allSelected = Boolean(repairable.length) && repairable.every((item) => selected.includes(item.id));
+  return <><SettingsHeader title="内容质量" description="集中发现解析、整理、图片与问答索引问题，并从同一个位置修复。" />
+    {quality.isLoading ? <LoadingState label="正在检查内容质量" /> : value ? <>
+      <section className="quality-metrics">
+        <div className="settings-card"><ShieldCheck size={20} /><span>健康内容</span><strong>{value.healthy}</strong><small>共 {value.total} 条</small></div>
+        <div className="settings-card"><Activity size={20} /><span>正在处理</span><strong>{value.processing}</strong><small>后台任务会自动更新</small></div>
+        <div className="settings-card"><AlertTriangle size={20} /><span>需要处理</span><strong>{value.issues.length}</strong><small>{value.failed + value.fallback} 条整理异常</small></div>
+        <div className="settings-card"><FileWarning size={20} /><span>内容完整性</span><strong>{value.missingCover + value.missingSummary}</strong><small>{value.unindexed} 条未建问答索引</small></div>
+      </section>
+      <section className="settings-card quality-list-card">
+        <div className="settings-card-title"><Activity size={19} /><div><h3>问题清单</h3><p>只展示需要关注的内容；正文图片缺失通常需要重新抓取原网页。</p></div>{repairable.length > 0 && <button className="button button-secondary" disabled={reprocess.isPending} onClick={() => reprocess.mutate(selected.length ? selected : repairable.map((item) => item.id))}><RefreshCw className={reprocess.isPending ? "spin" : ""} size={16} />{selected.length ? `重新整理 ${selected.length} 条` : "修复可处理项"}</button>}</div>
+        {repairable.length > 1 && <label className="quality-select-all"><input type="checkbox" checked={allSelected} onChange={(event) => setSelected(event.target.checked ? repairable.map((item) => item.id) : [])} />选择全部可重新整理的内容</label>}
+        {value.issues.length ? <div className="quality-issue-list">{value.issues.map((item) => <div key={item.id}>
+          <label><input type="checkbox" checked={selected.includes(item.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /><span><strong>{item.title}</strong><small>{item.agentError || item.summary || "等待补齐内容信息"}</small></span></label>
+          <div className="tag-row">{item.issues.map((issue) => <span key={issue}>{qualityIssueLabels[issue] || issue}</span>)}</div>
+          <a className="button button-secondary" href={`/reader/${encodeURIComponent(item.id)}`}>查看</a>
+        </div>)}</div> : <EmptyState icon={<CheckCircle2 size={28} />} title="内容状态良好" description="暂未发现需要人工处理的问题。" />}
+      </section>
+    </> : <InlineMessage tone="danger">内容质量检查暂时不可用。</InlineMessage>}
+  </>;
+}
+
+function DataSettings() {
+  const { owner, notify } = useApp();
+  const [preview, setPreview] = useState<{ messages: number; annotations: number; collections: number; exportedAt?: string } | null>(null);
+  async function inspect(file?: File) {
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text()) as Record<string, unknown>;
+      if (payload.format !== "knowledge-relay-personal-export") throw new Error("这不是知流个人数据导出文件");
+      setPreview({
+        messages: Array.isArray(payload.messages) ? payload.messages.length : 0,
+        annotations: Array.isArray(payload.annotations) ? payload.annotations.length : 0,
+        collections: Array.isArray(payload.collections) ? payload.collections.length : 0,
+        exportedAt: typeof payload.exportedAt === "string" ? payload.exportedAt : undefined,
+      });
+      notify("备份文件校验通过", "success");
+    } catch (error) { setPreview(null); notify(error instanceof Error ? error.message : "备份文件无法读取", "danger"); }
+  }
+  return <><SettingsHeader title="数据与备份" description="导出个人知识资产，校验历史备份，并为服务器完整恢复保留明确入口。" />
+    <section className="settings-card backup-hero"><div className="settings-card-title"><DatabaseBackup size={20} /><div><h3>个人数据导出</h3><p>包含整理内容、标注、智能集合与问答记录，不包含附件二进制文件。</p></div><a className="button button-primary" href="/api/account/export" download><Download size={17} />下载个人数据</a></div><InlineMessage tone="default">建议在重大升级前导出一次。完整附件与数据库仍应使用服务器备份脚本保存。</InlineMessage></section>
+    <section className="settings-card"><div className="settings-card-title"><ShieldCheck size={19} /><div><h3>恢复前校验</h3><p>先检查导出文件的格式与内容数量，不会在浏览器中直接覆盖现有数据。</p></div><label className="button button-secondary backup-file-button"><Upload size={17} />选择备份文件<input type="file" accept="application/json,.json" onChange={(event) => { void inspect(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label></div>{preview && <div className="backup-preview"><CheckCircle2 size={22} /><div><strong>备份文件可读取</strong><span>{preview.messages} 条内容 · {preview.annotations} 条标注 · {preview.collections} 个集合{preview.exportedAt ? ` · 导出于 ${formatDate(preview.exportedAt)}` : ""}</span></div></div>}</section>
+    {owner.role === "admin" && <section className="settings-card server-backup-card"><div className="settings-card-title"><DatabaseBackup size={19} /><div><h3>服务器完整备份</h3><p>包含 SQLite 数据库、原始附件、正文图片、Nanobot 工作区和密钥文件。</p></div></div><ol><li>在部署目录执行 <code>./scripts/backup-docker.sh</code>。</li><li>将生成的备份包复制到另一台设备或异地存储。</li><li>恢复前先停止服务，再使用 <code>./scripts/restore-docker.sh 备份包路径</code>。</li></ol><InlineMessage tone="danger">恢复会替换服务器当前数据，必须先创建最新备份并确认目标文件。</InlineMessage></section>}
+  </>;
+}
 
 function IntakeSettings() {
   return <><SettingsHeader title="收件接入" description="通过微信 iLink、微信助手或开放 API，把链接、文字与附件汇入同一个收件台。" /><div className="intake-stack"><SourcesSettings /><WechatAssistantSettings /><ApiSettings /></div></>;

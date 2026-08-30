@@ -354,7 +354,7 @@ describe("NanobotClient", () => {
     const fragments = [
       '{"answer":"收藏资料建议采用 ',
       '3-2-1 备份，并保留离线副本。[S1]",',
-      '"cited_source_ids":["source-1"],"follow_up_questions":["离线副本有什么作用？"]}',
+      '"cited_source_ids":[],"follow_up_questions":["离线副本有什么作用？"]}',
     ];
     const body = `${fragments.map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`).join("")}data: [DONE]\n\n`;
     const fetchMock = vi.fn().mockResolvedValue(new Response(body, {

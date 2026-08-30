@@ -113,6 +113,59 @@ export type MessageDetail = MessageItem & {
   attachments: Attachment[];
 };
 
+export type MessageAnnotation = {
+  id: string;
+  messageId: string;
+  quote: string;
+  note: string;
+  color: "mint" | "amber" | "blue" | "rose";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SmartCollectionRules = {
+  favorite?: boolean;
+  unread?: boolean;
+  format?: ContentFormat;
+  domain?: string;
+  knowledgePoint?: string;
+  tool?: string;
+  query?: string;
+};
+
+export type SmartCollection = {
+  id: string;
+  name: string;
+  description: string;
+  rules: SmartCollectionRules;
+  pinned: boolean;
+  itemCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReviewSuggestion = MessageItem & {
+  reason: string;
+  priority: number;
+};
+
+export type QualityIssue = MessageItem & {
+  issues: Array<"failed" | "fallback" | "missing_summary" | "missing_cover" | "warning" | "unindexed">;
+};
+
+export type QualityOverview = {
+  total: number;
+  healthy: number;
+  processing: number;
+  failed: number;
+  fallback: number;
+  missingSummary: number;
+  missingCover: number;
+  unindexed: number;
+  warnings: number;
+  issues: QualityIssue[];
+};
+
 export type Dashboard = {
   messages: number;
   pending: number;

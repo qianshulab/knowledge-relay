@@ -671,7 +671,7 @@ export function createServer(
     };
   });
 
-  app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; format?: string; category?: string; domain?: string; organized?: string; q?: string } }>("/api/messages", async (request) => {
+  app.get<{ Querystring: { limit?: string; before?: string; state?: string; active?: string; favorite?: string; unread?: string; format?: string; category?: string; domain?: string; knowledgePoint?: string; tool?: string; organized?: string; q?: string } }>("/api/messages", async (request) => {
     const limit = Math.min(Math.max(Number(request.query.limit || 10) || 10, 1), 100);
     const before = Number(request.query.before || 0) || undefined;
     const requestedState = stringBody(request.query.state, 20);
@@ -683,9 +683,12 @@ export function createServer(
       ...(state ? { state } : {}),
       ...(request.query.active === "1" ? { active: true } : {}),
       ...(request.query.favorite === "1" ? { favorite: true } : {}),
+      ...(request.query.unread === "1" ? { unread: true } : {}),
       ...(format ? { format } : {}),
       ...(stringBody(request.query.category, 40) ? { category: stringBody(request.query.category, 40) } : {}),
       ...(stringBody(request.query.domain, 120) ? { domain: stringBody(request.query.domain, 120) } : {}),
+      ...(stringBody(request.query.knowledgePoint, 120) ? { knowledgePoint: stringBody(request.query.knowledgePoint, 120) } : {}),
+      ...(stringBody(request.query.tool, 120) ? { tool: stringBody(request.query.tool, 120) } : {}),
       ...(request.query.organized === "1" ? { organized: true } : {}),
       ...(stringBody(request.query.q, 200) ? { query: stringBody(request.query.q, 200) } : {}),
     };
@@ -710,6 +713,105 @@ export function createServer(
       Math.max(1, Math.min(100, Number(request.query.limit) || 10)),
     ),
   );
+
+  app.get("/api/collections", async (request) => ({
+    collections: tenantDatabase(request).listSmartCollections(),
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/collections", async (request, reply) => {
+    const name = stringBody(request.body?.name, 60);
+    if (!name) return reply.code(400).send({ error: "请输入集合名称" });
+    const rules = request.body?.rules && typeof request.body.rules === "object"
+      ? request.body.rules as Record<string, unknown>
+      : {};
+    return reply.code(201).send({
+      collection: tenantDatabase(request).createSmartCollection({
+        name,
+        description: stringBody(request.body?.description, 240),
+        pinned: request.body?.pinned === true,
+        rules: {
+          ...(request.body?.favorite === true || rules.favorite === true ? { favorite: true } : {}),
+          ...(request.body?.unread === true || rules.unread === true ? { unread: true } : {}),
+          ...(stringBody(rules.format, 30) ? { format: stringBody(rules.format, 30) as ContentFormat } : {}),
+          ...(stringBody(rules.domain, 120) ? { domain: stringBody(rules.domain, 120) } : {}),
+          ...(stringBody(rules.knowledgePoint, 120) ? { knowledgePoint: stringBody(rules.knowledgePoint, 120) } : {}),
+          ...(stringBody(rules.tool, 120) ? { tool: stringBody(rules.tool, 120) } : {}),
+          ...(stringBody(rules.query, 200) ? { query: stringBody(rules.query, 200) } : {}),
+        },
+      }),
+    });
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/collections/:id", async (request, reply) => {
+    const collection = tenantDatabase(request).updateSmartCollection(request.params.id, {
+      ...(request.body?.name !== undefined ? { name: stringBody(request.body.name, 60) } : {}),
+      ...(request.body?.description !== undefined ? { description: stringBody(request.body.description, 240) } : {}),
+      ...(typeof request.body?.pinned === "boolean" ? { pinned: request.body.pinned } : {}),
+    });
+    return collection ? { collection } : reply.code(404).send({ error: "集合不存在" });
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/collections/:id", async (request, reply) =>
+    tenantDatabase(request).deleteSmartCollection(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "集合不存在" }),
+  );
+
+  app.get<{ Querystring: { limit?: string } }>("/api/review", async (request) => {
+    const scoped = tenantDatabase(request);
+    const suggestions = scoped.listReviewSuggestions(Math.max(1, Math.min(30, Number(request.query.limit) || 8)));
+    return {
+      suggestions,
+      overview: {
+        due: suggestions.length,
+        unread: suggestions.filter((item) => !item.readAt).length,
+        favorites: suggestions.filter((item) => item.favorite).length,
+      },
+    };
+  });
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/review/:id", async (request, reply) => {
+    const action = stringBody(request.body?.action, 20);
+    if (!["reviewed", "snoozed", "mastered", "dismissed"].includes(action)) {
+      return reply.code(400).send({ error: "回顾操作无效" });
+    }
+    const snoozeDays = Math.max(1, Math.min(90, Number(request.body?.snoozeDays) || 7));
+    const snoozeUntil = action === "snoozed"
+      ? new Date(Date.now() + snoozeDays * 86_400_000).toISOString()
+      : action === "reviewed"
+        ? new Date(Date.now() + 14 * 86_400_000).toISOString()
+        : undefined;
+    tenantDatabase(request).setMessageReview(
+      request.params.id,
+      action as "reviewed" | "snoozed" | "mastered" | "dismissed",
+      snoozeUntil,
+    );
+    return { ok: true, snoozeUntil };
+  });
+
+  app.get("/api/quality/overview", async (request) => tenantDatabase(request).qualityOverview());
+
+  app.post<{ Body: Record<string, unknown> }>("/api/quality/reprocess", async (request, reply) => {
+    const ids = Array.isArray(request.body?.messageIds)
+      ? request.body.messageIds.map((value) => stringBody(value, 300)).filter(Boolean).slice(0, 50)
+      : [];
+    if (!ids.length) return reply.code(400).send({ error: "请选择需要重新整理的内容" });
+    const tenantId = tenantDatabase(request).currentTenantId()!;
+    const accepted: string[] = [];
+    for (const id of ids) {
+      if (!tenantDatabase(request).getMessage(id)) continue;
+      bots.reprocessMessage(tenantId, id);
+      accepted.push(id);
+    }
+    return { accepted, count: accepted.length };
+  });
+
+  app.get("/api/account/export", async (request, reply) => {
+    const payload = tenantDatabase(request).exportPersonalData();
+    reply.header("Content-Type", "application/json; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="knowledge-relay-${new Date().toISOString().slice(0, 10)}.json"`);
+    return reply.send(JSON.stringify(payload, null, 2));
+  });
 
   app.get<{ Querystring: { messageId?: string } }>("/api/knowledge/map", async (request, reply) => {
     const scoped = tenantDatabase(request);
@@ -778,21 +880,44 @@ export function createServer(
       tool,
       ...range,
     };
-    const ranked = new Map<string, { item: InboxSearchResult; score: number }>();
+    const ranked = new Map<string, { item: InboxSearchResult; score: number; chunkMatched: boolean }>();
     const addMatches = (items: InboxSearchResult[], score: number): void => {
       for (const item of items) {
         const current = ranked.get(item.id);
-        ranked.set(item.id, { item, score: (current?.score || 0) + score });
+        ranked.set(item.id, { item, score: (current?.score || 0) + score, chunkMatched: current?.chunkMatched || false });
+      }
+    };
+    const addChunkMatches = (query: string, score: number): void => {
+      if (!query || organized === false) return;
+      const counts = new Map<string, number>();
+      for (const chunk of scoped.searchKnowledgeChunks(query, 40)) {
+        const seen = counts.get(chunk.messageId) || 0;
+        if (seen >= 2) continue;
+        counts.set(chunk.messageId, seen + 1);
+        const base = scoped.getMessage(chunk.messageId);
+        if (!base) continue;
+        const current = ranked.get(chunk.messageId);
+        const excerpt = `${chunk.heading ? `${chunk.heading} · ` : ""}${chunk.content}`
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 240);
+        ranked.set(chunk.messageId, {
+          item: { ...base, excerpt: excerpt || base.summary || base.text.slice(0, 240) },
+          score: (current?.score || 0) + score + Math.min(18, chunk.score),
+          chunkMatched: true,
+        });
       }
     };
     if (searchQuestion || category || domain || knowledgePoint || tool || Object.keys(range).length) {
       addMatches(scoped.searchInbox(searchQuestion, baseOptions), 30);
+      addChunkMatches(searchQuestion, 28);
     }
     const expandedQueries = Array.from(new Set(plan?.queries || []))
       .filter((value) => value && value !== searchQuestion)
       .slice(0, 6);
     expandedQueries.forEach((query, index) => {
       addMatches(scoped.searchInbox(query, baseOptions), 22 - index * 2);
+      addChunkMatches(query, 20 - index * 2);
     });
     if (plan?.category && !category) {
       addMatches(scoped.searchInbox("", { ...baseOptions, category: plan.category }), 12);
@@ -812,10 +937,56 @@ export function createServer(
         addMatches(scoped.searchInbox("", { ...baseOptions, tool: value }), 12);
       });
     }
-    const matches = Array.from(ranked.values())
+    const rankedMatches = Array.from(ranked.values())
       .sort((left, right) => right.score - left.score || right.item.seq - left.item.seq)
-      .slice(0, 8)
-      .map((entry) => entry.item);
+      .slice(0, 12);
+    const maximumScore = Math.max(...rankedMatches.map((entry) => entry.score), 1);
+    const matches = rankedMatches.map((entry) => {
+      const item = entry.item;
+      const matchedBy = new Set<string>();
+      const reasons: string[] = [];
+      const normalizedQuestion = searchQuestion.toLocaleLowerCase("zh-CN");
+      if (normalizedQuestion && item.title.toLocaleLowerCase("zh-CN").includes(normalizedQuestion)) {
+        matchedBy.add("title");
+        reasons.push("标题直接匹配");
+      }
+      const matchedDomains = item.domains.filter((value) =>
+        value === domain || plan?.domains.includes(value) || normalizedQuestion.includes(value.toLocaleLowerCase("zh-CN")));
+      if (matchedDomains.length) {
+        matchedBy.add("topic");
+        reasons.push(`主题：${matchedDomains.slice(0, 2).join("、")}`);
+      }
+      const matchedPoints = item.knowledgePoints.filter((value) =>
+        value === knowledgePoint || plan?.knowledgePoints.includes(value) || normalizedQuestion.includes(value.toLocaleLowerCase("zh-CN")));
+      if (matchedPoints.length) {
+        matchedBy.add("concept");
+        reasons.push(`知识点：${matchedPoints.slice(0, 2).join("、")}`);
+      }
+      const matchedTools = item.tools.filter((value) =>
+        value === tool || plan?.tools.includes(value) || normalizedQuestion.includes(value.toLocaleLowerCase("zh-CN")));
+      if (matchedTools.length) {
+        matchedBy.add("tool");
+        reasons.push(`工具：${matchedTools.slice(0, 2).join("、")}`);
+      }
+      if (entry.chunkMatched) {
+        matchedBy.add("content");
+        reasons.push("命中正文相关段落");
+      }
+      if (!reasons.length && searchQuestion) {
+        matchedBy.add("content");
+        reasons.push("正文语义与关键词相关");
+      }
+      if (Object.keys(range).length) {
+        matchedBy.add("time");
+        reasons.push("符合时间范围");
+      }
+      return {
+        ...item,
+        relevance: Math.max(1, Math.min(100, Math.round((entry.score / maximumScore) * 100))),
+        matchedBy: Array.from(matchedBy),
+        matchReasons: reasons.slice(0, 3),
+      };
+    });
     const answer = matches.length
       ? `${interpretation ? `已理解为“${interpretation}”。` : ""}找到 ${matches.length} 条相关收件内容，最相关的是《${matches[0]!.title}》。`
       : `没有找到${filterName ? `与“${filterName}”匹配的` : "与这次查询匹配的"}收件内容。可以换一个更具体的说法再试。`;
@@ -825,7 +996,19 @@ export function createServer(
       answer,
       interpretation,
       matches,
-      scope: "inbox_only",
+      scope: requestedScope || "all",
+      resultCount: matches.length,
+      retrieval: {
+        queries: [searchQuestion, ...expandedQueries].filter(Boolean).slice(0, 6),
+        filters: {
+          ...(organized === undefined ? {} : { organized }),
+          ...(category ? { category } : {}),
+          ...(domain ? { domain } : {}),
+          ...(knowledgePoint ? { knowledgePoint } : {}),
+          ...(tool ? { tool } : {}),
+          ...range,
+        },
+      },
     };
   });
 
@@ -1207,6 +1390,37 @@ export function createServer(
         }),
       };
     },
+  );
+
+  app.get<{ Params: { id: string } }>("/api/messages/:id/annotations", async (request) => ({
+    annotations: tenantDatabase(request).listMessageAnnotations(request.params.id),
+  }));
+
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/messages/:id/annotations", async (request, reply) => {
+    const quote = stringBody(request.body?.quote, 2000);
+    const note = stringBody(request.body?.note, 5000);
+    if (!quote && !note) return reply.code(400).send({ error: "请选择正文或填写笔记" });
+    const requestedColor = stringBody(request.body?.color, 20);
+    const color = (["mint", "amber", "blue", "rose"] as const).find((value) => value === requestedColor) || "mint";
+    return reply.code(201).send({
+      annotation: tenantDatabase(request).createMessageAnnotation(request.params.id, { quote, note, color }),
+    });
+  });
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/annotations/:id", async (request, reply) => {
+    const requestedColor = stringBody(request.body?.color, 20);
+    const color = (["mint", "amber", "blue", "rose"] as const).find((value) => value === requestedColor);
+    const annotation = tenantDatabase(request).updateMessageAnnotation(request.params.id, {
+      ...(request.body?.note !== undefined ? { note: stringBody(request.body.note, 5000) } : {}),
+      ...(color ? { color } : {}),
+    });
+    return annotation ? { annotation } : reply.code(404).send({ error: "标注不存在" });
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/annotations/:id", async (request, reply) =>
+    tenantDatabase(request).deleteMessageAnnotation(request.params.id)
+      ? { ok: true }
+      : reply.code(404).send({ error: "标注不存在" }),
   );
 
   app.get<{ Params: { id: string }; Querystring: { download?: string } }>(
