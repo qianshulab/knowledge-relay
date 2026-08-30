@@ -331,7 +331,7 @@ export type SearchIndexHealth = {
   indexedChunks: number;
   missingMessages: number;
   coverage: number;
-  engine: "fts5";
+  engine: "fts5" | "scan";
 };
 
 export type KnowledgeMapNode = {
@@ -897,18 +897,31 @@ export class AppDatabase {
     private readonly secrets: SecretBox,
     private readonly tenantId?: string,
     private readonly ownsConnection = true,
+    private readonly ftsEnabled = true,
   ) {}
 
   static async open(
     dataDir: string,
     nanobotWorkspace = path.join(dataDir, "nanobot", "workspace"),
+    options: { forceSearchFallback?: boolean } = {},
   ): Promise<AppDatabase> {
     await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
     const secrets = await SecretBox.load(dataDir);
     const database = new DatabaseSync(path.join(dataDir, "inbox.sqlite"));
     database.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     database.function("compact_knowledge_point", (value) => compactKnowledgePoint(value));
-    const result = new AppDatabase(dataDir, path.resolve(nanobotWorkspace), database, secrets);
+    let ftsEnabled = false;
+    if (!options.forceSearchFallback) {
+      try {
+        database.exec("CREATE VIRTUAL TABLE temp.knowledge_relay_fts_probe USING fts5(value)");
+        database.exec("DROP TABLE temp.knowledge_relay_fts_probe");
+        ftsEnabled = true;
+      } catch {
+        // Some official Node builds omit FTS5. The durable search tables below
+        // remain available and provide a slower token-scan fallback.
+      }
+    }
+    const result = new AppDatabase(dataDir, path.resolve(nanobotWorkspace), database, secrets, undefined, true, ftsEnabled);
     result.migrate();
     return result;
   }
@@ -932,6 +945,7 @@ export class AppDatabase {
       this.secrets,
       tenantId,
       false,
+      this.ftsEnabled,
     );
   }
 
@@ -1463,27 +1477,29 @@ export class AppDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_message_search_tenant ON message_search(tenant_id);
     `);
-    this.database.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS message_search_fts USING fts5(
-        message_id UNINDEXED,
-        tenant_id UNINDEXED,
-        title,
-        summary,
-        body,
-        metadata,
-        all_text,
-        tokenize='unicode61 remove_diacritics 2'
-      );
-      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
-        message_id UNINDEXED,
-        tenant_id UNINDEXED,
-        ordinal UNINDEXED,
-        heading,
-        content,
-        indexed_text,
-        tokenize='unicode61 remove_diacritics 2'
-      );
-    `);
+    if (this.ftsEnabled) {
+      this.database.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS message_search_fts USING fts5(
+          message_id UNINDEXED,
+          tenant_id UNINDEXED,
+          title,
+          summary,
+          body,
+          metadata,
+          all_text,
+          tokenize='unicode61 remove_diacritics 2'
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+          message_id UNINDEXED,
+          tenant_id UNINDEXED,
+          ordinal UNINDEXED,
+          heading,
+          content,
+          indexed_text,
+          tokenize='unicode61 remove_diacritics 2'
+        );
+      `);
+    }
     this.database.exec(`
       UPDATE background_jobs SET
         status='failed',phase='interrupted',message=CASE
@@ -3297,18 +3313,26 @@ export class AppDatabase {
 
   searchInbox(query: string, options: InboxSearchOptions = {}): InboxSearchResult[] {
     const terms = querySearchTokens(query);
+    const useFts = terms.length > 0 && this.ftsEnabled;
     const values: SqlValue[] = [];
     const where: string[] = [];
     let sql = `SELECT m.*,(SELECT COUNT(*) FROM attachments a WHERE a.message_id=m.id) AS attachment_count,
-      0 AS archived${terms.length ? ",bm25(message_search_fts,0,0,10,7,2,5,1) AS fts_rank" : ""}
-      FROM messages m ${terms.length ? "JOIN message_search_fts ON message_search_fts.message_id=m.id" : ""}`;
+      0 AS archived,${useFts ? "bm25(message_search_fts,0,0,10,7,2,5,1)" : "0"} AS fts_rank
+      FROM messages m ${useFts
+        ? "JOIN message_search_fts ON message_search_fts.message_id=m.id"
+        : terms.length ? "JOIN message_search ON message_search.message_id=m.id" : ""}`;
     where.push("m.tenant_id=?");
     values.push(this.requireOwnerId());
-    if (terms.length) {
+    if (useFts) {
       where.push("message_search_fts.tenant_id=?");
       values.push(this.requireOwnerId());
       where.push("message_search_fts MATCH ?");
       values.push(ftsQuery(terms));
+    } else if (terms.length) {
+      where.push("message_search.tenant_id=?");
+      values.push(this.requireOwnerId());
+      where.push(terms.map(() => "instr(message_search.all_text,?)>0").join(" AND "));
+      values.push(...terms);
     }
     if (options.organized === true) where.push("m.agent_status='completed'");
     if (options.organized === false) where.push("m.agent_status<>'completed'");
@@ -3373,21 +3397,32 @@ export class AppDatabase {
     const terms = querySearchTokens(query);
     if (!terms.length) return [];
     const tenantId = this.requireOwnerId();
-    const rows = this.all(
-      `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq,
-        bm25(knowledge_chunks_fts,0,0,0,8,3,1) AS fts_rank
-       FROM knowledge_chunks k
-       JOIN knowledge_chunks_fts ON knowledge_chunks_fts.message_id=k.message_id
-        AND CAST(knowledge_chunks_fts.ordinal AS INTEGER)=k.ordinal
-       JOIN messages m ON m.id=k.message_id
-       WHERE k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
-         AND knowledge_chunks_fts.tenant_id=? AND knowledge_chunks_fts MATCH ?
-       ORDER BY m.seq DESC,k.ordinal LIMIT 1200`,
-      tenantId,
-      tenantId,
-      tenantId,
-      ftsQuery(terms, "OR"),
-    );
+    const rows = this.ftsEnabled
+      ? this.all(
+        `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq,
+          bm25(knowledge_chunks_fts,0,0,0,8,3,1) AS fts_rank
+         FROM knowledge_chunks k
+         JOIN knowledge_chunks_fts ON knowledge_chunks_fts.message_id=k.message_id
+          AND CAST(knowledge_chunks_fts.ordinal AS INTEGER)=k.ordinal
+         JOIN messages m ON m.id=k.message_id
+         WHERE k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
+           AND knowledge_chunks_fts.tenant_id=? AND knowledge_chunks_fts MATCH ?
+         ORDER BY m.seq DESC,k.ordinal LIMIT 1200`,
+        tenantId,
+        tenantId,
+        tenantId,
+        ftsQuery(terms, "OR"),
+      )
+      : this.all(
+        `SELECT k.*,m.note_title,m.summary,m.domains_json,m.knowledge_points_json,m.seq,0 AS fts_rank
+         FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id
+         WHERE k.tenant_id=? AND m.tenant_id=? AND m.agent_status='completed'
+           AND (${terms.map(() => "instr(k.indexed_text,?)>0").join(" OR ")})
+         ORDER BY m.seq DESC,k.ordinal LIMIT 1200`,
+        tenantId,
+        tenantId,
+        ...terms,
+      );
     const safeLimit = Math.max(1, Math.min(80, Math.floor(limit) || 30));
     return rows.map((row) => {
       const titleIndex = indexedSearchText(rowString(row, "note_title"));
@@ -4021,7 +4056,7 @@ export class AppDatabase {
       indexedChunks,
       missingMessages: Math.max(0, completedMessages - indexedMessages),
       coverage: completedMessages ? Math.round(indexedMessages / completedMessages * 1000) / 10 : 100,
-      engine: "fts5",
+      engine: this.ftsEnabled ? "fts5" : "scan",
     };
   }
 
@@ -4032,8 +4067,10 @@ export class AppDatabase {
     this.transaction(() => {
       this.run("DELETE FROM message_search WHERE tenant_id=?", tenantId);
       this.run("DELETE FROM knowledge_chunks WHERE tenant_id=?", tenantId);
-      this.run("DELETE FROM message_search_fts WHERE tenant_id=?", tenantId);
-      this.run("DELETE FROM knowledge_chunks_fts WHERE tenant_id=?", tenantId);
+      if (this.ftsEnabled) {
+        this.run("DELETE FROM message_search_fts WHERE tenant_id=?", tenantId);
+        this.run("DELETE FROM knowledge_chunks_fts WHERE tenant_id=?", tenantId);
+      }
       messageIds.forEach((messageId, index) => {
         this.upsertSearchIndex(messageId);
         onProgress?.(index + 1, messageIds.length);
@@ -4124,8 +4161,10 @@ export class AppDatabase {
       messageId,
       ownerId,
     ).map((row) => rowString(row, "storage_path")).filter(Boolean);
-    this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
-    this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
+    if (this.ftsEnabled) {
+      this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
+      this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
+    }
     this.run("DELETE FROM message_search WHERE message_id=?", messageId);
     this.run("DELETE FROM background_jobs WHERE tenant_id=? AND resource_id=?", ownerId, messageId);
     this.run("DELETE FROM messages WHERE id=? AND tenant_id=?", messageId, ownerId);
@@ -5084,20 +5123,22 @@ export class AppDatabase {
       ...indexedFields,
       allText,
     );
-    this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
-    this.run(
-      `INSERT INTO message_search_fts(message_id,tenant_id,title,summary,body,metadata,all_text)
-       VALUES(?,?,?,?,?,?,?)`,
-      messageId,
-      rowString(row, "tenant_id"),
-      indexedFields[0]!,
-      indexedFields[1]!,
-      indexedFields[2]!,
-      indexedSearchText(indexedFields.slice(3).join(" ")),
-      allText,
-    );
+    if (this.ftsEnabled) {
+      this.run("DELETE FROM message_search_fts WHERE message_id=?", messageId);
+      this.run(
+        `INSERT INTO message_search_fts(message_id,tenant_id,title,summary,body,metadata,all_text)
+         VALUES(?,?,?,?,?,?,?)`,
+        messageId,
+        rowString(row, "tenant_id"),
+        indexedFields[0]!,
+        indexedFields[1]!,
+        indexedFields[2]!,
+        indexedSearchText(indexedFields.slice(3).join(" ")),
+        allText,
+      );
+    }
     this.run("DELETE FROM knowledge_chunks WHERE message_id=?", messageId);
-    this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
+    if (this.ftsEnabled) this.run("DELETE FROM knowledge_chunks_fts WHERE message_id=?", messageId);
     if (rowString(row, "agent_status") !== "completed") return;
     const title = rowString(row, "note_title");
     const summary = rowString(row, "summary");
@@ -5122,28 +5163,32 @@ export class AppDatabase {
         chunk.content,
         indexed,
       );
-      this.run(
-        `INSERT INTO knowledge_chunks_fts(message_id,tenant_id,ordinal,heading,content,indexed_text)
-         VALUES(?,?,?,?,?,?)`,
-        messageId,
-        rowString(row, "tenant_id"),
-        ordinal,
-        indexedSearchText(chunk.heading),
-        indexedSearchText(chunk.content),
-        indexed,
-      );
+      if (this.ftsEnabled) {
+        this.run(
+          `INSERT INTO knowledge_chunks_fts(message_id,tenant_id,ordinal,heading,content,indexed_text)
+           VALUES(?,?,?,?,?,?)`,
+          messageId,
+          rowString(row, "tenant_id"),
+          ordinal,
+          indexedSearchText(chunk.heading),
+          indexedSearchText(chunk.content),
+          indexed,
+        );
+      }
     });
   }
 
   private rebuildSearchIndexIfNeeded(): void {
-    const version = "5";
+    const version = `5:${this.ftsEnabled ? "fts5" : "scan"}`;
     const current = this.maybeOne("SELECT value FROM metadata WHERE key='message_search_version'");
     if (current && rowString(current, "value") === version) return;
     this.transaction(() => {
       this.run("DELETE FROM message_search");
       this.run("DELETE FROM knowledge_chunks");
-      this.run("DELETE FROM message_search_fts");
-      this.run("DELETE FROM knowledge_chunks_fts");
+      if (this.ftsEnabled) {
+        this.run("DELETE FROM message_search_fts");
+        this.run("DELETE FROM knowledge_chunks_fts");
+      }
       for (const row of this.all("SELECT id FROM messages ORDER BY seq")) {
         this.upsertSearchIndex(rowString(row, "id"));
       }

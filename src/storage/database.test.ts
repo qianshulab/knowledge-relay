@@ -646,6 +646,40 @@ describe("AppDatabase", () => {
     database.close();
   });
 
+  it("SQLite 未提供 FTS5 时自动降级且检索与问答证据仍可用", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-search-fallback-"));
+    temporaryDirectories.push(directory);
+    const database = await AppDatabase.open(
+      directory,
+      path.join(directory, "nanobot", "workspace"),
+      { forceSearchFallback: true },
+    );
+    database.createOwner({ displayName: "Owner", password: "test-password" });
+    const capture: CaptureInput = {
+      id: "api:search-fallback",
+      source: { channel: "api", type: "api", externalId: "search-fallback", name: "API 收件" },
+      captureType: "text",
+      actorId: "tester",
+      receivedAt: "2026-08-30T00:00:00.000Z",
+      text: "使用 Frida 对移动应用进行动态分析。",
+      attachments: [],
+    };
+    database.saveCapture(capture, defaultNote(capture));
+    database.updateProcessedNote(capture.id, {
+      ...defaultNote(capture),
+      title: "移动安全动态分析",
+      summary: "Frida 动态插桩实践。",
+      markdown: "# 移动安全动态分析\n\n使用 Frida 对移动应用进行动态分析。",
+      domains: ["网络安全"],
+      tools: ["Frida"],
+    }, "completed");
+
+    expect(database.searchIndexHealth()).toMatchObject({ engine: "scan", coverage: 100 });
+    expect(database.searchInbox("移动安全动态分析")[0]?.id).toBe(capture.id);
+    expect(database.searchKnowledgeChunks("Frida 动态分析")[0]).toMatchObject({ messageId: capture.id });
+    database.close();
+  });
+
   it("渠道无关收件不依赖微信账户并保留来源与幂等身份", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-api-capture-"));
     temporaryDirectories.push(directory);

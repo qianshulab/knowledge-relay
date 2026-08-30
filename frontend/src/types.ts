@@ -245,7 +245,7 @@ export type SearchIndexHealth = {
   indexedChunks: number;
   missingMessages: number;
   coverage: number;
-  engine: "fts5";
+  engine: "fts5" | "scan";
 };
 
 export type BackgroundJobResponse = {
