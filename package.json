@@ -1,6 +1,6 @@
 {
   "name": "knowledge-relay",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "private": true,
   "type": "module",
   "description": "Self-hosted WeChat iLink capture, safe web parsing, AI processing, and Obsidian sync.",

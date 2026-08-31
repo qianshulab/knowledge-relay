@@ -93,6 +93,12 @@ describe("component frontend", () => {
     expect(knowledgeChat).toContain("停止生成");
     expect(knowledgeChat).toContain("复制回答");
     expect(knowledgeChat).toContain("chat-progress");
+    expect(knowledgeChat).toContain("conversationPreview");
+    const styles = read("frontend/src/styles.css");
+    for (const rule of [".knowledge-chat-shell {", ".chat-history-panel {", ".chat-history-item > button:first-child {", ".chat-main {", ".chat-transcript {", ".chat-message-content {"]) {
+      expect(styles).toContain(rule);
+    }
+    expect(styles).toContain("-webkit-line-clamp: 2");
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/knowledge-chat"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/review"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/tasks"');

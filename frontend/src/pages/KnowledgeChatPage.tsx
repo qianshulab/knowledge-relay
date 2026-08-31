@@ -25,6 +25,20 @@ const examples = [
   "对比知识库中几篇相关文章的主要观点和分歧",
 ];
 
+function conversationPreview(content?: string) {
+  if (!content) return "尚未提问";
+  return content
+    .replace(/```[\s\S]*?```/g, " [代码] ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " [图片] ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/(^|\s{1,})#{1,6}\s+/g, "$1")
+    .replace(/[>*_~|]+/g, " ")
+    .replace(/\[(?:S\d+|\d+)\]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export default function KnowledgeChatPage() {
   const { notify } = useApp();
   const navigate = useNavigate();
@@ -233,7 +247,7 @@ export default function KnowledgeChatPage() {
         <div className="chat-history-head"><div><strong>问答记录</strong><small>{conversations.data?.total || 0} 个会话</small></div><button className="icon-button" aria-label="新建问答" title="使用当前范围新建问答" onClick={() => createConversation.mutate(selectedScope)} disabled={createConversation.isPending}><Plus size={19} /></button></div>
         <label className="chat-history-search"><Search size={15} /><input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder="搜索会话" /></label>
         <div className={`chat-history-list ${filteredConversations.length ? "" : "empty"}`}>
-          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : filteredConversations.length ? filteredConversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setScopeKey(`${conversation.scopeType}:${conversation.scopeValue}`); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversation.lastMessage || "尚未提问"}</span><small>{conversation.scopeLabel} · {formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">{conversationSearch ? "没有匹配的会话" : "还没有问答记录"}</p>}
+          {conversations.isLoading ? <LoadingState label="正在加载问答记录" /> : filteredConversations.length ? filteredConversations.map((conversation) => <div className={`chat-history-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}><button onClick={() => { setActiveId(conversation.id); setScopeKey(`${conversation.scopeType}:${conversation.scopeValue}`); setFollowUps([]); }}><strong>{conversation.title}</strong><span>{conversationPreview(conversation.lastMessage)}</span><small>{conversation.scopeLabel} · {formatDate(conversation.updatedAt)}</small></button><button className="chat-delete" aria-label={`删除会话 ${conversation.title}`} onClick={() => void removeConversation(conversation)}><Trash2 size={15} /></button></div>) : <p className="chat-history-empty">{conversationSearch ? "没有匹配的会话" : "还没有问答记录"}</p>}
         </div>
       </aside>
       <div className="chat-main">

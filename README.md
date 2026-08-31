@@ -468,7 +468,7 @@ git pull --ff-only
 ```bash
 cd /你的部署目录/knowledge-relay
 git pull --ff-only
-./scripts/update-docker.sh 1.10.0
+./scripts/update-docker.sh 1.10.1
 ```
 
 升级脚本会先备份应用数据、Nanobot volume 和 `.env`，再拉取镜像、重建容器并执行健康检查。升级过程中不需要手动执行 `docker compose down`。
