@@ -139,4 +139,24 @@ describe("reader Markdown normalization", () => {
   it("keeps a technical hash that belongs to a heading name", () => {
     expect(normalizeReadingMarkdown("## C# 与 .NET")).toBe("## C# 与 .NET");
   });
+
+  it("repairs the legacy nested-link shape created by a failed linked image", () => {
+    const markdown = "[[图片未保存：Claude Code logo](https://cdn.example/claude.png) Claude Code](https://docs.example/claude)";
+
+    expect(normalizeReadingMarkdown(markdown)).toBe(
+      "[Claude Code](https://docs.example/claude)",
+    );
+  });
+
+  it("joins an imported logo and its linked caption into one media item", () => {
+    const markdown = [
+      "![OpenAI logo](attachment://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+      "",
+      "[Codex](https://example.com/codex)",
+    ].join("\n");
+
+    expect(normalizeReadingMarkdown(markdown)).toBe(
+      "[![OpenAI logo](attachment://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) Codex](https://example.com/codex)",
+    );
+  });
 });

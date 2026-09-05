@@ -149,6 +149,46 @@ describe("article image security", () => {
     }
   });
 
+  it("链接卡片的图片失败时不会生成无效的嵌套链接", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-linked-image-"));
+    try {
+      const result = await localizeMarkdownImages(
+        { dataDir } as AppConfig,
+        "[![Claude Code logo](https://cdn.example/fail.png) Claude Code](https://docs.example/claude)",
+        "tenant-a",
+        async () => { throw new Error("offline"); },
+      );
+      expect(result.markdown).toBe(
+        "[Claude Code](https://docs.example/claude)",
+      );
+      expect(result.markdown).not.toContain("[[");
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("链接卡片的图片成功时保留一个有效的图文链接", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-linked-image-success-"));
+    const png = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+    png.writeUInt32BE(1, 16);
+    png.writeUInt32BE(1, 20);
+    try {
+      const result = await localizeMarkdownImages(
+        { dataDir } as AppConfig,
+        "[![Codex logo](https://cdn.example/codex.png) Codex](https://example.com/codex)",
+        "tenant-a",
+        async () => png,
+      );
+      expect(result.markdown).toMatch(
+        /^\[!\[Codex logo\]\(attachment:\/\/[a-f0-9]{64}\) Codex\]\(https:\/\/example\.com\/codex\)$/,
+      );
+      expect(result.markdown).not.toContain("[[");
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("并发下载完成顺序不改变封面与正文图片的文档顺序", async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-relay-cover-order-"));
     const png = Buffer.alloc(24);

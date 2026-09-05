@@ -596,6 +596,12 @@ function imageReferences(markdown: string): ImageReference[] {
   return matches;
 }
 
+function isImageWrappedByMarkdownLink(markdown: string, offset: number, imageLength: number): boolean {
+  if (offset <= 0 || markdown[offset - 1] !== "[") return false;
+  const remainder = markdown.slice(offset + imageLength);
+  return /^[^\]\r\n]{0,500}\]\(\s*(?:<[^>\r\n]{1,4000}>|[^\s)\r\n]{1,4000})(?:\s+["'][^"'\r\n]*["'])?\s*\)/.test(remainder);
+}
+
 export async function localizeMarkdownImages(
   config: AppConfig,
   markdown: string,
@@ -647,11 +653,34 @@ export async function localizeMarkdownImages(
     )].slice(0, 2);
     warnings.push(`${failed} 张文章图片未能缓存（${reasons.join("、")}），正文已保留并提供原始图片链接。`);
   }
-  const localized = normalizedMarkdown.replace(
+  const localizedLinks = normalizedMarkdown.replace(
+    /\[!\[([^\]\r\n]{0,500})\]\(\s*(https?:\/\/[^)\s]{1,4000})(?:\s+["'][^"']*["'])?\s*\)([^\]\r\n]{0,500})\]\(\s*(https?:\/\/[^)\s]{1,4000})(?:\s+["'][^"']*["'])?\s*\)/gi,
+    (_full, alt: string, url: string, caption: string, destinationUrl: string) => {
+      const stored = results.get(url);
+      const label = caption.replace(/\s+/g, " ").trim() || alt.trim() || "相关资料";
+      if (stored && !(stored instanceof Error)) {
+        return `[![${alt}](attachment://${stored.sha256}) ${label}](${destinationUrl})`;
+      }
+      // A logo is decorative when its linked label is still available. Keep
+      // the destination and label instead of showing a broken-image sentence.
+      if (caption.trim() || /(?:logo|icon|图标|徽标)/i.test(alt)) return `[${label}](${destinationUrl})`;
+      return `[图片未保存：${label}](${destinationUrl})`;
+    },
+  );
+  const localized = localizedLinks.replace(
     /!\[([^\]\r\n]{0,500})\]\(\s*(https?:\/\/[^)\s]{1,4000})(?:\s+["'][^"']*["'])?\s*\)/gi,
-    (_full, alt: string, url: string) => {
+    (full, alt: string, url: string, offset: number, source: string) => {
       const stored = results.get(url);
       if (stored && !(stored instanceof Error)) return `![${alt}](attachment://${stored.sha256})`;
+      // Do not create a link inside another Markdown link. Besides being
+      // invalid CommonMark, the nested shape used to leak its raw syntax into
+      // the article reader. The surrounding link still preserves the useful
+      // destination; decorative logos can disappear while meaningful images
+      // keep a compact textual fallback.
+      if (isImageWrappedByMarkdownLink(source, offset, full.length)) {
+        if (/(?:logo|icon|图标|徽标)/i.test(alt)) return "";
+        return `图片未保存：${alt || "查看原图"}`;
+      }
       return `[图片未保存：${alt || "查看原图"}](${url})`;
     },
   );

@@ -451,12 +451,52 @@ function canonicalizeFences(lines: string[]): string[] {
   return output;
 }
 
+function safeLinkLabel(value: string, fallback: string): string {
+  const label = value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[\[\]\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return label || fallback;
+}
+
+/**
+ * A cached image failure used to be represented as a Markdown link. When the
+ * source image was itself wrapped by a link this produced invalid nested-link
+ * Markdown, for example `[[图片未保存：logo](image) 产品](page)`. Repair that
+ * exact legacy shape at read time so already stored articles render cleanly.
+ */
+function normalizeNestedImageFallbacks(value: string): string {
+  return value.replace(
+    /\[\[图片未保存：([^\]\r\n]{0,500})\]\((https?:\/\/[^)\s]{1,4000})\)([^\]\r\n]{0,500})\]\((https?:\/\/[^)\s]{1,4000})\)/gi,
+    (_full, alt: string, imageUrl: string, caption: string, destinationUrl: string) => {
+      const label = safeLinkLabel(caption, safeLinkLabel(alt, "相关资料"));
+      if (/(?:logo|icon|图标|徽标)/i.test(alt) && caption.trim()) return `[${label}](${destinationUrl})`;
+      return `[${label}](${destinationUrl})（[图片未保存](${imageUrl})）`;
+    },
+  );
+}
+
+/**
+ * Web card layouts commonly arrive as an image followed by a short linked
+ * product name. Markdown cannot preserve the original flex/grid styling, so
+ * join only unmistakable logo/icon pairs into one semantic linked-media item.
+ */
+function normalizeLinkedLogoPairs(value: string): string {
+  return value.replace(
+    /(^|\n)([ \t]*)!\[([^\]\r\n]*(?:logo|icon|图标|徽标)[^\]\r\n]*)\]\(([^)\r\n]+)\)(?:[ \t]*|[ \t]*\n(?:[ \t]*\n)?[ \t]*)\[([^\]\r\n]{1,80})\]\(([^)\r\n]+)\)/gi,
+    (_full, prefix: string, indent: string, alt: string, imageUrl: string, label: string, destinationUrl: string) => (
+      `${prefix}${indent}[![${alt}](${imageUrl}) ${safeLinkLabel(label, safeLinkLabel(alt, "相关资料"))}](${destinationUrl})`
+    ),
+  );
+}
+
 /**
  * Reader-safe normalization for Markdown produced by different models and
  * importers. It repairs common structural omissions without rewriting prose.
  */
 export function normalizeReadingMarkdown(value: string): string {
-  const source = value
+  const source = normalizeLinkedLogoPairs(normalizeNestedImageFallbacks(value))
     .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
     .replace(/\r\n?/g, "\n");
   if (!source.trim()) return "";

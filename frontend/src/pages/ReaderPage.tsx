@@ -1,6 +1,6 @@
 import { Children, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArrowLeft, CheckCircle2, Download, FileText, Highlighter, History, Image as ImageIcon, MessageCircleQuestion, MoreHorizontal, Network, NotebookPen, RefreshCw, ShieldCheck, Star, Trash2, X } from "lucide-react";
+import { Archive, ArrowLeft, CheckCircle2, Download, FileText, Highlighter, History, Image as ImageIcon, ImageOff, MessageCircleQuestion, MoreHorizontal, Network, NotebookPen, RefreshCw, ShieldCheck, Star, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -35,6 +35,43 @@ const readerTabs: ReadonlyArray<{ value: ReaderTab; label: string }> = [
   { value: "details", label: "延伸整理" },
   { value: "original", label: "原始内容" },
 ];
+
+type MarkdownNode = {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  children?: MarkdownNode[];
+};
+
+function markdownNodeContainsImage(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const node = value as MarkdownNode;
+  if (node.tagName === "img") return true;
+  return node.children?.some(markdownNodeContainsImage) || false;
+}
+
+function markdownNodeText(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const node = value as MarkdownNode;
+  if (node.type === "text" && typeof node.value === "string") return node.value;
+  return node.children?.map(markdownNodeText).join("") || "";
+}
+
+function ReaderImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  const label = alt.trim() || "正文图片";
+  if (!src || failed) {
+    return <span className="prose-image-shell is-unavailable" role="img" aria-label={`${label}加载失败`}>
+      <ImageOff size={18} aria-hidden="true" />
+      <span>{label}</span>
+      <small>图片暂时无法显示</small>
+    </span>;
+  }
+  return <span className="prose-image-shell">
+    <img src={src} alt={label} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+  </span>;
+}
 
 function extractReadingHeadings(markdown: string): ReadingHeading[] {
   const result: ReadingHeading[] = [];
@@ -396,13 +433,36 @@ export default function ReaderPage() {
     });
     const headings = extractReadingHeadings(resolvedMarkdown);
     let headingCursor = 0;
-    return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ h2: ({ children: headingChildren }) => <h2 id={headings[headingCursor++]?.id}>{headingChildren}</h2>, h3: ({ children: headingChildren }) => <h3 id={headings[headingCursor++]?.id}>{headingChildren}</h3>, p: ({ children: paragraphChildren }) => <p>{highlightChildren(paragraphChildren)}</p>, li: ({ children: listChildren }) => <li>{highlightChildren(listChildren)}</li>, table: ({ children: tableChildren }) => <div className="prose-table-scroll"><table>{tableChildren}</table></div>, pre: ({ children: codeChildren }) => <div className="prose-code-block"><pre>{codeChildren}</pre></div>, img: ({ src = "", alt = "" }) => {
-    let decoded = src;
-    try { decoded = decodeURIComponent(src); } catch { /* preserve malformed source text */ }
-    const fileName = decoded.split(/[\\/]/).at(-1)?.split(/[?#]/)[0] || "";
-    const local = sourceImages.find((attachment) => attachment.fileName === fileName);
-    return <img src={local ? attachmentUrl(local.id) : src} alt={alt} loading="lazy" />;
-  } }}>{resolvedMarkdown}</ReactMarkdown>;
+    return <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h2: ({ children: headingChildren }) => <h2 id={headings[headingCursor++]?.id}>{headingChildren}</h2>,
+        h3: ({ children: headingChildren }) => <h3 id={headings[headingCursor++]?.id}>{headingChildren}</h3>,
+        p: ({ children: paragraphChildren, node }) => {
+          const mediaRow = markdownNodeContainsImage(node) && Boolean(markdownNodeText(node).trim());
+          return <p className={mediaRow ? "prose-media-paragraph" : undefined}>{highlightChildren(paragraphChildren)}</p>;
+        },
+        li: ({ children: listChildren }) => <li>{highlightChildren(listChildren)}</li>,
+        a: ({ children: linkChildren, href = "", node }) => {
+          const mediaLink = markdownNodeContainsImage(node) && Boolean(markdownNodeText(node).trim());
+          const missingImage = markdownNodeText(node).includes("图片未保存");
+          const className = [mediaLink ? "prose-media-link" : "", missingImage ? "prose-missing-image-link" : ""]
+            .filter(Boolean)
+            .join(" ") || undefined;
+          const external = /^https?:\/\//i.test(href);
+          return <a href={href} className={className} {...(external ? { target: "_blank", rel: "noreferrer" } : {})}>{linkChildren}</a>;
+        },
+        table: ({ children: tableChildren }) => <div className="prose-table-scroll"><table>{tableChildren}</table></div>,
+        pre: ({ children: codeChildren }) => <div className="prose-code-block"><pre>{codeChildren}</pre></div>,
+        img: ({ src = "", alt = "" }) => {
+          let decoded = src;
+          try { decoded = decodeURIComponent(src); } catch { /* preserve malformed source text */ }
+          const fileName = decoded.split(/[\\/]/).at(-1)?.split(/[?#]/)[0] || "";
+          const local = sourceImages.find((attachment) => attachment.fileName === fileName);
+          return <ReaderImage src={local ? attachmentUrl(local.id) : src} alt={alt} />;
+        },
+      }}
+    >{resolvedMarkdown}</ReactMarkdown>;
   };
 
   return <main className="reader-page">

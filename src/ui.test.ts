@@ -62,8 +62,11 @@ describe("component frontend", () => {
     expect(reader).toContain("attachment.sha256.toLowerCase() === hash.toLowerCase()");
     expect(reader).toContain('className="prose-table-scroll"');
     expect(reader).toContain('className="prose-code-block"');
+    expect(reader).toContain('"prose-media-link"');
+    expect(reader).toContain('className="prose-image-shell is-unavailable"');
     expect(reader).not.toContain("article-image-strip");
     expect(reader).not.toContain("rehypeRaw");
+    expect(read("frontend/src/markdown.ts")).toContain('from "../../src/markdown"');
     const diagram = read("frontend/src/components/KnowledgeDiagram.tsx");
     expect(diagram).toContain('addEventListener("wheel", handleWheel, { passive: false })');
     expect(diagram).toContain("setPointerCapture");
@@ -177,6 +180,8 @@ describe("component frontend", () => {
     expect(styles).toContain("line-height: 1.78");
     expect(styles).toContain(".prose-table-scroll");
     expect(styles).toContain(".prose-code-block");
+    expect(styles).toContain(".prose a.prose-media-link");
+    expect(styles).toContain(".prose-media-link .prose-image-shell img");
     expect(styles).toContain(".reader-tabs { position: static;");
     expect(styles).not.toContain(".reader-tabs { position: sticky;");
     expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain('"捕获"');
