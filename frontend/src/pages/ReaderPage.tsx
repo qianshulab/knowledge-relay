@@ -1,14 +1,16 @@
-import { Children, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Children, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArrowLeft, CheckCircle2, Download, FileText, Highlighter, History, Image as ImageIcon, MessageCircleQuestion, Network, NotebookPen, RefreshCw, ShieldCheck, Star, Trash2, X } from "lucide-react";
+import { Archive, ArrowLeft, CheckCircle2, Download, FileText, Highlighter, History, Image as ImageIcon, MessageCircleQuestion, MoreHorizontal, Network, NotebookPen, RefreshCw, ShieldCheck, Star, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useNavigate, useParams } from "react-router-dom";
-import { api, attachmentUrl } from "../api";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { ApiError, api, attachmentUrl } from "../api";
 import type { ContentRevision, KnowledgeMap, MessageAnnotation, MessageDetail } from "../types";
 import { useApp } from "../App";
+import { useConfirm } from "../components/ConfirmDialog";
 import KnowledgeDiagram from "../components/KnowledgeDiagram";
-import { EmptyState, LoadingState, formatBytes, formatDate, formatLabels } from "../components/ui";
+import { useModalFocus } from "../components/useModalFocus";
+import { EmptyState, InlineMessage, LoadingState, formatBytes, formatDate, formatLabels } from "../components/ui";
 import { normalizeReadingMarkdown } from "../markdown";
 
 type DiagramResponse = {
@@ -25,6 +27,14 @@ type DiagramResponse = {
 };
 
 type ReadingHeading = { id: string; level: 2 | 3; label: string };
+type ReaderTab = "article" | "notes" | "details" | "original";
+
+const readerTabs: ReadonlyArray<{ value: ReaderTab; label: string }> = [
+  { value: "article", label: "文章正文" },
+  { value: "notes", label: "整理笔记" },
+  { value: "details", label: "延伸整理" },
+  { value: "original", label: "原始内容" },
+];
 
 function extractReadingHeadings(markdown: string): ReadingHeading[] {
   const result: ReadingHeading[] = [];
@@ -45,15 +55,22 @@ export default function ReaderPage() {
   const { id = "" } = useParams();
   const messageId = decodeURIComponent(id);
   const navigate = useNavigate();
+  const location = useLocation();
   const { notify } = useApp();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"article" | "notes" | "details" | "original">("article");
+  const [tab, setTab] = useState<ReaderTab>("article");
   const [diagramOpen, setDiagramOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [diagramClock, setDiagramClock] = useState(Date.now());
   const [readingProgress, setReadingProgress] = useState(0);
   const previousDiagramStatus = useRef<DiagramResponse["status"] | undefined>(undefined);
   const proseRef = useRef<HTMLDivElement>(null);
+  const diagramTriggerRef = useRef<HTMLButtonElement>(null);
+  const diagramModalRef = useRef<HTMLElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const [annotationDraft, setAnnotationDraft] = useState<{ quote: string; note: string; color: MessageAnnotation["color"] } | null>(null);
   const detail = useQuery({ queryKey: ["message", messageId], queryFn: () => api<MessageDetail>(`/api/messages/${encodeURIComponent(messageId)}`), enabled: Boolean(messageId), refetchInterval: (query) => ["processing", "pending", "queued"].includes(query.state.data?.agentStatus || "") ? 3000 : false });
   const articleAttachment = detail.data?.attachments.find((attachment) => attachment.kind === "derived" && attachment.mimeType === "text/markdown");
@@ -68,6 +85,7 @@ export default function ReaderPage() {
     queryFn: () => api<DiagramResponse>(`/api/messages/${encodeURIComponent(messageId)}/diagram`),
     enabled: Boolean(messageId),
     refetchInterval: (query) => query.state.data?.status === "generating" ? 2_000 : false,
+    retry: 2,
     refetchOnWindowFocus: true,
   });
   const annotations = useQuery({
@@ -80,7 +98,7 @@ export default function ReaderPage() {
     queryFn: () => api<{ revisions: ContentRevision[] }>(`/api/messages/${encodeURIComponent(messageId)}/revisions`),
     enabled: Boolean(messageId) && versionsOpen,
   });
-  const reprocess = useMutation({ mutationFn: () => api(`/api/messages/${encodeURIComponent(messageId)}/reprocess`, { method: "POST" }), onSuccess: () => { notify("已加入重新整理队列", "success"); void queryClient.invalidateQueries({ queryKey: ["message", messageId] }); } });
+  const reprocess = useMutation({ mutationFn: () => api(`/api/messages/${encodeURIComponent(messageId)}/reprocess`, { method: "POST" }), onSuccess: () => { notify("已加入重新整理队列", "success"); void queryClient.invalidateQueries({ queryKey: ["message", messageId] }); }, onError: (error) => notify(error instanceof Error ? error.message : "重新整理提交失败", "danger") });
   const generateDiagram = useMutation({
     mutationFn: (force: boolean) => api<DiagramResponse>(`/api/messages/${encodeURIComponent(messageId)}/diagram`, { method: "POST", body: JSON.stringify({ force }) }),
     onSuccess: (data) => {
@@ -88,7 +106,12 @@ export default function ReaderPage() {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       notify(data.status === "ready" ? "智能图解已生成" : "已在后台开始生成，关闭窗口不会中断", "success");
     },
-    onError: (error) => notify(error instanceof Error ? error.message : "图解生成失败", "danger"),
+    onError: (error) => {
+      notify(error instanceof Error ? error.message : "图解任务未能提交", "danger");
+      // The server may have accepted the background job even if the response
+      // was interrupted. Reconcile once so the UI can resume persisted progress.
+      void queryClient.invalidateQueries({ queryKey: ["diagram", messageId] });
+    },
   });
   const saveAnnotation = useMutation({
     mutationFn: (input: NonNullable<typeof annotationDraft>) => api(`/api/messages/${encodeURIComponent(messageId)}/annotations`, { method: "POST", body: JSON.stringify(input) }),
@@ -98,10 +121,12 @@ export default function ReaderPage() {
   const deleteAnnotation = useMutation({
     mutationFn: (annotationId: string) => api(`/api/annotations/${encodeURIComponent(annotationId)}`, { method: "DELETE" }),
     onSuccess: () => { notify("标注已删除", "success"); void queryClient.invalidateQueries({ queryKey: ["annotations", messageId] }); },
+    onError: (error) => notify(error instanceof Error ? error.message : "标注删除失败", "danger"),
   });
   const favorite = useMutation({
     mutationFn: (next: boolean) => api<{ message: MessageDetail }>(`/api/messages/${encodeURIComponent(messageId)}/library`, { method: "PATCH", body: JSON.stringify({ favorite: next }) }),
-    onSuccess: ({ message }) => { queryClient.setQueryData(["message", messageId], (current: MessageDetail | undefined) => current ? { ...current, favorite: message.favorite } : current); notify(message.favorite ? "已设为重点" : "已取消重点", "success"); void queryClient.invalidateQueries({ queryKey: ["messages"] }); },
+    onSuccess: ({ message }) => { queryClient.setQueryData(["message", messageId], (current: MessageDetail | undefined) => current ? { ...current, favorite: message.favorite } : current); notify(message.favorite ? "已设为重点" : "已取消重点", "success"); void queryClient.invalidateQueries({ queryKey: ["messages"] }); void queryClient.invalidateQueries({ queryKey: ["library"] }); },
+    onError: (error) => notify(error instanceof Error ? error.message : "重点状态更新失败", "danger"),
   });
   const restoreRevision = useMutation({
     mutationFn: (revision: number) => api<{ message: MessageDetail; restoredFrom: number }>(`/api/messages/${encodeURIComponent(messageId)}/revisions/${revision}/restore`, { method: "POST" }),
@@ -114,8 +139,18 @@ export default function ReaderPage() {
     },
     onError: (error) => notify(error instanceof Error ? error.message : "恢复版本失败", "danger"),
   });
+  const versionsModalRef = useModalFocus<HTMLElement>({
+    open: versionsOpen,
+    onClose: () => setVersionsOpen(false),
+    returnFocusRef: moreTriggerRef,
+    canClose: !restoreRevision.isPending,
+  });
 
-  useEffect(() => { if (detail.data && !detail.data.readAt) void api(`/api/messages/${encodeURIComponent(messageId)}/library`, { method: "PATCH", body: JSON.stringify({ read: true }) }); }, [detail.data, messageId]);
+  useEffect(() => {
+    if (!detail.data || detail.data.readAt) return;
+    void api(`/api/messages/${encodeURIComponent(messageId)}/library`, { method: "PATCH", body: JSON.stringify({ read: true }) })
+      .catch(() => undefined);
+  }, [detail.data, messageId]);
 
   useEffect(() => {
     if (diagram.data?.status !== "generating") return;
@@ -123,6 +158,47 @@ export default function ReaderPage() {
     const timer = window.setInterval(() => setDiagramClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [diagram.data?.status, diagram.data?.generation?.startedAt]);
+
+  useEffect(() => {
+    if (!diagramOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusModal = window.requestAnimationFrame(() => diagramModalRef.current?.querySelector<HTMLElement>("[data-diagram-close]")?.focus());
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        const closeNodePanel = diagramModalRef.current?.querySelector<HTMLButtonElement>('.diagram-node-panel button[aria-label="关闭节点详情"]');
+        if (closeNodePanel) {
+          closeNodePanel.click();
+          return;
+        }
+        setDiagramOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(diagramModalRef.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ) || []);
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusModal);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      window.requestAnimationFrame(() => diagramTriggerRef.current?.focus());
+    };
+  }, [diagramOpen]);
 
   useEffect(() => {
     const status = diagram.data?.status;
@@ -152,18 +228,99 @@ export default function ReaderPage() {
     return () => { window.removeEventListener("scroll", update); window.removeEventListener("resize", update); };
   }, [articleSnapshot.data, detail.data?.contentMarkdown, tab]);
 
+  useEffect(() => {
+    if (!moreOpen) return;
+    const closeOnOutsidePress = (event: MouseEvent) => {
+      if (!moreMenuRef.current?.contains(event.target as Node)) setMoreOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMoreOpen(false);
+      moreTriggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", closeOnOutsidePress);
+    document.addEventListener("keydown", closeOnEscape);
+    window.requestAnimationFrame(() => moreMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus());
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsidePress);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moreOpen]);
+
+  function goBack() {
+    const origin = (location.state as { from?: unknown } | null)?.from;
+    if (typeof origin === "string" && origin.startsWith("/")) {
+      if (typeof window !== "undefined" && Number(window.history.state?.idx || 0) > 0) navigate(-1);
+      else navigate(origin, { replace: true });
+      return;
+    }
+    if (typeof window !== "undefined" && Number(window.history.state?.idx || 0) > 0) {
+      navigate(-1);
+      return;
+    }
+    navigate("/library", { replace: true });
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const keyOffsets: Record<string, number> = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+    let nextIndex: number | undefined;
+    if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = readerTabs.length - 1;
+    else if (event.key in keyOffsets) nextIndex = (index + keyOffsets[event.key]! + readerTabs.length) % readerTabs.length;
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    setTab(readerTabs[nextIndex]!.value);
+    const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    buttons?.[nextIndex]?.focus();
+  }
+
+  function handleMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+    if (!items.length) return;
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (current + 1 + items.length) % items.length : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
+  }
+
   async function changeState(state: "inbox" | "archived") {
-    await api(`/api/messages/${encodeURIComponent(messageId)}/library`, { method: "PATCH", body: JSON.stringify({ state }) });
-    notify(state === "inbox" ? "已恢复到收件台" : "已归档", "success");
-    void queryClient.invalidateQueries({ queryKey: ["message", messageId] });
-    void queryClient.invalidateQueries({ queryKey: ["messages"] });
+    try {
+      await api(`/api/messages/${encodeURIComponent(messageId)}/library`, { method: "PATCH", body: JSON.stringify({ state }) });
+      notify(state === "inbox" ? "已恢复到收件台" : "已归档", "success");
+      void queryClient.invalidateQueries({ queryKey: ["message", messageId] });
+      void queryClient.invalidateQueries({ queryKey: ["messages"] });
+      void queryClient.invalidateQueries({ queryKey: ["library"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "内容状态更新失败", "danger");
+    }
   }
 
   async function remove() {
-    if (!window.confirm("永久删除后，原始内容、附件和所有整理结果都无法恢复。确定继续吗？")) return;
-    await api(`/api/messages/${encodeURIComponent(messageId)}`, { method: "DELETE" });
-    notify("内容已永久删除", "success");
-    navigate("/inbox", { replace: true });
+    const accepted = await confirm({
+      title: "永久删除这条内容？",
+      description: "原始内容、附件、整理结果、图解和阅读标注将同时删除，且无法恢复。",
+      confirmLabel: "永久删除",
+      tone: "danger",
+      requireText: "永久删除",
+    });
+    if (!accepted) return;
+    try {
+      await api(`/api/messages/${encodeURIComponent(messageId)}`, { method: "DELETE" });
+      notify("内容已永久删除", "success");
+      navigate("/inbox", { replace: true });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除失败，请重试", "danger");
+    }
+  }
+
+  async function confirmRestoreRevision(revision: number) {
+    const accepted = await confirm({
+      title: `恢复版本 ${revision}？`,
+      description: "系统会以该版本内容创建一个新版本，当前内容与之后的历史记录仍会保留。",
+      confirmLabel: "恢复此版本",
+    });
+    if (accepted) restoreRevision.mutate(revision);
   }
 
   function captureSelection() {
@@ -182,11 +339,21 @@ export default function ReaderPage() {
     if (annotationDraft) saveAnnotation.mutate(annotationDraft);
   }
 
+  function startDiagram(force: boolean) {
+    if (generateDiagram.isPending || diagram.data?.status === "generating") return;
+    generateDiagram.reset();
+    generateDiagram.mutate(force);
+  }
+
   const resolvedArticle = articleSnapshot.data || detail.data?.contentMarkdown || detail.data?.markdown || detail.data?.detailsMarkdown || detail.data?.text || "";
   const articleToc = useMemo(() => extractReadingHeadings(resolvedArticle), [resolvedArticle]);
 
   if (detail.isLoading) return <main className="page"><LoadingState label="正在打开内容" /></main>;
-  if (!detail.data) return <main className="page"><EmptyState title="内容不存在" description="这条内容可能已被删除。" action={<button className="button button-secondary" onClick={() => navigate(-1)}>返回</button>} /></main>;
+  if (detail.isError) {
+    const missing = detail.error instanceof ApiError && detail.error.status === 404;
+    return <main className="page"><EmptyState title={missing ? "内容不存在" : "内容暂时无法打开"} description={missing ? "这条内容可能已被删除，或不属于当前账户。" : detail.error instanceof Error ? detail.error.message : "读取内容时遇到问题，请稍后重试。"} action={<div className="page-header-actions"><button className="button button-secondary" onClick={goBack}>返回</button>{!missing && <button className="button button-primary" onClick={() => void detail.refetch()}>重新加载</button>}</div>} /></main>;
+  }
+  if (!detail.data) return <main className="page"><EmptyState title="无法识别内容" description="当前链接缺少有效的内容标识。" action={<button className="button button-secondary" onClick={() => navigate("/library", { replace: true })}>返回知识库</button>} /></main>;
   const item = detail.data;
   const article = resolvedArticle;
   const sourceImages = item.attachments.filter((attachment) => attachment.mimeType.startsWith("image/"));
@@ -199,6 +366,8 @@ export default function ReaderPage() {
   const diagramElapsedLabel = diagramElapsed < 60
     ? `${diagramElapsed} 秒`
     : `${Math.floor(diagramElapsed / 60)} 分 ${diagramElapsed % 60} 秒`;
+  const diagramNeedsConfiguration = generateDiagram.error instanceof ApiError && generateDiagram.error.status === 409;
+  const persistedDiagramError = (diagram.data?.generation?.error || "生成过程中遇到问题").replace(/[。.!！?？]+$/, "");
 
   const annotationItems = annotations.data?.annotations || [];
   const highlightChildren = (children: ReactNode) => Children.map(children, (child) => {
@@ -238,11 +407,87 @@ export default function ReaderPage() {
 
   return <main className="reader-page">
     <div className="reading-progress" aria-label={`阅读进度 ${readingProgress}%`}><span style={{ width: `${readingProgress}%` }} /></div>
-    <header className="reader-hero"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={18} />返回</button><div className="reader-title-wrap"><span className="eyebrow">KNOWLEDGE READING</span><h1>{item.title}</h1><div className="reader-meta"><span>{formatLabels[item.contentFormat] || item.category}</span>{item.domains.slice(0, 2).map((value) => <span key={value}>{value}</span>)}<span>{item.source?.name || "收件内容"}</span><time>{formatDate(item.receivedAt).slice(0, 10)}</time>{item.duplicateCount > 0 && <span>已合并 {item.duplicateCount} 次重复收件</span>}</div></div><div className="reader-actions"><button className={`button button-secondary ${item.favorite ? "is-favorite" : ""}`} disabled={favorite.isPending} onClick={() => favorite.mutate(!item.favorite)}><Star size={17} fill={item.favorite ? "currentColor" : "none"} />{item.favorite ? "重点" : "设为重点"}</button><button className="button button-secondary" onClick={() => navigate(`/knowledge-chat?scopeType=message&scopeValue=${encodeURIComponent(item.id)}&scopeLabel=${encodeURIComponent(item.title)}`)}><MessageCircleQuestion size={17} />基于本篇提问</button><button className="button button-secondary" onClick={() => void changeState(item.libraryState === "archived" ? "inbox" : "archived")}><Archive size={17} />{item.libraryState === "archived" ? "恢复到收件台" : "归档"}</button><button className="button button-secondary" onClick={() => setDiagramOpen(true)}>{diagram.data?.status === "generating" ? <RefreshCw className="spin" size={17} /> : <Network size={17} />}{diagram.data?.status === "generating" ? "图解生成中" : "智能图解"}</button><button className="button button-secondary" onClick={() => setVersionsOpen(true)}><History size={17} />版本记录</button><button className="button button-secondary" disabled={reprocess.isPending} onClick={() => reprocess.mutate()}><RefreshCw size={17} />{reprocess.isPending ? "已提交" : "重新整理"}</button><button className="button button-danger" onClick={() => void remove()}><Trash2 size={17} />永久删除</button></div></header>
-    <div className="reader-layout"><article className="reader-paper"><nav className="reader-tabs">{([['article','文章正文'],['notes','整理笔记'],['details','延伸整理'],['original','原始内容']] as const).map(([value, label]) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{label}</button>)}</nav><div className="prose" ref={proseRef}>{tab === "article" ? articleAttachment && articleSnapshot.isLoading ? <LoadingState label="正在还原原文版式" /> : <Markdown>{article}</Markdown> : tab === "notes" ? <><h2>内容摘要</h2><p>{item.summary || "暂无摘要"}</p>{item.keyPoints.length > 0 && <><h2>核心要点</h2><ul>{item.keyPoints.map((point) => <li key={point}>{point}</li>)}</ul></>}</> : tab === "details" ? <Markdown>{item.detailsMarkdown || "暂无延伸整理内容。"}</Markdown> : <pre className="original-text">{item.text}</pre>}{tab === "article" && showStandaloneImages && sourceImages.map((image) => <img key={image.id} src={attachmentUrl(image.id)} alt={image.fileName} loading="lazy" />)}</div></article>
-      <aside className="reader-aside">{articleToc.length > 1 && <section className="aside-card reader-toc"><div className="aside-card-head"><h2>文章目录</h2><span>{readingProgress}%</span></div><nav>{articleToc.map((heading) => <button key={heading.id} className={heading.level === 3 ? "level-3" : ""} onClick={() => document.getElementById(heading.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>{heading.label}</button>)}</nav></section>}<section className="aside-card"><h2>AI 摘要</h2><p>{item.summary || "等待整理后生成摘要。"}</p>{item.source?.url && <a href={item.source.url} target="_blank" rel="noreferrer">查看原始网页 ↗</a>}</section><section className="aside-card annotation-card"><div className="aside-card-head"><h2>阅读标注</h2><span>{annotationItems.length}</span></div><p className="annotation-help">选择正文中的文字后添加高亮，也可以单独记录想法。</p><div className="annotation-actions"><button className="button button-secondary" onClick={captureSelection}><Highlighter size={15} />标注选中文字</button><button className="button button-secondary" onClick={() => setAnnotationDraft({ quote: "", note: "", color: "mint" })}><NotebookPen size={15} />写笔记</button></div>{annotationDraft && <form className="annotation-composer" onSubmit={submitAnnotation}><button type="button" className="annotation-close" onClick={() => setAnnotationDraft(null)} aria-label="关闭标注编辑"><X size={15} /></button>{annotationDraft.quote && <blockquote>{annotationDraft.quote}</blockquote>}<textarea autoFocus={!annotationDraft.quote} value={annotationDraft.note} onChange={(event) => setAnnotationDraft({ ...annotationDraft, note: event.target.value })} placeholder={annotationDraft.quote ? "补充你的理解（可选）" : "记录与这篇内容有关的想法"} /><div><span className="annotation-colors">{(["mint", "amber", "blue", "rose"] as const).map((color) => <button type="button" key={color} className={`${color} ${annotationDraft.color === color ? "active" : ""}`} onClick={() => setAnnotationDraft({ ...annotationDraft, color })} aria-label={`选择${color}标注颜色`} />)}</span><button className="button button-primary" disabled={saveAnnotation.isPending}>{saveAnnotation.isPending ? "保存中…" : "保存"}</button></div></form>}{annotationItems.length > 0 && <div className="annotation-list">{annotationItems.map((annotation) => <div className={`annotation-item annotation-${annotation.color}`} key={annotation.id}>{annotation.quote && <blockquote>{annotation.quote}</blockquote>}{annotation.note && <p>{annotation.note}</p>}<span>{formatDate(annotation.createdAt)}</span><button onClick={() => deleteAnnotation.mutate(annotation.id)} aria-label="删除标注"><Trash2 size={14} /></button></div>)}</div>}</section><section className="aside-card"><h2>知识索引</h2><div className="aside-facts"><div><span>内容形态</span><strong>{formatLabels[item.contentFormat] || item.category}</strong></div><div><span>整理状态</span><strong>{item.agentStatus === "completed" ? "已整理" : item.agentStatus}</strong></div><div><span>置信度</span><strong>{item.confidence || "—"}</strong></div></div><div className="tag-row">{[...item.domains, ...item.knowledgePoints, ...item.tools].slice(0, 10).map((value) => <span key={value}>{value}</span>)}</div></section><section className={`aside-card integrity-card ${item.integrity.issues.length ? "needs-attention" : "healthy"}`}><div className="aside-card-head"><h2>内容完整性</h2><span>{item.integrity.score} 分</span></div><div className="integrity-summary"><ShieldCheck size={19} /><div><strong>{item.integrity.issues.length ? "发现需要关注的内容" : "正文与本地资源完整"}</strong><small>{item.integrity.bodyCharacters} 字 · {item.integrity.localImages} 张本地图片{item.duplicateCount > 0 ? ` · 合并 ${item.duplicateCount} 次重复收件` : ""}</small></div></div>{item.integrity.issues.length > 0 && <div className="tag-row">{item.integrity.issues.map((issue) => <span key={issue}>{({ missing_body: "正文过短", broken_asset: "图片引用失效", missing_summary: "缺少摘要", missing_cover: "缺少图片", unindexed: "索引待修复" } as const)[issue]}</span>)}</div>}</section>{item.attachments.length > 0 && <section className="aside-card"><h2>内容资产</h2><div className="asset-list">{files.map((file) => <a key={file.id} href={`${attachmentUrl(file.id)}?download=1`}><FileText size={18} /><span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span><Download size={17} /></a>)}{sourceImages.length > 0 && <div className="asset-summary"><ImageIcon size={18} /><span><strong>正文图片已本地保存</strong><small>{sourceImages.length} 张 · 可离线阅读</small></span></div>}</div></section>}</aside>
+    <header className="reader-hero">
+      <button className="back-link" onClick={goBack}><ArrowLeft size={18} />返回</button>
+      <div className="reader-title-wrap">
+        <span className="eyebrow">KNOWLEDGE READING</span>
+        <h1>{item.title}</h1>
+        <div className="reader-meta">
+          <span>{formatLabels[item.contentFormat] || item.category}</span>
+          {item.domains.slice(0, 2).map((value) => <span key={value}>{value}</span>)}
+          <span>{item.source?.name || "收件内容"}</span>
+          <time>{formatDate(item.receivedAt).slice(0, 10)}</time>
+          {item.duplicateCount > 0 && <span>已合并 {item.duplicateCount} 次重复收件</span>}
+        </div>
+      </div>
+      <div className="reader-actions" aria-label="阅读操作">
+        <div className="reader-primary-actions">
+          <button className={`button button-secondary ${item.favorite ? "is-favorite" : ""}`} disabled={favorite.isPending} onClick={() => favorite.mutate(!item.favorite)}><Star size={17} fill={item.favorite ? "currentColor" : "none"} />{item.favorite ? "已设重点" : "设为重点"}</button>
+          <button className="button button-secondary" onClick={() => navigate(`/knowledge-chat?scopeType=message&scopeValue=${encodeURIComponent(item.id)}&scopeLabel=${encodeURIComponent(item.title)}`)}><MessageCircleQuestion size={17} />本篇问答</button>
+          <button ref={diagramTriggerRef} className="button button-primary" onClick={() => { setDiagramOpen(true); void diagram.refetch(); }}>{diagram.data?.status === "generating" ? <RefreshCw className="spin" size={17} /> : <Network size={17} />}{diagram.data?.status === "generating" ? "图解生成中" : "智能图解"}</button>
+        </div>
+        <div className="reader-more-wrap" ref={moreMenuRef}>
+          <button ref={moreTriggerRef} className="button button-secondary reader-more-trigger" aria-haspopup="menu" aria-expanded={moreOpen} aria-controls="reader-more-menu" onClick={() => setMoreOpen((open) => !open)}><MoreHorizontal size={18} />更多</button>
+          {moreOpen && <div id="reader-more-menu" className="reader-action-menu" role="menu" aria-label="更多内容操作" onKeyDown={handleMenuKeyDown}>
+            <button role="menuitem" tabIndex={-1} onClick={() => { setMoreOpen(false); void changeState(item.libraryState === "archived" ? "inbox" : "archived"); }}><Archive size={17} />{item.libraryState === "archived" ? "恢复到收件台" : "归档内容"}</button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { setMoreOpen(false); setVersionsOpen(true); }}><History size={17} />版本记录</button>
+            <button role="menuitem" tabIndex={-1} disabled={reprocess.isPending} onClick={() => { setMoreOpen(false); reprocess.mutate(); }}><RefreshCw className={reprocess.isPending ? "spin" : ""} size={17} />{reprocess.isPending ? "正在提交" : "重新整理"}</button>
+            <div className="reader-menu-divider" role="separator" />
+            <button className="danger" role="menuitem" tabIndex={-1} onClick={() => { setMoreOpen(false); void remove(); }}><Trash2 size={17} />永久删除</button>
+          </div>}
+        </div>
+      </div>
+    </header>
+
+    <div className="reader-layout">
+      <article className="reader-paper">
+        <nav className="reader-tabs" role="tablist" aria-label="内容版本">
+          {readerTabs.map(({ value, label }, index) => <button id={`reader-tab-${value}`} key={value} role="tab" aria-selected={tab === value} aria-controls="reader-tabpanel" tabIndex={tab === value ? 0 : -1} className={tab === value ? "active" : ""} onClick={() => setTab(value)} onKeyDown={(event) => handleTabKeyDown(event, index)}>{label}</button>)}
+        </nav>
+        <div id="reader-tabpanel" className="prose" ref={proseRef} role="tabpanel" aria-labelledby={`reader-tab-${tab}`} tabIndex={0}>
+          {tab === "article" ? articleAttachment && articleSnapshot.isLoading ? <LoadingState label="正在还原原文版式" /> : <>{articleAttachment && articleSnapshot.isError ? <InlineMessage tone="warning"><span>原文快照暂时无法读取，当前显示已保存的备用正文。</span><button type="button" className="text-link" onClick={() => void articleSnapshot.refetch()}><RefreshCw size={14} />重新读取</button></InlineMessage> : null}<Markdown>{article}</Markdown></> : tab === "notes" ? <><h2>内容摘要</h2><p>{item.summary || "暂无摘要"}</p>{item.keyPoints.length > 0 && <><h2>核心要点</h2><ul>{item.keyPoints.map((point) => <li key={point}>{point}</li>)}</ul></>}</> : tab === "details" ? <Markdown>{item.detailsMarkdown || "暂无延伸整理内容。"}</Markdown> : <pre className="original-text">{item.text}</pre>}
+          {tab === "article" && showStandaloneImages && sourceImages.map((image) => <img key={image.id} src={attachmentUrl(image.id)} alt={image.fileName} loading="lazy" />)}
+        </div>
+      </article>
+
+      <aside className="reader-aside">
+        {articleToc.length > 1 && <section className="aside-card reader-toc"><div className="aside-card-head"><h2>文章目录</h2><span>{readingProgress}%</span></div><nav aria-label="文章目录">{articleToc.map((heading) => <button key={heading.id} className={heading.level === 3 ? "level-3" : ""} onClick={() => document.getElementById(heading.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>{heading.label}</button>)}</nav></section>}
+        <section className="aside-card"><h2>AI 摘要</h2><p>{item.summary || "等待整理后生成摘要。"}</p>{item.source?.url && <a href={item.source.url} target="_blank" rel="noreferrer">查看原始网页 ↗</a>}</section>
+        <section className="aside-card annotation-card">
+          <div className="aside-card-head"><h2>阅读标注</h2><span>{annotationItems.length}</span></div>
+          {annotations.isError ? <InlineMessage tone="warning"><span>标注暂时无法读取。</span><button type="button" className="text-link" onClick={() => void annotations.refetch()}>重试</button></InlineMessage> : null}
+          <p className="annotation-help">选择正文中的文字后添加高亮，也可以单独记录想法。</p>
+          <div className="annotation-actions"><button className="button button-secondary" onClick={captureSelection}><Highlighter size={15} />标注选中文字</button><button className="button button-secondary" onClick={() => setAnnotationDraft({ quote: "", note: "", color: "mint" })}><NotebookPen size={15} />写笔记</button></div>
+          {annotationDraft && <form className="annotation-composer" onSubmit={submitAnnotation}><button type="button" className="annotation-close" onClick={() => setAnnotationDraft(null)} aria-label="关闭标注编辑"><X size={15} /></button>{annotationDraft.quote && <blockquote>{annotationDraft.quote}</blockquote>}<textarea autoFocus={!annotationDraft.quote} value={annotationDraft.note} onChange={(event) => setAnnotationDraft({ ...annotationDraft, note: event.target.value })} placeholder={annotationDraft.quote ? "补充你的理解（可选）" : "记录与这篇内容有关的想法"} /><div><span className="annotation-colors">{(["mint", "amber", "blue", "rose"] as const).map((color) => <button type="button" key={color} className={`${color} ${annotationDraft.color === color ? "active" : ""}`} onClick={() => setAnnotationDraft({ ...annotationDraft, color })} aria-label={`选择${color}标注颜色`} />)}</span><button className="button button-primary" disabled={saveAnnotation.isPending || (!annotationDraft.quote.trim() && !annotationDraft.note.trim())}>{saveAnnotation.isPending ? "保存中…" : "保存"}</button></div></form>}
+          {annotationItems.length > 0 && <div className="annotation-list">{annotationItems.map((annotation) => <div className={`annotation-item annotation-${annotation.color}`} key={annotation.id}>{annotation.quote && <blockquote>{annotation.quote}</blockquote>}{annotation.note && <p>{annotation.note}</p>}<span>{formatDate(annotation.createdAt)}</span><button disabled={deleteAnnotation.isPending} onClick={() => deleteAnnotation.mutate(annotation.id)} aria-label="删除标注"><Trash2 size={14} /></button></div>)}</div>}
+        </section>
+        <section className="aside-card"><h2>知识索引</h2><div className="aside-facts"><div><span>内容形态</span><strong>{formatLabels[item.contentFormat] || item.category}</strong></div><div><span>整理状态</span><strong>{item.agentStatus === "completed" ? "已整理" : item.agentStatus}</strong></div><div><span>置信度</span><strong>{item.confidence || "—"}</strong></div></div><div className="tag-row">{[...item.domains, ...item.knowledgePoints, ...item.tools].slice(0, 10).map((value) => <span key={value}>{value}</span>)}</div></section>
+        <section className={`aside-card integrity-card ${item.integrity.issues.length ? "needs-attention" : "healthy"}`}><div className="aside-card-head"><h2>内容完整性</h2><span>{item.integrity.score} 分</span></div><div className="integrity-summary"><ShieldCheck size={19} /><div><strong>{item.integrity.issues.length ? "发现需要关注的内容" : "正文与本地资源完整"}</strong><small>{item.integrity.bodyCharacters} 字 · {item.integrity.localImages} 张本地图片{item.duplicateCount > 0 ? ` · 合并 ${item.duplicateCount} 次重复收件` : ""}</small></div></div>{item.integrity.issues.length > 0 && <div className="tag-row">{item.integrity.issues.map((issue) => <span key={issue}>{({ missing_body: "正文过短", broken_asset: "图片引用失效", missing_summary: "缺少摘要", missing_cover: "缺少图片", unindexed: "索引待修复" } as const)[issue]}</span>)}</div>}</section>
+        {item.attachments.length > 0 && <section className="aside-card"><h2>内容资产</h2><div className="asset-list">{files.map((file) => <a key={file.id} href={`${attachmentUrl(file.id)}?download=1`}><FileText size={18} /><span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span><Download size={17} /></a>)}{sourceImages.length > 0 && <div className="asset-summary"><ImageIcon size={18} /><span><strong>正文图片已本地保存</strong><small>{sourceImages.length} 张 · 可离线阅读</small></span></div>}</div></section>}
+      </aside>
     </div>
-    {versionsOpen && <div className="modal-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) setVersionsOpen(false); }}><section className="version-modal" role="dialog" aria-modal="true" aria-labelledby="version-modal-title"><header><div><span className="eyebrow">CONTENT HISTORY</span><h2 id="version-modal-title">版本记录</h2><p>每次重新整理都会保存一个快照。恢复历史版本会创建新版本，不会删除之后的记录。</p></div><button className="icon-button" aria-label="关闭版本记录" onClick={() => setVersionsOpen(false)}><X size={20} /></button></header>{revisions.isLoading ? <LoadingState label="正在读取版本记录" /> : revisions.data?.revisions.length ? <div className="version-list">{revisions.data.revisions.map((revision) => <article key={revision.revision} className={revision.current ? "current" : ""}><div className="version-marker">{revision.current ? <CheckCircle2 size={18} /> : <History size={18} />}</div><div><div className="version-heading"><strong>版本 {revision.revision}</strong>{revision.current && <span>当前版本</span>}</div><time>{formatDate(revision.createdAt)}</time><p>{revision.summary || revision.title || "此版本没有摘要"}</p></div>{!revision.current && <button className="button button-secondary" disabled={restoreRevision.isPending} onClick={() => { if (window.confirm(`确定恢复到版本 ${revision.revision}？当前版本仍会保留在历史记录中。`)) restoreRevision.mutate(revision.revision); }}>{restoreRevision.isPending ? "恢复中…" : "恢复此版本"}</button>}</article>)}</div> : <EmptyState title="暂无历史版本" description="重新整理后会自动保留历史快照。" />}</section></div>}
-    {diagramOpen && <div className="modal-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) setDiagramOpen(false); }}><section className="diagram-modal" role="dialog" aria-modal="true"><header className="diagram-modal-header"><div className="diagram-modal-title-row"><div><span className="eyebrow">SMART DIAGRAM</span><h2>{diagram.data?.diagram?.diagramLabel || (diagram.data?.status === "generating" ? "正在生成智能图解" : "智能图解")}</h2></div><div className="diagram-header-actions">{diagram.data?.status === "ready" && <button className="button button-secondary" disabled={generateDiagram.isPending} onClick={() => generateDiagram.mutate(true)}><RefreshCw className={generateDiagram.isPending ? "spin" : ""} size={16} />{generateDiagram.isPending ? "正在提交…" : "重新生成"}</button>}<button className="button button-secondary" onClick={() => setDiagramOpen(false)}>关闭</button></div></div><p>{diagram.data?.generation?.message || diagram.data?.diagram?.selectionReason || "AI 会先判断资料结构，再选择适合的图形；生成结果会缓存到当前内容。"}</p></header>{diagram.isLoading ? <LoadingState label="正在读取图解状态" /> : diagram.data?.status === "ready" && diagram.data.diagram ? <KnowledgeDiagram diagram={diagram.data.diagram} /> : diagram.data?.status === "generating" ? <section className="diagram-progress" role="status" aria-live="polite"><div className="diagram-progress-orbit"><RefreshCw className="spin" size={25} /></div><div><strong>{diagram.data.generation?.phase === "saving" ? "正在保存图解" : "正在分析与绘制"}</strong><p>{diagram.data.generation?.message}</p><span>已处理 {diagramElapsedLabel} · 可放心关闭窗口，任务会在后台继续</span></div><ol><li className="done">已接收生成任务</li><li className={diagram.data.generation?.phase === "analyzing" ? "active" : "done"}>分析内容并选择图形</li><li className={diagram.data.generation?.phase === "saving" ? "active" : ""}>保存图解结果</li></ol></section> : diagram.data?.status === "failed" ? <EmptyState icon={<Network size={28} />} title="图解生成未完成" description={diagram.data.generation?.error || "生成过程中遇到问题，可重新尝试。"} action={<button className="button button-primary" disabled={generateDiagram.isPending} onClick={() => generateDiagram.mutate(false)}>{generateDiagram.isPending ? "正在重新提交…" : "重新尝试"}</button>} /> : <EmptyState icon={<Network size={28} />} title="尚未生成智能图解" description="需要查看时再调用 AI，系统会根据层级、流程、时序、状态、对比或关系自动选择图形。" action={<button className="button button-primary" disabled={generateDiagram.isPending} onClick={() => generateDiagram.mutate(false)}>{generateDiagram.isPending ? "正在提交任务…" : "生成智能图解"}</button>} />}</section></div>}
+
+    {versionsOpen && <div className="modal-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !restoreRevision.isPending) setVersionsOpen(false); }}><section ref={versionsModalRef} className="version-modal" role="dialog" aria-modal="true" aria-labelledby="version-modal-title" tabIndex={-1}><header><div><span className="eyebrow">CONTENT HISTORY</span><h2 id="version-modal-title">版本记录</h2><p>每次重新整理都会保存一个快照。恢复历史版本会创建新版本，不会删除之后的记录。</p></div><button className="icon-button" data-modal-initial-focus disabled={restoreRevision.isPending} aria-label="关闭版本记录" onClick={() => setVersionsOpen(false)}><X size={20} /></button></header>{revisions.isLoading ? <LoadingState label="正在读取版本记录" /> : revisions.isError ? <EmptyState title="版本记录暂时无法读取" description={revisions.error instanceof Error ? revisions.error.message : "请稍后重试。"} action={<button type="button" className="button button-secondary" onClick={() => void revisions.refetch()}><RefreshCw size={16} />重新加载</button>} /> : revisions.data?.revisions.length ? <div className="version-list">{revisions.data.revisions.map((revision) => <article key={revision.revision} className={revision.current ? "current" : ""}><div className="version-marker">{revision.current ? <CheckCircle2 size={18} /> : <History size={18} />}</div><div><div className="version-heading"><strong>版本 {revision.revision}</strong>{revision.current && <span>当前版本</span>}</div><time>{formatDate(revision.createdAt)}</time><p>{revision.summary || revision.title || "此版本没有摘要"}</p></div>{!revision.current && <button className="button button-secondary" disabled={restoreRevision.isPending} onClick={() => void confirmRestoreRevision(revision.revision)}>{restoreRevision.isPending ? "恢复中…" : "恢复此版本"}</button>}</article>)}</div> : <EmptyState title="暂无历史版本" description="重新整理后会自动保留历史快照。" />}</section></div>}
+    {diagramOpen && <div className="modal-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) setDiagramOpen(false); }}>
+      <section ref={diagramModalRef} className="diagram-modal" role="dialog" aria-modal="true" aria-labelledby="diagram-modal-title" aria-describedby="diagram-modal-description">
+        <header className="diagram-modal-header">
+          <div className="diagram-modal-title-row">
+            <div><span className="eyebrow">SMART DIAGRAM</span><h2 id="diagram-modal-title">{diagram.data?.diagram?.diagramLabel || (diagram.data?.status === "generating" ? "正在生成智能图解" : "智能图解")}</h2></div>
+            <div className="diagram-header-actions">
+              {diagram.data?.status === "ready" && <button type="button" className="button button-secondary" disabled={generateDiagram.isPending} onClick={() => startDiagram(true)}><RefreshCw className={generateDiagram.isPending ? "spin" : ""} size={16} />{generateDiagram.isPending ? "正在提交…" : "重新生成"}</button>}
+              <button type="button" className="button button-secondary" data-diagram-close onClick={() => setDiagramOpen(false)}>关闭</button>
+            </div>
+          </div>
+          <p id="diagram-modal-description">{diagram.data?.generation?.message || diagram.data?.diagram?.selectionReason || "AI 会先判断资料结构，再选择适合的图形；生成结果会缓存到当前内容。"}</p>
+        </header>
+        {diagram.isPending ? <LoadingState label="正在读取图解状态" />
+          : diagram.isError && !diagram.data ? <EmptyState icon={<Network size={28} />} title="暂时无法读取图解状态" description={diagram.error instanceof Error ? diagram.error.message : "网络连接异常，请稍后重试。"} action={<button type="button" className="button button-secondary" onClick={() => void diagram.refetch()}><RefreshCw size={16} />重新加载</button>} />
+          : diagram.data?.status === "ready" && diagram.data.diagram ? <KnowledgeDiagram diagram={diagram.data.diagram} />
+          : diagram.data?.status === "generating" ? <section className="diagram-progress" role="status" aria-live="polite"><div className="diagram-progress-orbit"><RefreshCw className="spin" size={25} /></div><div><strong>{diagram.data.generation?.phase === "saving" ? "正在保存图解" : "正在分析与绘制"}</strong><p>{diagram.data.generation?.message}</p><span>已处理 {diagramElapsedLabel} · 可以关闭窗口，后台任务不会中断{diagram.isError ? " · 状态更新暂时中断，正在自动重试" : ""}</span></div><ol><li className="done">已接收生成任务</li><li className={diagram.data.generation?.phase === "analyzing" ? "active" : "done"}>分析结构与绘制图解</li><li className={diagram.data.generation?.phase === "saving" ? "active" : ""}>保存图解结果</li></ol></section>
+          : diagram.data?.status === "failed" ? <EmptyState icon={<Network size={28} />} title="图解生成未完成" description={`${persistedDiagramError}。原文和整理结果未受影响，可以重新尝试。`} action={<div className="page-header-actions"><button type="button" className="button button-primary" disabled={generateDiagram.isPending} onClick={() => startDiagram(false)}>{generateDiagram.isPending ? "正在重新提交…" : "重新尝试"}</button><button type="button" className="button button-secondary" onClick={() => navigate("/settings/ai")}>检查 AI 设置</button></div>} />
+          : generateDiagram.isError ? <EmptyState icon={<Network size={28} />} title="图解任务未能提交" description={generateDiagram.error instanceof Error ? generateDiagram.error.message : "请求没有成功发送，请检查网络后重试。"} action={diagramNeedsConfiguration ? <button type="button" className="button button-primary" onClick={() => navigate("/settings/ai")}>前往 AI 设置</button> : <button type="button" className="button button-primary" disabled={generateDiagram.isPending} onClick={() => startDiagram(false)}>重新提交</button>} />
+          : <EmptyState icon={<Network size={28} />} title="尚未生成智能图解" description="需要查看时再调用 AI，系统会根据层级、流程、时序、状态、对比或关系自动选择图形。" action={<button type="button" className="button button-primary" disabled={generateDiagram.isPending} onClick={() => startDiagram(false)}>{generateDiagram.isPending ? "正在提交任务…" : "生成智能图解"}</button>} />}
+      </section>
+    </div>}
   </main>;
 }

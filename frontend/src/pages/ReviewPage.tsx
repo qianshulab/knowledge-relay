@@ -30,6 +30,7 @@ export default function ReviewPage() {
       notify(variables.action === "snoozed" ? "已推迟一周提醒" : variables.action === "mastered" ? "已标记为掌握" : "回顾状态已更新", "success");
       void queryClient.invalidateQueries({ queryKey: ["review-suggestions"] });
     },
+    onError: (error) => notify(error instanceof Error ? error.message : "回顾状态更新失败，请重试", "danger"),
   });
 
   function open(item: ReviewSuggestion) {
@@ -38,15 +39,19 @@ export default function ReviewPage() {
   }
 
   const overview = review.data?.overview;
+  const header = <PageHeader eyebrow="KNOWLEDGE REVIEW" title="回顾" description="让收藏过的内容在合适的时间重新出现，而不是沉入不断增长的收件箱。" />;
+  if (review.isPending) return <main className="page review-page">{header}<LoadingState label="正在准备今日回顾" /></main>;
+  if (review.isError && !review.data) return <main className="page review-page">{header}<EmptyState icon={<RotateCcw size={30} />} title="回顾内容加载失败" description={review.error instanceof Error ? review.error.message : "暂时无法读取回顾内容，请稍后重试。"} action={<button className="button button-secondary" onClick={() => void review.refetch()}><RotateCcw size={16} />重新加载</button>} /></main>;
+
   return <main className="page review-page">
-    <PageHeader eyebrow="KNOWLEDGE REVIEW" title="回顾" description="让收藏过的内容在合适的时间重新出现，而不是沉入不断增长的收件箱。" />
+    {header}
     <section className="review-overview" aria-label="今日回顾概览">
       <div><span className="metric-icon"><Sparkles size={18} /></span><span>今日待回顾</span><strong>{overview?.due ?? 0}</strong></div>
       <div><span className="metric-icon"><Eye size={18} /></span><span>尚未阅读</span><strong>{overview?.unread ?? 0}</strong></div>
       <div><span className="metric-icon"><Heart size={18} /></span><span>重点收藏</span><strong>{overview?.favorites ?? 0}</strong></div>
     </section>
-    <section className="review-section-head"><div><h2>今天值得重看的内容</h2><p>依据阅读状态、收藏时间和重点标记排序，每次只给出一组可完成的内容。</p></div><button className="button button-secondary" onClick={() => void review.refetch()}><RotateCcw size={16} />换一组</button></section>
-    {review.isLoading ? <LoadingState label="正在准备今日回顾" /> : review.data?.suggestions.length ? <div className="review-grid">
+    <section className="review-section-head"><div><h2>今天值得重看的内容</h2><p>依据阅读状态、收藏时间和重点标记排序，每次只给出一组可完成的内容。</p></div><button className="button button-secondary" disabled={review.isFetching} onClick={() => void review.refetch()}><RotateCcw className={review.isFetching ? "spin" : ""} size={16} />{review.isFetching ? "正在更新" : "换一组"}</button></section>
+    {review.data?.suggestions.length ? <div className="review-grid">
       {review.data.suggestions.map((item) => <article className="review-card" key={item.id}>
         <button className="review-card-main" onClick={() => open(item)}>
           <div className="review-cover">

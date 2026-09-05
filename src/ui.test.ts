@@ -36,7 +36,8 @@ describe("component frontend", () => {
     const inbox = read("frontend/src/pages/InboxPage.tsx");
     expect(inbox).toContain("queryClient.prefetchQuery");
     expect(inbox).toContain("await queryClient.fetchQuery");
-    expect(inbox).toContain("messagePageMinHeight");
+    expect(inbox).toContain("placeholderData: keepPreviousData");
+    expect(inbox).not.toContain("messagePageMinHeight");
     expect(inbox).toContain("disabled={view.page === 0 || Boolean(pageNavigation)}");
     const library = read("frontend/src/pages/LibraryPage.tsx");
     expect(library).toContain("/api/knowledge/facets?organized=1");
@@ -70,7 +71,7 @@ describe("component frontend", () => {
     expect(diagram).toContain("maximumScale = 2.5");
     expect(diagram).toContain("ResizeObserver");
     expect(diagram).toContain('closest(".diagram-node")');
-    expect(diagram).toContain("event.stopPropagation(); selectNode(node.id)");
+    expect(diagram).toContain("event.stopPropagation(); selectNode(node.id, event.currentTarget)");
     expect(diagram).toContain("diagram-node-card");
     expect(diagram).toContain("roleNames");
     const settings = read("frontend/src/pages/SettingsPage.tsx");
@@ -101,22 +102,33 @@ describe("component frontend", () => {
     expect(styles).toContain("-webkit-line-clamp: 2");
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/knowledge-chat"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/review"');
-    expect(read("frontend/src/components/Layout.tsx")).toContain('to: "/tasks"');
+    expect(read("frontend/src/components/Layout.tsx")).toContain('to="/tasks"');
     expect(read("frontend/src/components/Layout.tsx")).toContain('label: "Obsidian 同步"');
     const search = read("frontend/src/components/SearchDialog.tsx");
     expect(search).toContain("随知识库动态变化");
-    expect(search).toContain("基于结果提问");
+    expect(search).toContain("个人知识检索");
+    expect(search).toContain("检索负责定位原文，不代替知识问答生成结论");
+    expect(search).toContain("需要归纳、比较或追问？进入知识问答");
+    expect(search).not.toContain("基于结果提问");
+    expect(search).toContain("activeRequest.current?.abort()");
+    expect(search).toContain("dialogRef.current?.querySelectorAll");
+    expect(search).toContain("onCloseRef.current()");
+    expect(search).toContain("facets.isError");
     expect(search).toContain("matchReasons");
     const auth = read("frontend/src/pages/AuthPage.tsx");
     expect(auth).toContain('new URLSearchParams(window.location.search).get("invite")');
     expect(auth).toContain("defaultValue={initialInviteToken}");
-    expect(auth).toContain("别让有价值的内容");
-    expect(auth).toContain("auth-relay-demo");
+    expect(auth).toContain("把散落在各处的好内容");
+    expect(auth).toContain("auth-knowledge-scene");
+    expect(read("frontend/src/components/Brand.tsx")).toContain('src="/app/favicon.svg?v=20260905"');
+    expect(read("frontend/src/main.tsx")).toContain('addEventListener("vite:preloadError"');
     expect(read("frontend/src/App.tsx")).toContain("lazy(() => import");
     expect(read("frontend/src/App.tsx")).toContain("<Suspense");
     expect(settings).toContain("/api/nanobot/provider/models?provider=");
     expect(settings).toContain("刷新模型列表");
-    expect(settings).toContain("保存并检查连接");
+    expect(settings).toContain("检查草稿连接");
+    expect(settings).toContain('api<DraftModelConnectionResult>("/api/nanobot/provider/test"');
+    expect(settings).toContain("配置尚未保存");
     expect(settings).toContain('api<ModelConnectionResult>("/api/agent/test"');
     expect(settings).toContain("if (result.ok)");
     const obsidian = read("frontend/src/pages/ObsidianPage.tsx");
@@ -131,6 +143,13 @@ describe("component frontend", () => {
     expect(settings).toContain('api("/api/skills", { method: "POST"');
     expect(diagram).toContain("在图解中查找");
     expect(diagram).toContain("diagram-node-panel");
+    expect(diagram).toContain("aria-expanded={selectedId === node.id}");
+    expect(diagram).toContain("handleStageKeyDown");
+    expect(diagram).toContain("stageRef.current.getBoundingClientRect()");
+    expect(reader).toContain("后台任务不会中断");
+    expect(reader).toContain("暂时无法读取图解状态");
+    expect(reader).toContain("diagram.data?.status === \"generating\"");
+    expect(read("frontend/src/components/KnowledgeRelay.tsx")).toContain("正在保存并缓存");
     const review = read("frontend/src/pages/ReviewPage.tsx");
     expect(review).toContain("今天值得重看的内容");
     expect(review).toContain("一周后提醒");
@@ -151,9 +170,9 @@ describe("component frontend", () => {
 
   it("uses a high-contrast reading system without blurred glass surfaces", () => {
     const styles = read("frontend/src/styles.css");
-    expect(styles).toContain("--text: #101828");
-    expect(styles).toContain("--surface: #ffffff");
-    expect(styles).toContain("font-size: 16px");
+    expect(styles).toContain("--text: #171824");
+    expect(styles).toContain("--surface: #fffefd");
+    expect(styles).toContain("body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--canvas); color: var(--text); font-size: 15px;");
     expect(styles).toContain("font-size: 18px");
     expect(styles).toContain("line-height: 1.78");
     expect(styles).toContain(".prose-table-scroll");
@@ -173,7 +192,7 @@ describe("component frontend", () => {
     expect(styles).not.toContain("@import url(");
   });
 
-  it("supports persistent light and dark themes with settings nested in the main sidebar", () => {
+  it("supports persistent light and dark themes with settings in the product navigation", () => {
     const app = read("frontend/src/App.tsx");
     const main = read("frontend/src/main.tsx");
     const layout = read("frontend/src/components/Layout.tsx");
@@ -183,19 +202,22 @@ describe("component frontend", () => {
     expect(main).toContain("prefers-color-scheme: dark");
     expect(main).toContain("knowledge-relay-theme");
     expect(layout).toContain("theme-toggle");
-    expect(layout).toContain("sidebar-subnav");
-    expect(layout).toContain("sidebarCollapsed");
-    expect(layout).toContain("knowledge-relay-sidebar-collapsed");
-    expect(layout).toContain("toggleSidebar");
-    expect(styles).toContain(".app-shell.sidebar-collapsed");
+    expect(layout).toContain("workspace-masthead");
+    expect(layout).toContain("primary-navigation");
+    expect(layout).toContain("contextual-navigation");
+    expect(layout).toContain("navigation-drawer");
+    expect(layout).not.toContain("sidebarCollapsed");
+    expect(styles).toContain(".workspace-masthead");
+    expect(styles).toContain(".contextual-navigation");
     expect(layout).toContain('to="/settings/intake"');
     expect(layout).not.toContain('to="/settings/api"');
-    expect(read("frontend/src/pages/InboxPage.tsx")).toContain("管理内容来源");
+    expect(read("frontend/src/pages/InboxPage.tsx")).toContain("<span>内容来源</span>");
     expect(settings).not.toContain("settings-nav");
     expect(styles).toContain(':root[data-theme="dark"]');
-    expect(styles).toContain("--text: #f8fafc");
-    expect(styles).toContain("--text-secondary: #dce4eb");
-    expect(styles).toContain("--text-muted: #b9c5cf");
+    expect(styles).toContain("--text: #f7f5f2");
+    expect(styles).toContain("--text-secondary: #d5d2dc");
+    expect(styles).toContain("--text-muted: #a8a5b2");
+    expect(styles).toContain("--text-placeholder: #b3b0bd");
     expect(styles).toContain("input::placeholder, textarea::placeholder");
     expect(styles).toContain(".search-form input { width: 100%; min-width: 0;");
     expect(styles).toContain("appearance: none; background: transparent;");
@@ -205,11 +227,11 @@ describe("component frontend", () => {
   });
 
   it("keeps every dark theme text tier above enhanced WCAG contrast", () => {
-    const surface = "#151c24";
-    expect(contrastRatio("#f8fafc", surface)).toBeGreaterThanOrEqual(7);
-    expect(contrastRatio("#dce4eb", surface)).toBeGreaterThanOrEqual(7);
-    expect(contrastRatio("#b9c5cf", surface)).toBeGreaterThanOrEqual(7);
-    expect(contrastRatio("#aab7c2", surface)).toBeGreaterThanOrEqual(7);
-    expect(contrastRatio("#6fe0d2", surface)).toBeGreaterThanOrEqual(7);
+    const surface = "#151721";
+    expect(contrastRatio("#f7f5f2", surface)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio("#d5d2dc", surface)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio("#a8a5b2", surface)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio("#b3b0bd", surface)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio("#b0aaff", surface)).toBeGreaterThanOrEqual(7);
   });
 });

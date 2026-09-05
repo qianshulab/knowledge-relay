@@ -252,6 +252,12 @@ export type BackgroundJobResponse = {
   overview: BackgroundJobOverview;
   jobs: BackgroundJob[];
   searchIndex: SearchIndexHealth;
+  pagination: {
+    limit: number;
+    offset: number;
+    total: number;
+    hasMore: boolean;
+  };
 };
 
 export type Dashboard = {

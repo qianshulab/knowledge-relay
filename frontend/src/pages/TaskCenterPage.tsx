@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bot, CheckCircle2, Clock3, Database, FileSearch, ListTodo, RefreshCw, RotateCcw, Sparkles, XCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useApp } from "../App";
-import { EmptyState, LoadingState, PageHeader, formatDate } from "../components/ui";
+import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
 import type { BackgroundJob, BackgroundJobResponse, BackgroundJobStatus, BackgroundJobType } from "../types";
 
 type Filter = "all" | "active" | "failed" | "completed";
+const pageSize = 40;
 
 const typeLabels: Record<BackgroundJobType, string> = {
   ingestion: "新内容整理",
@@ -44,10 +45,18 @@ export default function TaskCenterPage() {
   const queryClient = useQueryClient();
   const { notify } = useApp();
   const [filter, setFilter] = useState<Filter>("all");
-  const jobs = useQuery({
-    queryKey: ["background-jobs"],
-    queryFn: () => api<BackgroundJobResponse>("/api/jobs?limit=100"),
-    refetchInterval: (query) => query.state.data?.overview.active ? 3_000 : 15_000,
+  const jobs = useInfiniteQuery({
+    queryKey: ["background-jobs", filter],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(pageSize), offset: String(pageParam) });
+      if (filter !== "all") params.set("status", filter);
+      return api<BackgroundJobResponse>(`/api/jobs?${params.toString()}`);
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.pagination.hasMore
+      ? lastPage.pagination.offset + lastPage.pagination.limit
+      : undefined,
+    refetchInterval: (query) => query.state.data?.pages[0]?.overview.active ? 3_000 : 15_000,
     refetchOnWindowFocus: true,
   });
   const cancel = useMutation({
@@ -67,17 +76,29 @@ export default function TaskCenterPage() {
     },
     onError: (error) => notify(error instanceof Error ? error.message : "无法启动索引检查", "danger"),
   });
-  const visibleJobs = useMemo(() => (jobs.data?.jobs || []).filter((job) => {
+  const loadedJobs = useMemo(() => {
+    const unique = new Map<string, BackgroundJob>();
+    for (const page of jobs.data?.pages || []) {
+      for (const job of page.jobs) unique.set(job.id, job);
+    }
+    return [...unique.values()];
+  }, [jobs.data?.pages]);
+  const visibleJobs = useMemo(() => loadedJobs.filter((job) => {
     if (filter === "active") return isActive(job);
     if (filter === "failed") return job.status === "failed";
     if (filter === "completed") return job.status === "completed";
     return true;
-  }), [filter, jobs.data?.jobs]);
-  const overview = jobs.data?.overview;
-  const index = jobs.data?.searchIndex;
+  }), [filter, loadedJobs]);
+  const overview = jobs.data?.pages[0]?.overview;
+  const index = jobs.data?.pages[0]?.searchIndex;
+  const total = jobs.data?.pages[0]?.pagination.total ?? 0;
+  const header = <PageHeader eyebrow="BACKGROUND OPERATIONS" title="任务中心" description="整理、图解、索引和同步都会在后台持续执行。关闭页面后任务不会丢失，重新打开仍可查看真实进度。" actions={<button className="button button-secondary" disabled={jobs.isFetching} onClick={() => void jobs.refetch()}><RefreshCw className={jobs.isFetching ? "spin" : ""} size={17} />刷新状态</button>} />;
+
+  if (jobs.isPending) return <main className="page task-center-page">{header}<LoadingState label="正在读取后台任务" /></main>;
+  if (jobs.isError && !jobs.data) return <main className="page task-center-page">{header}<EmptyState icon={<AlertTriangle size={30} />} title="后台任务加载失败" description={jobs.error instanceof Error ? jobs.error.message : "暂时无法读取任务状态，请稍后重试。"} action={<button className="button button-secondary" onClick={() => void jobs.refetch()}><RefreshCw size={16} />重新加载</button>} /></main>;
 
   return <main className="page task-center-page">
-    <PageHeader eyebrow="BACKGROUND OPERATIONS" title="任务中心" description="整理、图解、索引和同步都会在后台持续执行。关闭页面后任务不会丢失，重新打开仍可查看真实进度。" actions={<button className="button button-secondary" disabled={jobs.isFetching} onClick={() => void jobs.refetch()}><RefreshCw className={jobs.isFetching ? "spin" : ""} size={17} />刷新状态</button>} />
+    {header}
     <section className="metrics-grid task-metrics" aria-label="后台任务概览">
       <article className="metric-card"><span><Sparkles size={18} />正在处理</span><strong>{overview?.active ?? "—"}</strong><small>运行、排队与重试任务</small></article>
       <article className="metric-card"><span><Clock3 size={18} />排队等待</span><strong>{overview?.queued ?? "—"}</strong><small>等待引擎接手的任务</small></article>
@@ -90,11 +111,13 @@ export default function TaskCenterPage() {
     </section>
     <section className="content-section task-list-section">
       <div className="section-heading"><div><span className="eyebrow">OPERATION HISTORY</span><h2>后台处理记录</h2><p>进度来自服务端持久化任务，不再由当前弹窗或浏览器页面推测。</p></div><div className="segmented-control task-filters" aria-label="筛选任务">{(["all", "active", "failed", "completed"] as Filter[]).map((value) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value === "all" ? "全部" : value === "active" ? "进行中" : value === "failed" ? "失败" : "已完成"}</button>)}</div></div>
-      {jobs.isLoading ? <LoadingState label="正在读取后台任务" /> : visibleJobs.length ? <div className="task-list">{visibleJobs.map((job) => <article className="task-row" key={job.id}>
+      {visibleJobs.length ? <div className="task-list">{visibleJobs.map((job) => <article className="task-row" key={job.id}>
         <span className={`task-type-icon ${job.status}`}><ListTodo size={18} /></span>
         <div className="task-copy"><div className="task-title"><span>{typeLabels[job.type]}</span><strong>{job.title || "未命名任务"}</strong></div><p>{job.message || job.phase || "等待处理"}</p>{job.error && <div className="task-error"><XCircle size={14} />{job.error}</div>}<div className="task-meta"><span>{statusLabels[job.status]}</span><span>阶段：{job.phase || "待开始"}</span><span>尝试 {job.attempts}/{job.maxAttempts}</span><time>{formatDate(job.updatedAt)}</time></div></div>
         <div className="task-progress-wrap"><div className="task-progress-label"><span className={`status-badge ${statusTone(job.status)}`}>{statusLabels[job.status]}</span><strong>{Math.max(0, Math.min(100, job.progress))}%</strong></div><div className="task-progress"><i style={{ width: `${Math.max(2, Math.min(100, job.progress))}%` }} /></div><div className="task-actions">{job.resourceId && ["ingestion", "reprocess", "diagram"].includes(job.type) && <button className="text-link" onClick={() => navigate(`/reader/${encodeURIComponent(job.resourceId)}`)}><FileSearch size={14} />查看内容</button>}{job.status === "queued" && <button className="text-link danger-text" disabled={cancel.isPending} onClick={() => cancel.mutate(job.id)}><XCircle size={14} />取消</button>}</div></div>
       </article>)}</div> : <EmptyState icon={<RotateCcw size={28} />} title={filter === "all" ? "还没有后台任务" : "这个状态下没有任务"} description={filter === "all" ? "收到新内容、重新整理或生成智能图解后，处理进度会显示在这里。" : "可以切换筛选条件查看其他任务记录。"} />}
+      {jobs.isFetchNextPageError ? <InlineMessage tone="warning"><span>更早的任务记录加载失败，已加载的记录不受影响。</span><button type="button" className="text-link" onClick={() => void jobs.fetchNextPage()}><RefreshCw size={14} />重新加载</button></InlineMessage> : null}
+      {loadedJobs.length > 0 && <div className="library-pagination" role="status" aria-live="polite"><span>已显示 {loadedJobs.length} / {total} 条任务</span>{jobs.hasNextPage && <button className="button button-secondary" disabled={jobs.isFetchingNextPage} onClick={() => void jobs.fetchNextPage()}>{jobs.isFetchingNextPage ? "正在加载…" : `加载更早记录（剩余 ${Math.max(0, total - loadedJobs.length)} 条）`}</button>}</div>}
     </section>
   </main>;
 }

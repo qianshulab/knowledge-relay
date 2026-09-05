@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Maximize2, Minus, Plus, Search, X } from "lucide-react";
 import type { KnowledgeMap, KnowledgeMapNode } from "../types";
 
 const colors: Record<KnowledgeMapNode["type"], string> = {
-  root: "#0f766e", resource: "#0f766e", domain: "#7c3aed", concept: "#0891b2", tool: "#b45309", point: "#475569",
+  root: "var(--primary-solid)", resource: "var(--primary-solid)", domain: "var(--accent)", concept: "var(--info)", tool: "var(--warning)", point: "var(--text-muted)",
 };
 const minimumScale = 0.35;
 const maximumScale = 2.5;
@@ -132,7 +132,11 @@ const roleNames: Record<VisualRole, string> = {
 
 export default function KnowledgeDiagram({ diagram }: { diagram: KnowledgeMap }) {
   const frameRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const dragRef = useRef<Drag | null>(null);
+  const selectedTriggerRef = useRef<SVGGElement | null>(null);
+  const markerId = `diagram-arrow-${useId().replace(/:/g, "")}`;
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [query, setQuery] = useState("");
@@ -146,36 +150,48 @@ export default function KnowledgeDiagram({ diagram }: { diagram: KnowledgeMap })
   }, [positioned.nodes, query]);
   const selectedEdges = useMemo(() => diagram.edges.filter((edge) => edge.source === selectedId || edge.target === selectedId), [diagram.edges, selectedId]);
 
+  const constrainView = useCallback((next: View): View => {
+    const stage = stageRef.current;
+    if (!stage) return next;
+    const horizontalLimit = Math.max(72, (positioned.width * next.scale - stage.clientWidth) / 2 + 120);
+    const verticalLimit = Math.max(72, (positioned.height * next.scale - stage.clientHeight) / 2 + 120);
+    return {
+      ...next,
+      x: Math.max(-horizontalLimit, Math.min(horizontalLimit, next.x)),
+      y: Math.max(-verticalLimit, Math.min(verticalLimit, next.y)),
+    };
+  }, [positioned.height, positioned.width]);
+
   const fit = useCallback(() => {
-    const frame = frameRef.current;
-    if (!frame) return;
-    const scale = Math.min((frame.clientWidth - 56) / positioned.width, (frame.clientHeight - 64) / positioned.height, 1);
+    const stage = stageRef.current;
+    if (!stage) return;
+    const scale = Math.min((stage.clientWidth - 56) / positioned.width, (stage.clientHeight - 64) / positioned.height, 1);
     setView({ scale: Math.max(minimumScale, scale), x: 0, y: 12 });
   }, [positioned.height, positioned.width]);
 
   useEffect(() => {
     const animation = window.requestAnimationFrame(fit);
-    const frame = frameRef.current;
-    if (!frame) return () => window.cancelAnimationFrame(animation);
+    const stage = stageRef.current;
+    if (!stage) return () => window.cancelAnimationFrame(animation);
     const observer = new ResizeObserver(fit);
-    observer.observe(frame);
+    observer.observe(stage);
     return () => { window.cancelAnimationFrame(animation); observer.disconnect(); };
   }, [diagram, fit]);
 
   const zoom = useCallback((nextScale: number, anchor?: { x: number; y: number }) => {
     setView((current) => {
       const scale = Math.min(maximumScale, Math.max(minimumScale, nextScale));
-      if (!anchor || !frameRef.current) return { ...current, scale };
-      const rect = frameRef.current.getBoundingClientRect();
+      if (!anchor || !stageRef.current) return constrainView({ ...current, scale });
+      const rect = stageRef.current.getBoundingClientRect();
       const relativeX = anchor.x - rect.left - rect.width / 2;
       const relativeY = anchor.y - rect.top - rect.height / 2;
       const ratio = scale / current.scale;
-      return { scale, x: relativeX - (relativeX - current.x) * ratio, y: relativeY - (relativeY - current.y) * ratio };
+      return constrainView({ scale, x: relativeX - (relativeX - current.x) * ratio, y: relativeY - (relativeY - current.y) * ratio });
     });
-  }, []);
+  }, [constrainView]);
 
   useEffect(() => {
-    const stage = frameRef.current?.querySelector<HTMLDivElement>(".diagram-stage");
+    const stage = stageRef.current;
     if (!stage) return;
     const handleWheel = (event: WheelEvent) => { event.preventDefault(); zoom(view.scale * (event.deltaY < 0 ? 1.12 : 0.89), { x: event.clientX, y: event.clientY }); };
     stage.addEventListener("wheel", handleWheel, { passive: false });
@@ -191,7 +207,7 @@ export default function KnowledgeDiagram({ diagram }: { diagram: KnowledgeMap })
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    setView((current) => ({ ...current, x: drag.viewX + event.clientX - drag.startX, y: drag.viewY + event.clientY - drag.startY }));
+    setView((current) => constrainView({ ...current, x: drag.viewX + event.clientX - drag.startX, y: drag.viewY + event.clientY - drag.startY }));
   }
   function finishDrag(event: ReactPointerEvent<HTMLDivElement>) {
     if (dragRef.current?.pointerId !== event.pointerId) return;
@@ -199,22 +215,64 @@ export default function KnowledgeDiagram({ diagram }: { diagram: KnowledgeMap })
     setDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
-  function selectNode(id: string) { setSelectedId((current) => current === id ? undefined : id); }
+  function selectNode(id: string, trigger?: SVGGElement) {
+    const closing = selectedId === id;
+    if (closing) {
+      setSelectedId(undefined);
+      return;
+    }
+    if (trigger) selectedTriggerRef.current = trigger;
+    setSelectedId(id);
+    window.requestAnimationFrame(() => panelRef.current?.focus());
+  }
+
+  function closeNodePanel() {
+    setSelectedId(undefined);
+    window.requestAnimationFrame(() => selectedTriggerRef.current?.focus());
+  }
+
+  function handleStageKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && selectedId) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeNodePanel();
+      return;
+    }
+    if ((event.target as Element).closest(".diagram-node")) return;
+    if (["+", "="].includes(event.key)) {
+      event.preventDefault();
+      zoom(view.scale * 1.2);
+    } else if (event.key === "-") {
+      event.preventDefault();
+      zoom(view.scale / 1.2);
+    } else if (event.key === "0") {
+      event.preventDefault();
+      fit();
+    } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const amount = event.shiftKey ? 72 : 28;
+      setView((current) => constrainView({
+        ...current,
+        x: current.x + (event.key === "ArrowLeft" ? amount : event.key === "ArrowRight" ? -amount : 0),
+        y: current.y + (event.key === "ArrowUp" ? amount : event.key === "ArrowDown" ? -amount : 0),
+      }));
+    }
+  }
 
   return <div className="diagram-frame" ref={frameRef}>
-    <label className="diagram-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="在图解中查找" />{query && <button type="button" onClick={() => setQuery("")} aria-label="清除图解搜索"><X size={14} /></button>}</label>
-    <div className="diagram-toolbar" role="group" aria-label="图解缩放控制"><button type="button" onClick={() => zoom(view.scale / 1.2)} aria-label="缩小图解" title="缩小"><Minus size={17} /></button><span className="diagram-zoom-value">{Math.round(view.scale * 100)}%</span><button type="button" onClick={() => zoom(view.scale * 1.2)} aria-label="放大图解" title="放大"><Plus size={17} /></button><button type="button" className="diagram-fit" onClick={fit} aria-label="适配窗口" title="适配窗口"><Maximize2 size={16} />适配</button></div>
-    <div className={`diagram-stage ${dragging ? "is-dragging" : ""}`} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishDrag} onPointerCancel={finishDrag} onDoubleClick={(event) => { if (!(event.target as Element).closest(".diagram-node")) fit(); }}>
+    <label className="diagram-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="在图解中查找" aria-label={query.trim() ? `在图解中查找，找到 ${matchingIds.size} 个节点` : "在图解中查找"} />{query && !matchingIds.size ? <span className="diagram-search-empty" role="status">未找到</span> : null}{query && <button type="button" onClick={() => setQuery("")} aria-label="清除图解搜索"><X size={14} /></button>}</label>
+    <div className="diagram-toolbar" role="group" aria-label="图解缩放控制"><button type="button" disabled={view.scale <= minimumScale + 0.001} onClick={() => zoom(view.scale / 1.2)} aria-label="缩小图解" title="缩小"><Minus size={17} /></button><span className="diagram-zoom-value">{Math.round(view.scale * 100)}%</span><button type="button" disabled={view.scale >= maximumScale - 0.001} onClick={() => zoom(view.scale * 1.2)} aria-label="放大图解" title="放大"><Plus size={17} /></button><button type="button" className="diagram-fit" onClick={fit} aria-label="适配窗口" title="适配窗口"><Maximize2 size={16} />适配</button></div>
+    <div ref={stageRef} className={`diagram-stage ${dragging ? "is-dragging" : ""}`} tabIndex={0} aria-label="交互式智能图解。可用加减键缩放、方向键平移、数字 0 适配窗口。" onKeyDown={handleStageKeyDown} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishDrag} onPointerCancel={finishDrag} onDoubleClick={(event) => { if (!(event.target as Element).closest(".diagram-node")) fit(); }}>
       <svg viewBox={`0 0 ${positioned.width} ${positioned.height}`} role="img" aria-label={diagram.diagramLabel || "知识关系图"} style={{ width: positioned.width, height: positioned.height, left: `calc(50% + ${view.x}px)`, top: `calc(50% + ${view.y}px)`, transform: `translate(-50%, -50%) scale(${view.scale})` }}>
-        <defs><marker id="diagram-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
-        {diagram.edges.map((edge, index) => { const a = positioned.map.get(edge.source); const b = positioned.map.get(edge.target); if (!a || !b) return null; const active = Boolean(selectedId && (edge.source === selectedId || edge.target === selectedId)); const dimmed = Boolean(selectedId && !active); const midX = (a.x + b.x) / 2; const midY = (a.y + b.y) / 2; return <g className={`diagram-edge ${edge.kind === "secondary" ? "is-secondary" : ""} ${active ? "is-active" : ""} ${dimmed ? "is-dimmed" : ""}`} key={`${edge.source}-${edge.target}-${index}`}><path d={edgePath(a, b)} markerEnd="url(#diagram-arrow)" />{edge.label && <text className="diagram-edge-label" x={midX} y={midY - 7} textAnchor="middle">{edge.label.slice(0, 12)}</text>}</g>; })}
+        <defs><marker id={markerId} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" style={{ fill: "var(--text-muted)" }} /></marker></defs>
+        {diagram.edges.map((edge, index) => { const a = positioned.map.get(edge.source); const b = positioned.map.get(edge.target); if (!a || !b) return null; const active = Boolean(selectedId && (edge.source === selectedId || edge.target === selectedId)); const dimmed = Boolean(selectedId && !active); const midX = (a.x + b.x) / 2; const midY = (a.y + b.y) / 2; return <g className={`diagram-edge ${edge.kind === "secondary" ? "is-secondary" : ""} ${active ? "is-active" : ""} ${dimmed ? "is-dimmed" : ""}`} key={`${edge.source}-${edge.target}-${index}`}><path d={edgePath(a, b)} markerEnd={`url(#${markerId})`} />{edge.label && <text className="diagram-edge-label" x={midX} y={midY - 7} textAnchor="middle">{edge.label.slice(0, 12)}</text>}</g>; })}
         {positioned.nodes.map((node) => {
           const matched = !query.trim() || matchingIds.has(node.id);
           const related = !selectedId || selectedId === node.id || selectedEdges.some((edge) => edge.source === node.id || edge.target === node.id);
           const isRoot = node.type === "root" || node.type === "resource";
           const lines = labelLines(node.label, isRoot ? 16 : 13);
           const style = { "--node-accent": colors[node.type] } as CSSProperties;
-          return <g key={node.id} style={style} className={`diagram-node role-${node.role} ${isRoot ? "is-root" : ""} ${selectedId === node.id ? "is-selected" : ""} ${!matched || !related ? "is-dimmed" : ""}`} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} aria-label={`${node.label}${node.description ? `：${node.description}` : ""}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectNode(node.id); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); } }}>
+          return <g key={node.id} style={style} className={`diagram-node role-${node.role} ${isRoot ? "is-root" : ""} ${selectedId === node.id ? "is-selected" : ""} ${!matched || !related ? "is-dimmed" : ""}`} transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} aria-label={`${node.label}${node.description ? `：${node.description}` : ""}`} aria-expanded={selectedId === node.id} aria-controls={selectedId === node.id ? "diagram-node-detail" : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectNode(node.id, event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id, event.currentTarget); } }}>
             <rect className="diagram-node-card" x={-node.width / 2} y={-node.height / 2} width={node.width} height={node.height} rx={node.role === "decision" ? 18 : 13} />
             <rect className="diagram-node-accent" x={-node.width / 2} y={-node.height / 2} width="6" height={node.height} rx="3" />
             <circle className="diagram-node-index" cx={-node.width / 2 + 22} cy={-node.height / 2 + 21} r="11" />
@@ -225,7 +283,7 @@ export default function KnowledgeDiagram({ diagram }: { diagram: KnowledgeMap })
         })}
       </svg>
     </div>
-    {selected && <aside className="diagram-node-panel" aria-live="polite"><button type="button" onClick={() => setSelectedId(undefined)} aria-label="关闭节点详情"><X size={15} /></button><span>{roleNames[selected.role]}{selected.group ? ` · ${selected.group}` : ""}</span><h3>{selected.label}</h3>{selected.description ? <p>{selected.description}</p> : <p>该节点来自资料结构，暂时没有更详细的说明。</p>}{selected.evidence && <blockquote><strong>资料依据</strong>{selected.evidence}</blockquote>}{selectedEdges.length > 0 && <div>{selectedEdges.slice(0, 5).map((edge, index) => { const otherId = edge.source === selected.id ? edge.target : edge.source; const other = positioned.map.get(otherId); return other ? <button key={`${otherId}-${index}`} type="button" onClick={() => setSelectedId(otherId)}>{edge.label || "关联"} · {other.label}</button> : null; })}</div>}</aside>}
+    {selected && <aside ref={panelRef} id="diagram-node-detail" className="diagram-node-panel" role="region" tabIndex={-1} aria-live="polite" aria-label={`${selected.label}的节点解释`} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeNodePanel(); } }}><button type="button" onClick={closeNodePanel} aria-label="关闭节点详情"><X size={15} /></button><span>{roleNames[selected.role]}{selected.group ? ` · ${selected.group}` : ""}</span><h3>{selected.label}</h3>{selected.description ? <p>{selected.description}</p> : <p>该节点来自资料结构，暂时没有更详细的说明。</p>}{selected.evidence && <blockquote><strong>资料依据</strong>{selected.evidence}</blockquote>}{selectedEdges.length > 0 && <div>{selectedEdges.slice(0, 5).map((edge, index) => { const otherId = edge.source === selected.id ? edge.target : edge.source; const other = positioned.map.get(otherId); return other ? <button key={`${otherId}-${index}`} type="button" onClick={() => { setSelectedId(otherId); window.requestAnimationFrame(() => panelRef.current?.focus()); }}>{edge.label || "关联"} · {other.label}</button> : null; })}</div>}</aside>}
     <span className="diagram-help">点击卡片查看解释 · 滚轮缩放 · 拖动平移 · 双击适配</span>
   </div>;
 }

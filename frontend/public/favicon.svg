@@ -1,4 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="18" fill="#0f766e"/>
-  <path d="M18 18h28v7L29 40h17v7H18v-7l17-15H18z" fill="#fff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="知流">
+  <defs>
+    <linearGradient id="zlf" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#746BEF"/>
+      <stop offset="1" stop-color="#4D43C7"/>
+    </linearGradient>
+    <linearGradient id="zlg" x1="20" y1="19" x2="44" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F0EEFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#zlf)"/>
+  <path d="M17 17.5h28.5v7.2L29 39.6h16.7v7.1H17v-7.1l16.6-14.9H17z" fill="url(#zlg)"/>
+  <circle cx="49" cy="15" r="5.5" fill="#FF806B"/>
+  <circle cx="49" cy="15" r="2" fill="#FFF4F1"/>
 </svg>

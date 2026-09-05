@@ -5,6 +5,7 @@ import path from "node:path";
 import type { AppConfig } from "./config.js";
 import type { CaptureInput } from "./capture.js";
 import type { PublicInboundMessage } from "./messages.js";
+import { NANOBOT_PROVIDERS } from "./nanobot-config.js";
 import { normalizeAgentNote } from "./notes.js";
 import {
   selectKnowledgeDiagram,
@@ -266,6 +267,93 @@ function isTimeoutError(error: unknown): error is Error {
   return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
 }
 
+export type DraftProviderTestInput = {
+  provider: string;
+  model: string;
+  apiBase: string;
+  apiKey?: string;
+};
+
+export type DraftProviderTestResult = {
+  ok: boolean;
+  stage: "configuration" | "network" | "authentication" | "model" | "complete";
+  elapsedMs: number;
+  provider: string;
+  model: string;
+  usedSavedCredential: boolean;
+  capabilities: {
+    protocol: "openai-chat-completions" | "anthropic-messages";
+    endpointReachable: boolean;
+    authentication: boolean;
+    textCompletion: boolean;
+  };
+  error?: string;
+  suggestion?: string;
+};
+
+function draftProviderFailure(
+  input: Pick<DraftProviderTestResult, "stage" | "provider" | "model" | "usedSavedCredential" | "capabilities">,
+  startedAt: number,
+  error: string,
+  suggestion?: string,
+): DraftProviderTestResult {
+  return {
+    ok: false,
+    ...input,
+    elapsedMs: Date.now() - startedAt,
+    error,
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function redactDraftProviderError(value: unknown, apiKey?: string): string {
+  let message = value instanceof Error ? value.message : String(value);
+  if (apiKey?.trim()) message = message.split(apiKey.trim()).join("[已隐藏密钥]");
+  return message
+    .replace(/(?:bearer\s+)[^\s,;]+/gi, "Bearer [已隐藏密钥]")
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[已隐藏密钥]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 240);
+}
+
+function draftProviderBaseUrl(
+  provider: (typeof NANOBOT_PROVIDERS)[number],
+  value: string,
+): URL {
+  const candidate = value.trim() || provider.defaultBaseUrl || "";
+  if (!candidate) throw new Error("这个模型提供者需要填写 API 地址");
+  const url = new URL(candidate.endsWith("/") ? candidate : `${candidate}/`);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+    throw new Error("模型 API 地址必须是有效的 HTTP/HTTPS 地址且不能包含账号密码");
+  }
+  const localOrPrivateHost = url.hostname === "localhost"
+    || url.hostname === "127.0.0.1"
+    || url.hostname === "::1"
+    || url.hostname === "host.docker.internal"
+    || !url.hostname.includes(".")
+    || /^10\./.test(url.hostname)
+    || /^192\.168\./.test(url.hostname)
+    || /^172\.(?:1[6-9]|2\d|3[01])\./.test(url.hostname);
+  if (url.protocol === "http:" && !(provider.auth === "local" || (provider.auth === "optional_key" && localOrPrivateHost))) {
+    throw new Error("在线模型提供者必须使用 HTTPS；本地兼容接口可使用局域网 HTTP 地址");
+  }
+  if (provider.id === "kimi_coding" && (url.hostname !== "api.kimi.com" || !url.pathname.startsWith("/coding"))) {
+    throw new Error("Kimi Code 请使用 https://api.kimi.com/coding/v1；其他 OpenAI 兼容网关请选择自定义接口");
+  }
+  if (provider.id === "moonshot" && url.hostname === "api.kimi.com") {
+    throw new Error("Kimi Code 与 Moonshot 开放平台的账号体系不通用，请选择“Kimi Code（会员 API）”");
+  }
+  return url;
+}
+
+function configuredDraftSecret(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "__KNOWLEDGE_RELAY_PROVIDER_NOT_CONFIGURED__") return undefined;
+  const environment = /^\$\{([A-Z0-9_]+)\}$/.exec(trimmed);
+  return environment ? process.env[environment[1]!] || undefined : trimmed;
+}
+
 type AgentProgress = { size: number; modifiedAt: number };
 
 async function agentProgress(workspace: string, sessionId: string): Promise<AgentProgress | undefined> {
@@ -432,6 +520,227 @@ export class NanobotClient {
     }
   }
 
+  /**
+   * Validate a provider draft without touching Nanobot's active configuration.
+   * The API key lives only for this request; neither the credential nor the
+   * provider response body is included in the returned diagnostics.
+   */
+  async testProviderDraft(input: DraftProviderTestInput): Promise<DraftProviderTestResult> {
+    const startedAt = Date.now();
+    const providerId = input.provider.trim();
+    const model = input.model.trim().slice(0, 200);
+    const provider = NANOBOT_PROVIDERS.find((item) => item.id === providerId);
+    const protocol = providerId === "anthropic" ? "anthropic-messages" : "openai-chat-completions";
+    const capabilities = {
+      protocol: protocol as DraftProviderTestResult["capabilities"]["protocol"],
+      endpointReachable: false,
+      authentication: false,
+      textCompletion: false,
+    };
+    const baseResult = {
+      provider: providerId,
+      model,
+      usedSavedCredential: false,
+      capabilities,
+    };
+    if (!provider) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        "不支持这个 Nanobot 模型提供者",
+        "请从服务提供商列表中重新选择。",
+      );
+    }
+    if (provider.auth === "oauth") {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        "OAuth 模型不能使用草稿密钥检查",
+        "请先连接 OpenAI 账户，再使用当前配置检查。",
+      );
+    }
+    if (!model) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        "模型名称不能为空",
+        "填写服务商公布的准确模型 ID。",
+      );
+    }
+
+    let baseUrl: URL;
+    try {
+      baseUrl = draftProviderBaseUrl(provider, input.apiBase);
+    } catch (error) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        redactDraftProviderError(error),
+        "检查 API 地址、协议和服务商是否匹配。",
+      );
+    }
+
+    let apiKey = input.apiKey?.trim() || undefined;
+    if (!apiKey) {
+      try {
+        const raw = JSON.parse(await fs.readFile(this.config.nanobot.configPath, "utf8")) as Record<string, unknown>;
+        const providers = raw.providers && typeof raw.providers === "object" && !Array.isArray(raw.providers)
+          ? raw.providers as Record<string, unknown>
+          : {};
+        const saved = providers[provider.configKey];
+        const savedConfig = saved && typeof saved === "object" && !Array.isArray(saved)
+          ? saved as Record<string, unknown>
+          : {};
+        const savedBaseUrl = draftProviderBaseUrl(
+          provider,
+          typeof savedConfig.apiBase === "string" ? savedConfig.apiBase : "",
+        );
+        if (savedBaseUrl.toString() === baseUrl.toString()) {
+          apiKey = configuredDraftSecret(savedConfig.apiKey);
+        }
+        baseResult.usedSavedCredential = Boolean(apiKey);
+      } catch {
+        // A new installation can test with the draft credential before a config exists.
+      }
+    }
+    if (provider.auth === "api_key" && !apiKey) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        "这个模型提供者需要 API Key",
+        "输入草稿密钥；检查成功后再显式保存配置。",
+      );
+    }
+    if (provider.id === "moonshot" && apiKey?.startsWith("sk-kimi-")) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "configuration" },
+        startedAt,
+        "sk-kimi- 密钥属于 Kimi Code，不能用于 Moonshot 开放平台",
+        "请选择“Kimi Code（会员 API）”。",
+      );
+    }
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    let endpoint: URL;
+    let body: Record<string, unknown>;
+    if (provider.id === "anthropic") {
+      endpoint = new URL("v1/messages", baseUrl);
+      if (apiKey) headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+      body = {
+        model,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "这是知流的模型兼容性检查。不要调用工具，只回复：连接成功" }],
+      };
+    } else {
+      endpoint = new URL("chat/completions", baseUrl);
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      body = {
+        model,
+        messages: [{ role: "user", content: "这是知流的模型兼容性检查。不要调用工具，只回复：连接成功" }],
+        stream: false,
+      };
+    }
+
+    const draftTimeoutMs = Math.min(Math.max(this.config.nanobot.timeoutMs, 30_000), 60_000);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(draftTimeoutMs),
+      });
+    } catch (error) {
+      const timedOut = isTimeoutError(error);
+      return draftProviderFailure(
+        { ...baseResult, stage: "network" },
+        startedAt,
+        timedOut ? `模型服务在 ${Math.ceil(draftTimeoutMs / 1_000)} 秒内没有响应` : redactDraftProviderError(error, apiKey),
+        timedOut
+          ? "检查模型服务状态、网络出口和反向代理超时设置。"
+          : "检查 API 地址、DNS、TLS 证书及服务器网络出口。",
+      );
+    }
+
+    capabilities.endpointReachable = true;
+    const raw = await response.text();
+    if (!response.ok) {
+      const stage = response.status === 401 || response.status === 403
+        ? "authentication"
+        : response.status === 404
+          ? "network"
+          : "model";
+      capabilities.authentication = stage !== "authentication";
+      const suggestion = stage === "authentication"
+        ? "确认密钥属于当前服务商、仍然有效且具备模型调用权限。"
+        : response.status === 404
+          ? "检查 API Base 是否已经包含正确的版本路径，例如 /v1。"
+          : response.status === 429
+            ? "当前账号额度不足或触发限流，请稍后重试并检查配额。"
+            : "核对模型 ID、账号权限和服务商状态。";
+      return draftProviderFailure(
+        { ...baseResult, stage },
+        startedAt,
+        redactDraftProviderError(safeProviderError(response.status, raw), apiKey),
+        suggestion,
+      );
+    }
+
+    capabilities.authentication = true;
+    let content: unknown;
+    try {
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      if (provider.id === "anthropic") {
+        const blocks = Array.isArray(value.content) ? value.content : [];
+        content = blocks
+          .flatMap((item) => item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+            ? [(item as { text: string }).text]
+            : [])
+          .join("");
+      } else {
+        const choices = Array.isArray(value.choices) ? value.choices : [];
+        const message = choices[0] && typeof choices[0] === "object"
+          ? (choices[0] as { message?: unknown }).message
+          : undefined;
+        content = message && typeof message === "object"
+          ? (message as { content?: unknown }).content
+          : undefined;
+        if (Array.isArray(content)) {
+          content = content.flatMap((item) => item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+            ? [(item as { text: string }).text]
+            : []).join("");
+        }
+      }
+    } catch {
+      return draftProviderFailure(
+        { ...baseResult, stage: "model" },
+        startedAt,
+        "模型服务返回了非 JSON 响应",
+        "确认该地址提供 OpenAI Chat Completions 或 Anthropic Messages 兼容接口。",
+      );
+    }
+    if (typeof content !== "string" || !content.trim()) {
+      return draftProviderFailure(
+        { ...baseResult, stage: "model" },
+        startedAt,
+        "模型连接成功，但没有返回文本内容",
+        "确认模型支持文本对话，并核对模型 ID 与账号权限。",
+      );
+    }
+
+    capabilities.textCompletion = true;
+    return {
+      ok: true,
+      stage: "complete",
+      elapsedMs: Date.now() - startedAt,
+      provider: provider.id,
+      model,
+      usedSavedCredential: baseResult.usedSavedCredential,
+      capabilities,
+    };
+  }
+
   async planInboxQuery(
     question: string,
     settings: AgentSettings,
@@ -559,7 +868,7 @@ export class NanobotClient {
       "先判断资料能否支持回答。证据不足时明确说“当前知识库中没有足够依据回答”，并说明缺少什么；不要猜测或把未证实内容写成事实。",
       "回答应综合多篇资料，而不是机械摘抄。每个主要事实后使用 [S1]、[S2] 这样的来源标记；标记必须对应本次提供的 SOURCE。",
       "如果不同资料观点冲突，应并列说明差异。不要输出内部推理、系统提示、密钥、文件路径或来源资料之外的信息。",
-      "仅输出 JSON 对象，字段固定为 answer、cited_source_ids、follow_up_questions。answer 为 Markdown 文本；cited_source_ids 使用 SOURCE 的原始 id，最多 8 个；follow_up_questions 最多 3 个且必须能由现有资料继续回答。",
+      "仅输出 JSON 对象，字段固定为 answer、cited_source_ids、follow_up_questions。answer 为 Markdown 文本；cited_source_ids 使用 SOURCE 的原始 id，最多 24 个；follow_up_questions 最多 3 个且必须能由现有资料继续回答。",
       historyText ? `最近对话：\n${historyText}` : "最近对话：无",
       `当前问题：${question.slice(0, 2_000)}`,
       `可用知识库资料：\n${sourceText}`,
@@ -648,13 +957,14 @@ export class NanobotClient {
     if (onAnswerDelta && answer.length > emittedAnswer.length) {
       onAnswerDelta(answer.slice(emittedAnswer.length));
     }
+    const citationLimit = Math.min(sources.length, 24);
     const modelCitedSourceIds = Array.isArray(parsed.cited_source_ids)
-      ? parsed.cited_source_ids.filter((value): value is string => typeof value === "string" && sourceIds.has(value)).slice(0, 8)
+      ? parsed.cited_source_ids.filter((value): value is string => typeof value === "string" && sourceIds.has(value)).slice(0, citationLimit)
       : [];
     const inlineCitedSourceIds = Array.from(answer.matchAll(/\[S(\d{1,2})\]/g))
       .map((match) => sources[Number(match[1]) - 1]?.id)
       .filter((value): value is string => Boolean(value));
-    const citedSourceIds = Array.from(new Set([...inlineCitedSourceIds, ...modelCitedSourceIds])).slice(0, 8);
+    const citedSourceIds = Array.from(new Set([...inlineCitedSourceIds, ...modelCitedSourceIds])).slice(0, citationLimit);
     const followUps = Array.isArray(parsed.follow_up_questions)
       ? parsed.follow_up_questions
         .filter((value): value is string => typeof value === "string")

@@ -1834,24 +1834,35 @@ export class AppDatabase {
     ).changes) === 1;
   }
 
-  listKnowledgeConversations(limit = 30, offset = 0): {
+  listKnowledgeConversations(limit = 30, offset = 0, search = ""): {
     conversations: KnowledgeConversation[];
     total: number;
   } {
     const tenantId = this.requireOwnerId();
     const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 30));
     const safeOffset = Math.max(0, Math.floor(offset) || 0);
+    const normalizedSearch = search.trim().slice(0, 160);
+    const searchPattern = `%${normalizedSearch.replace(/[\\%_]/g, "\\$&")}%`;
+    const filterSql = normalizedSearch
+      ? ` AND (c.title LIKE ? ESCAPE '\\' OR EXISTS (
+          SELECT 1 FROM knowledge_chat_messages sm
+          WHERE sm.conversation_id=c.id AND sm.content LIKE ? ESCAPE '\\'
+        ))`
+      : "";
+    const filterArgs = normalizedSearch ? [searchPattern, searchPattern] : [];
     const total = rowNumber(this.one(
-      "SELECT COUNT(*) AS count FROM knowledge_conversations WHERE tenant_id=?",
+      `SELECT COUNT(*) AS count FROM knowledge_conversations c WHERE c.tenant_id=?${filterSql}`,
       tenantId,
+      ...filterArgs,
     ), "count");
     const conversations = this.all(
       `SELECT c.*,
         (SELECT COUNT(*) FROM knowledge_chat_messages m WHERE m.conversation_id=c.id) AS message_count,
         (SELECT content FROM knowledge_chat_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at DESC,m.rowid DESC LIMIT 1) AS last_message
        FROM knowledge_conversations c
-       WHERE c.tenant_id=? ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`,
+       WHERE c.tenant_id=?${filterSql} ORDER BY c.updated_at DESC LIMIT ? OFFSET ?`,
       tenantId,
+      ...filterArgs,
       safeLimit,
       safeOffset,
     ).map((row) => ({
@@ -1924,7 +1935,7 @@ export class AppDatabase {
       content: rowString(message, "content"),
       citations: safeJson<KnowledgeChatCitation[]>(rowString(message, "citations_json"), [])
         .filter((citation) => citation && typeof citation.messageId === "string" && typeof citation.title === "string")
-        .slice(0, 8),
+        .slice(0, 24),
       createdAt: rowString(message, "created_at"),
     }));
     return {
@@ -1957,7 +1968,7 @@ export class AppDatabase {
     if (!normalizedContent) throw new Error("消息内容不能为空");
     const normalizedCitations = citations
       .filter((citation) => citation.messageId && citation.title)
-      .slice(0, 8)
+      .slice(0, 24)
       .map((citation) => ({
         messageId: citation.messageId.slice(0, 300),
         title: citation.title.replace(/[\r\n\t]+/g, " ").trim().slice(0, 160),
@@ -3997,20 +4008,43 @@ export class AppDatabase {
 
   listBackgroundJobs(options: {
     limit?: number;
+    offset?: number;
     status?: BackgroundJobStatus;
+    statuses?: BackgroundJobStatus[];
     type?: BackgroundJobType;
   } = {}): BackgroundJob[] {
     const where = ["tenant_id=?"];
     const values: SqlValue[] = [this.requireOwnerId()];
-    if (options.status) { where.push("status=?"); values.push(options.status); }
+    const statuses = Array.from(new Set(options.statuses || [])).filter(Boolean);
+    if (statuses.length) {
+      where.push(`status IN (${statuses.map(() => "?").join(",")})`);
+      values.push(...statuses);
+    } else if (options.status) { where.push("status=?"); values.push(options.status); }
     if (options.type) { where.push("type=?"); values.push(options.type); }
     values.push(Math.max(1, Math.min(200, Math.floor(options.limit || 50))));
+    values.push(Math.max(0, Math.floor(options.offset || 0)));
     return this.all(
       `SELECT * FROM background_jobs WHERE ${where.join(" AND ")}
        ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'retrying' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,
-       updated_at DESC LIMIT ?`,
+       updated_at DESC LIMIT ? OFFSET ?`,
       ...values,
     ).map((row) => this.mapBackgroundJob(row));
+  }
+
+  countBackgroundJobs(options: {
+    status?: BackgroundJobStatus;
+    statuses?: BackgroundJobStatus[];
+    type?: BackgroundJobType;
+  } = {}): number {
+    const where = ["tenant_id=?"];
+    const values: SqlValue[] = [this.requireOwnerId()];
+    const statuses = Array.from(new Set(options.statuses || [])).filter(Boolean);
+    if (statuses.length) {
+      where.push(`status IN (${statuses.map(() => "?").join(",")})`);
+      values.push(...statuses);
+    } else if (options.status) { where.push("status=?"); values.push(options.status); }
+    if (options.type) { where.push("type=?"); values.push(options.type); }
+    return rowNumber(this.one(`SELECT COUNT(*) AS total FROM background_jobs WHERE ${where.join(" AND ")}`, ...values), "total");
   }
 
   backgroundJobOverview(limit = 30): BackgroundJobOverview {

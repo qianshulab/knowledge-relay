@@ -1,20 +1,50 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, Bot, CheckCircle2, ChevronLeft, ChevronRight, Copy, DatabaseBackup, Download, ExternalLink, FileWarning, KeyRound, LockKeyhole, MessageCircle, Plus, QrCode, RefreshCw, Route, Rss, Search, Settings2, Shield, ShieldCheck, SlidersHorizontal, Trash2, Upload, UserPlus, UserRound, Wrench, X } from "lucide-react";
-import { useParams } from "react-router-dom";
+import { Navigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type { AgentSettings, ApiToken, BotAccount, CreatedInvitation, FeedSource, Invitation, ManagedSkill, ModelConnectionResult, Owner, ProviderModelCatalog, ProviderSettings, QualityOverview, WechatMcpAdminState, WechatMcpCheck, WechatMcpUserState } from "../types";
 import { useApp } from "../App";
 import { EmptyState, InlineMessage, LoadingState, PageHeader, formatDate } from "../components/ui";
+import { useConfirm } from "../components/ConfirmDialog";
+
+type DraftModelConnectionResult = {
+  ok: boolean;
+  stage: "configuration" | "network" | "authentication" | "model" | "complete";
+  elapsedMs: number;
+  provider: string;
+  model: string;
+  usedSavedCredential: boolean;
+  capabilities: {
+    protocol: "openai-chat-completions" | "anthropic-messages";
+    endpointReachable: boolean;
+    authentication: boolean;
+    textCompletion: boolean;
+  };
+  error?: string;
+  suggestion?: string;
+};
+
+function isDraftConnection(value: ModelConnectionResult | DraftModelConnectionResult): value is DraftModelConnectionResult {
+  return "capabilities" in value;
+}
 
 export default function SettingsPage() {
   const { section = "intake" } = useParams();
   const { owner } = useApp();
   const currentSection = ["sources", "api"].includes(section) ? "intake" : section;
+  if (currentSection === "users" && owner.role !== "admin") return <Navigate to="/settings/account" replace />;
+  if (!["intake", "ai", "skills", "quality", "data", "users", "account"].includes(currentSection)) {
+    return <Navigate to="/settings/intake" replace />;
+  }
   return <main className="page settings-page"><PageHeader eyebrow="SYSTEM SETTINGS" title="系统设置" description="管理收件接入、智能整理、内容质量、数据与账户安全。" /><div className="settings-content">{currentSection === "intake" ? <IntakeSettings /> : currentSection === "ai" ? <AiSettings /> : currentSection === "skills" ? <SkillsSettings /> : currentSection === "quality" ? <QualitySettings /> : currentSection === "data" ? <DataSettings /> : currentSection === "users" && owner.role === "admin" ? <UsersSettings /> : <AccountSettings />}</div></main>;
 }
 
 function SettingsHeader({ title, description }: { title: string; description: string }) { return <div className="settings-heading"><h2>{title}</h2><p>{description}</p></div>; }
+
+function SettingsLoadError({ title, error, onRetry }: { title: string; error: unknown; onRetry: () => void }) {
+  return <EmptyState icon={<AlertTriangle size={25} />} title={title} description={error instanceof Error ? error.message : "服务暂时没有返回配置，请稍后重试。"} action={<button className="button button-secondary" type="button" onClick={onRetry}><RefreshCw size={16} />重新加载</button>} />;
+}
 
 const qualityIssueLabels: Record<string, string> = {
   failed: "整理失败",
@@ -97,6 +127,7 @@ function IntakeSettings() {
 
 function FeedSourcesSettings() {
   const { notify } = useApp();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const sources = useQuery({ queryKey: ["feed-sources"], queryFn: () => api<{ sources: FeedSource[] }>("/api/feed-sources"), refetchInterval: 30_000 });
   const create = useMutation({
@@ -107,6 +138,7 @@ function FeedSourcesSettings() {
   const update = useMutation({
     mutationFn: ({ id, ...input }: { id: string; enabled: boolean }) => api(`/api/feed-sources/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }),
+    onError: (error) => notify(error instanceof Error ? error.message : "来源状态更新失败", "danger"),
   });
   const check = useMutation({
     mutationFn: (id: string) => api<{ accepted: boolean; sourceId: string }>(`/api/feed-sources/${encodeURIComponent(id)}/check`, { method: "POST" }),
@@ -116,6 +148,7 @@ function FeedSourcesSettings() {
   const remove = useMutation({
     mutationFn: (id: string) => api(`/api/feed-sources/${encodeURIComponent(id)}`, { method: "DELETE" }),
     onSuccess: () => { notify("自动来源已移除，已接收内容不会删除", "success"); void queryClient.invalidateQueries({ queryKey: ["feed-sources"] }); },
+    onError: (error) => notify(error instanceof Error ? error.message : "自动来源移除失败", "danger"),
   });
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -127,21 +160,48 @@ function FeedSourcesSettings() {
     });
     event.currentTarget.reset();
   }
-  return <section className="settings-card feed-source-card"><div className="settings-card-head"><Rss size={20} /><div><h3>自动来源</h3><p>订阅 RSS 或 Atom，新文章会自动进入收件台并沿用同一套整理与去重流程。</p></div></div><form className="feed-source-create" onSubmit={submit}><label>来源名称<input name="name" maxLength={80} placeholder="例如：团队技术博客" /></label><label className="feed-url-field">订阅地址<input name="feedUrl" type="url" required placeholder="https://example.com/feed.xml" /></label><label>检查频率<select name="intervalMinutes" defaultValue="60"><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="1440">每天</option></select></label><button className="button button-primary" disabled={create.isPending}><Plus size={16} />{create.isPending ? "添加中…" : "添加来源"}</button></form>{sources.isLoading ? <LoadingState label="正在读取自动来源" /> : sources.data?.sources.length ? <div className="feed-source-list">{sources.data.sources.map((source) => <article key={source.id}><div className={`source-health ${source.lastError ? "error" : source.enabled ? "active" : "paused"}`}><Rss size={17} /></div><div><div className="source-title"><strong>{source.name}</strong><span className={`status-badge ${source.lastError ? "danger" : source.enabled ? "success" : ""}`}>{source.lastError ? "检查异常" : source.enabled ? "自动检查" : "已暂停"}</span></div><a href={source.feedUrl} target="_blank" rel="noreferrer">{source.feedUrl}</a><small>{source.lastError || (source.lastCheckedAt ? `最近检查 ${formatDate(source.lastCheckedAt)}` : "等待首次检查")} · 每 {source.intervalMinutes < 60 ? `${source.intervalMinutes} 分钟` : source.intervalMinutes === 60 ? "小时" : source.intervalMinutes === 1440 ? "天" : `${source.intervalMinutes / 60} 小时`}</small></div><div className="source-actions"><button className="button button-secondary" disabled={check.isPending} onClick={() => check.mutate(source.id)}><RefreshCw className={check.isPending ? "spin" : ""} size={15} />立即检查</button><button className="button button-secondary" onClick={() => update.mutate({ id: source.id, enabled: !source.enabled })}>{source.enabled ? "暂停" : "启用"}</button><button className="icon-button danger-text" aria-label={`删除来源${source.name}`} onClick={() => { if (window.confirm(`移除自动来源“${source.name}”？已经接收的内容会保留。`)) remove.mutate(source.id); }}><Trash2 size={16} /></button></div></article>)}</div> : <EmptyState icon={<Rss size={26} />} title="尚未添加自动来源" description="添加博客、新闻站或项目更新的 RSS / Atom 地址后，系统会定期检查新内容。" />}</section>;
+  async function removeSource(source: FeedSource) {
+    const accepted = await confirm({
+      title: "移除这个自动来源？",
+      description: `知流将停止检查“${source.name}”，已经接收和整理的内容会完整保留。`,
+      confirmLabel: "移除来源",
+      tone: "danger",
+    });
+    if (accepted) remove.mutate(source.id);
+  }
+  return <section className="settings-card feed-source-card"><div className="settings-card-head"><Rss size={20} /><div><h3>自动来源</h3><p>订阅 RSS 或 Atom，新文章会自动进入收件台并沿用同一套整理与去重流程。</p></div></div><form className="feed-source-create" onSubmit={submit}><label>来源名称<input name="name" maxLength={80} placeholder="例如：团队技术博客" /></label><label className="feed-url-field">订阅地址<input name="feedUrl" type="url" required placeholder="https://example.com/feed.xml" /></label><label>检查频率<select name="intervalMinutes" defaultValue="60"><option value="30">每 30 分钟</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="1440">每天</option></select></label><button className="button button-primary" disabled={create.isPending}><Plus size={16} />{create.isPending ? "添加中…" : "添加来源"}</button></form>{sources.isLoading ? <LoadingState label="正在读取自动来源" /> : sources.isError ? <SettingsLoadError title="自动来源加载失败" error={sources.error} onRetry={() => void sources.refetch()} /> : sources.data?.sources.length ? <div className="feed-source-list">{sources.data.sources.map((source) => <article key={source.id}><div className={`source-health ${source.lastError ? "error" : source.enabled ? "active" : "paused"}`}><Rss size={17} /></div><div><div className="source-title"><strong>{source.name}</strong><span className={`status-badge ${source.lastError ? "danger" : source.enabled ? "success" : ""}`}>{source.lastError ? "检查异常" : source.enabled ? "自动检查" : "已暂停"}</span></div><a href={source.feedUrl} target="_blank" rel="noreferrer">{source.feedUrl}</a><small>{source.lastError || (source.lastCheckedAt ? `最近检查 ${formatDate(source.lastCheckedAt)}` : "等待首次检查")} · 每 {source.intervalMinutes < 60 ? `${source.intervalMinutes} 分钟` : source.intervalMinutes === 60 ? "小时" : source.intervalMinutes === 1440 ? "天" : `${source.intervalMinutes / 60} 小时`}</small></div><div className="source-actions"><button className="button button-secondary" disabled={check.isPending} onClick={() => check.mutate(source.id)}><RefreshCw className={check.isPending ? "spin" : ""} size={15} />立即检查</button><button className="button button-secondary" onClick={() => update.mutate({ id: source.id, enabled: !source.enabled })}>{source.enabled ? "暂停" : "启用"}</button><button className="icon-button danger-text" aria-label={`删除来源${source.name}`} onClick={() => void removeSource(source)}><Trash2 size={16} /></button></div></article>)}</div> : <EmptyState icon={<Rss size={26} />} title="尚未添加自动来源" description="添加博客、新闻站或项目更新的 RSS / Atom 地址后，系统会定期检查新内容。" />}</section>;
 }
 
 function SourcesSettings() {
   const { notify } = useApp(); const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<{ accounts: BotAccount[] }>("/api/dashboard") });
   const [session, setSession] = useState<{ sessionId: string; qrUrl?: string } | null>(null);
-  async function start() { const value = await api<{ sessionId: string }>("/api/ilink/login/start", { method: "POST" }); setSession({ sessionId: value.sessionId, qrUrl: `/api/ilink/login/${value.sessionId}/qr.svg` }); }
-  async function disconnect(account: BotAccount) { if (!window.confirm("断开后将停止接收这个微信账号的新消息。确定继续吗？")) return; await api(`/api/ilink/accounts/${account.id}`, { method: "DELETE" }); notify("微信账号已断开", "success"); void queryClient.invalidateQueries({ queryKey: ["dashboard"] }); }
+  async function start() {
+    try {
+      const value = await api<{ sessionId: string }>("/api/ilink/login/start", { method: "POST" });
+      setSession({ sessionId: value.sessionId, qrUrl: `/api/ilink/login/${value.sessionId}/qr.svg` });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "微信连接启动失败", "danger");
+    }
+  }
+  async function disconnect(account: BotAccount) {
+    if (!await confirm({ title: "断开这个微信账号？", description: "断开后将停止接收该账号的新消息，已保存的内容不会受到影响。", confirmLabel: "断开账号", tone: "danger" })) return;
+    try {
+      await api(`/api/ilink/accounts/${account.id}`, { method: "DELETE" });
+      notify("微信账号已断开", "success");
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "微信账号断开失败", "danger");
+    }
+  }
   useEffect(() => { if (!session) return; const timer = window.setInterval(async () => { try { const status = await api<{ status: string }>(`/api/ilink/login/${session.sessionId}/status`); if (["connected", "confirmed", "success"].includes(status.status)) { setSession(null); notify("微信 iLink 已连接", "success"); void queryClient.invalidateQueries({ queryKey: ["dashboard"] }); } } catch { /* login session may briefly rotate */ } }, 2500); return () => window.clearInterval(timer); }, [notify, queryClient, session]);
-  return <section className="settings-card"><div className="settings-card-head"><MessageCircle size={20} /><div><h3>微信 iLink</h3><p>把消息、公众号文章和附件发送给 iLink Bot。</p></div><button className="button button-primary" onClick={() => void start()}><Plus size={17} />连接微信</button></div>{session?.qrUrl && <div className="qr-connect"><img src={session.qrUrl} alt="微信 iLink 登录二维码" /><div><strong>使用微信扫码连接</strong><p>扫码后按微信提示完成确认，此页面会自动更新。</p></div></div>}<div className="section-caption source-section-caption"><strong>连接状态</strong><span>{dashboard.data?.accounts.length ? `${dashboard.data.accounts.length} 个微信账号正在接收` : "连接账号后开始接收"}</span></div>{dashboard.isLoading ? <LoadingState /> : dashboard.data?.accounts.length ? <div className="source-list">{dashboard.data.accounts.map((account) => <div key={account.id}><CheckCircle2 size={19} /><div><strong>{account.botId}</strong><span>连接于 {formatDate(account.connectedAt)}</span></div><span className="status-badge success">已连接</span><button className="icon-button danger-text" aria-label="断开微信账号" onClick={() => void disconnect(account)}><Trash2 size={17} /></button></div>)}</div> : <EmptyState title="尚未连接微信" description="连接后即可通过微信发送内容。" />}</section>;
+  return <section className="settings-card"><div className="settings-card-head"><MessageCircle size={20} /><div><h3>微信 iLink</h3><p>把消息、公众号文章和附件发送给 iLink Bot。</p></div><button className="button button-primary" onClick={() => void start()}><Plus size={17} />连接微信</button></div>{session?.qrUrl && <div className="qr-connect"><img src={session.qrUrl} alt="微信 iLink 登录二维码" /><div><strong>使用微信扫码连接</strong><p>扫码后按微信提示完成确认，此页面会自动更新。</p></div></div>}<div className="section-caption source-section-caption"><strong>连接状态</strong><span>{dashboard.data?.accounts.length ? `${dashboard.data.accounts.length} 个微信账号正在接收` : "连接账号后开始接收"}</span></div>{dashboard.isLoading ? <LoadingState /> : dashboard.isError ? <SettingsLoadError title="微信连接状态加载失败" error={dashboard.error} onRetry={() => void dashboard.refetch()} /> : dashboard.data?.accounts.length ? <div className="source-list">{dashboard.data.accounts.map((account) => <div key={account.id}><CheckCircle2 size={19} /><div><strong>{account.botId}</strong><span>连接于 {formatDate(account.connectedAt)}</span></div><span className="status-badge success">已连接</span><button className="icon-button danger-text" aria-label="断开微信账号" onClick={() => void disconnect(account)}><Trash2 size={17} /></button></div>)}</div> : <EmptyState title="尚未连接微信" description="连接后即可通过微信发送内容。" />}</section>;
 }
 
 function WechatAssistantSettings() {
   const { owner, notify } = useApp();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const state = useQuery({ queryKey: ["wechat-mcp-state"], queryFn: () => api<WechatMcpUserState>("/api/wechat-mcp"), refetchInterval: 10_000 });
   const admin = useQuery({ queryKey: ["wechat-mcp-admin"], queryFn: () => api<WechatMcpAdminState>("/api/admin/wechat-mcp"), enabled: owner.role === "admin", refetchInterval: 10_000 });
@@ -204,7 +264,7 @@ function WechatAssistantSettings() {
   }
 
   async function unbind(id?: string) {
-    if (!window.confirm("解除后，这个微信联系人发送的新内容将不再进入对应用户的收件台。确定继续吗？")) return;
+    if (!await confirm({ title: "解除微信联系人绑定？", description: "解除后，该联系人发送的新内容将不再进入对应用户的收件台；历史内容会保留。", confirmLabel: "解除绑定", tone: "danger" })) return;
     try {
       await api(id ? `/api/admin/wechat-mcp/bindings/${id}` : "/api/wechat-mcp/binding", { method: "DELETE" });
       setBindingCode(null); notify("微信助手绑定已解除", "success"); await refresh();
@@ -240,7 +300,7 @@ function WechatAssistantSettings() {
       <div><span>助手二维码</span><strong>{qrConfigured ? "已配置" : "未配置"}</strong><small>{qrConfigured ? "用户可扫码添加助手" : "需由管理员上传"}</small></div>
       <div><span>用户绑定</span><strong>{owner.role === "admin" ? admin.isLoading ? "正在读取" : `${boundUsers.length}/${adminUsers.length} 已绑定` : binding ? "已绑定" : "未绑定"}</strong><small>{binding ? binding.wechatDisplayName : "绑定后才会路由消息"}</small></div>
     </div>
-    {owner.role === "admin" && <div className="wechat-mcp-admin">
+    {owner.role === "admin" && (admin.isLoading ? <LoadingState label="正在读取微信助手配置" /> : admin.isError ? <SettingsLoadError title="微信助手管理状态加载失败" error={admin.error} onRetry={() => void admin.refetch()} /> : <div className="wechat-mcp-admin">
       <div className="section-caption"><strong>连接配置</strong><span>仅管理员可修改；Authorization 加密保存在服务器，不会返回浏览器。</span></div>
       <form className="settings-form" onSubmit={(event) => void save(event)}>
         <label>MCP Endpoint<input type="url" required value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value })} placeholder="https://example.com/mcp" /></label>
@@ -252,13 +312,14 @@ function WechatAssistantSettings() {
         <div className="qr-config-row"><div><span className="qr-config-icon"><QrCode size={19} /></span><span><strong>助手二维码</strong><small>JPG、PNG 或 WebP；用户绑定时会在当前页面展示。</small></span></div><button type="button" className="button button-secondary qr-upload-button" onClick={() => qrInputRef.current?.click()}><Upload size={17} />{qrConfigured ? "更换二维码" : "上传二维码"}</button><input ref={qrInputRef} className="visually-hidden-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { void uploadQr(event.target.files?.[0]); event.currentTarget.value = ""; }} /></div>
         <div className="form-actions wechat-config-actions"><button className="button button-primary">保存连接配置</button><button type="button" className="button button-secondary" disabled={checking || !form.endpoint} onClick={() => void check()}><Activity size={17} />{checking ? "正在握手…" : "检查连接"}</button></div>
       </form>
-    </div>}
+    </div>)}
     <div className="section-caption wechat-binding-caption"><strong>用户绑定</strong><span>配置状态与用户绑定相互独立，只有已绑定联系人会进入对应账户。</span></div>
     <div className="wechat-assistant-bind">
       <div className="wechat-assistant-qr">{state.data?.source?.qrConfigured ? <img src={`/api/wechat-mcp/assistant-qr?v=${source?.updatedAt || "current"}`} alt="知流助手微信二维码" /> : <div className="qr-placeholder"><QrCode size={42} /><span>{owner.role === "admin" ? "请上传助手二维码" : "管理员尚未配置二维码"}</span></div>}</div>
       <div className="wechat-bind-copy"><strong>{binding ? `已绑定：${binding.wechatDisplayName}` : "添加助手并绑定账户"}</strong>{binding ? <><p>这个微信联系人发送给助手的新消息，会进入当前账户。最近收件：{binding.lastMessageAt ? formatDate(binding.lastMessageAt) : "尚无"}</p><button className="button button-secondary" onClick={() => void unbind()}>解除我的绑定</button></> : <><ol><li>使用微信扫描二维码，添加知流助手。</li><li>生成一次性绑定码，并原样发送给助手。</li><li>绑定成功后，再发送链接、文字或附件。</li></ol>{bindingCode ? <div className="binding-code"><div><span>15 分钟内有效</span><strong>{bindingCode.code}</strong><small>有效至 {formatDate(bindingCode.expiresAt)}</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(bindingCode.code)}><Copy size={16} />复制</button></div> : <button className="button button-primary" disabled={!state.data?.available} onClick={() => void generateCode()}><KeyRound size={17} />生成绑定码</button>}</>}</div>
     </div>
-    {owner.role === "admin" && <div className="wechat-binding-overview">
+    {state.isError && <SettingsLoadError title="微信助手状态加载失败" error={state.error} onRetry={() => void state.refetch()} />}
+    {owner.role === "admin" && !admin.isError && <div className="wechat-binding-overview">
       <div className="section-caption"><strong>全部用户绑定状态</strong><span>{boundUsers.length} 个已绑定 · {adminUsers.length - boundUsers.length} 个未绑定</span></div>
       {adminUsers.length > 5 && <label className="binding-search"><Search size={16} /><input value={bindingSearch} onChange={(event) => setBindingSearch(event.target.value)} placeholder="搜索用户名或微信联系人" aria-label="搜索微信助手绑定用户" /></label>}
       {visibleAdminUsers.length ? <div className="compact-list wechat-binding-list">
@@ -279,10 +340,31 @@ function WechatAssistantSettings() {
 function ApiSettings() {
   const { notify } = useApp(); const queryClient = useQueryClient(); const [created, setCreated] = useState<ApiToken | null>(null);
   const tokens = useQuery({ queryKey: ["api-tokens"], queryFn: () => api<{ tokens: ApiToken[] }>("/api/me/api-tokens") });
-  async function create(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const value = await api<ApiToken>("/api/me/api-tokens", { method: "POST", body: JSON.stringify({ name: form.get("name") }) }); setCreated(value); event.currentTarget.reset(); void queryClient.invalidateQueries({ queryKey: ["api-tokens"] }); }
-  async function revoke(id: string) { await api(`/api/me/api-tokens/${id}`, { method: "DELETE" }); notify("API 令牌已撤销", "success"); void queryClient.invalidateQueries({ queryKey: ["api-tokens"] }); }
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      const value = await api<ApiToken>("/api/me/api-tokens", { method: "POST", body: JSON.stringify({ name: form.get("name") }) });
+      setCreated(value);
+      formElement.reset();
+      notify("API 令牌已创建", "success");
+      void queryClient.invalidateQueries({ queryKey: ["api-tokens"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "API 令牌创建失败", "danger");
+    }
+  }
+  async function revoke(id: string) {
+    try {
+      await api(`/api/me/api-tokens/${id}`, { method: "DELETE" });
+      notify("API 令牌已撤销", "success");
+      void queryClient.invalidateQueries({ queryKey: ["api-tokens"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "API 令牌撤销失败", "danger");
+    }
+  }
   const activeTokens = tokens.data?.tokens.filter((item) => !item.revoked) || [];
-  return <section className="settings-card"><div className="settings-card-title"><KeyRound size={19} /><div><h3>开放 API</h3><p>为浏览器扩展、快捷指令或自动化工具创建独立令牌。</p></div><span className="status-badge">{activeTokens.length} 个有效令牌</span></div>{created?.token && <div className="secret-reveal"><KeyRound size={20} /><div><strong>新 API 令牌</strong><code>{created.token}</code><small>只显示一次，请立即保存。</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(created.token || "")}><Copy size={17} />复制</button></div>}<div className="section-caption source-section-caption"><strong>创建收件令牌</strong><span>不同设备建议使用独立令牌，便于单独撤销。</span></div><form className="inline-create-form" onSubmit={(event) => void create(event)}><label>令牌名称<input name="name" required placeholder="例如：iPhone 快捷指令" /></label><button className="button button-primary"><Plus size={17} />创建令牌</button></form><div className="section-caption source-section-caption"><strong>令牌状态</strong><span>{activeTokens.length ? "最近使用时间会自动更新" : "尚未创建可用令牌"}</span></div><div className="compact-list">{activeTokens.map((token) => <div key={token.id}><div><strong>{token.name}</strong><span>创建于 {formatDate(token.createdAt)}{token.lastUsedAt ? ` · 最近使用 ${formatDate(token.lastUsedAt)}` : " · 尚未使用"}</span></div><button className="icon-button danger-text" onClick={() => void revoke(token.id)} aria-label={`撤销令牌 ${token.name}`}><Trash2 size={18} /></button></div>)}</div><div className="api-example"><h4>提交方式</h4><p>向 <code>POST /api/captures</code> 发送 JSON，并在 Authorization 中使用 Bearer 令牌。支持 <code>text</code>、<code>url</code> 与 <code>externalId</code>。</p></div></section>;
+  return <section className="settings-card"><div className="settings-card-title"><KeyRound size={19} /><div><h3>开放 API</h3><p>为浏览器扩展、快捷指令或自动化工具创建独立令牌。</p></div><span className="status-badge">{activeTokens.length} 个有效令牌</span></div>{tokens.isError ? <SettingsLoadError title="API 令牌加载失败" error={tokens.error} onRetry={() => void tokens.refetch()} /> : <>{created?.token && <div className="secret-reveal"><KeyRound size={20} /><div><strong>新 API 令牌</strong><code>{created.token}</code><small>只显示一次，请立即保存。</small></div><button className="button button-secondary" onClick={() => void navigator.clipboard.writeText(created.token || "")}><Copy size={17} />复制</button></div>}<div className="section-caption source-section-caption"><strong>创建收件令牌</strong><span>不同设备建议使用独立令牌，便于单独撤销。</span></div><form className="inline-create-form" onSubmit={(event) => void create(event)}><label>令牌名称<input name="name" required placeholder="例如：iPhone 快捷指令" /></label><button className="button button-primary"><Plus size={17} />创建令牌</button></form><div className="section-caption source-section-caption"><strong>令牌状态</strong><span>{tokens.isLoading ? "正在读取令牌" : activeTokens.length ? "最近使用时间会自动更新" : "尚未创建可用令牌"}</span></div>{tokens.isLoading ? <LoadingState label="正在读取 API 令牌" /> : <div className="compact-list">{activeTokens.map((token) => <div key={token.id}><div><strong>{token.name}</strong><span>创建于 {formatDate(token.createdAt)}{token.lastUsedAt ? ` · 最近使用 ${formatDate(token.lastUsedAt)}` : " · 尚未使用"}</span></div><button className="icon-button danger-text" onClick={() => void revoke(token.id)} aria-label={`撤销令牌 ${token.name}`}><Trash2 size={18} /></button></div>)}</div>}<div className="api-example"><h4>提交方式</h4><p>向 <code>POST /api/captures</code> 发送 JSON，并在 Authorization 中使用 Bearer 令牌。支持 <code>text</code>、<code>url</code> 与 <code>externalId</code>。</p></div></>}</section>;
 }
 
 function AiSettings() {
@@ -292,7 +374,7 @@ function AiSettings() {
   const provider = useQuery({ queryKey: ["provider-settings"], queryFn: () => api<ProviderSettings>("/api/nanobot/provider"), enabled: owner.role === "admin" });
   const [form, setForm] = useState({ provider: "", model: "", apiBase: "", apiKey: "" });
   const [catalog, setCatalog] = useState<ProviderModelCatalog | null>(null);
-  const [connection, setConnection] = useState<ModelConnectionResult | null>(null);
+  const [connection, setConnection] = useState<ModelConnectionResult | DraftModelConnectionResult | null>(null);
   const [savingProvider, setSavingProvider] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -358,27 +440,27 @@ function AiSettings() {
     setConnection(null);
     setCheckingConnection(true);
     try {
-      if (selected?.auth !== "oauth") {
-        await persistProvider(false);
-        await new Promise((resolve) => window.setTimeout(resolve, 900));
-      }
-      let result: ModelConnectionResult | undefined;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          result = await api<ModelConnectionResult>("/api/agent/test", { method: "POST" });
-          if (result.ok || result.stage !== "runtime" || attempt === 2) break;
-        } catch (error) {
-          if (attempt === 2) throw error;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 900 + attempt * 600));
-      }
-      if (!result) throw new Error("没有收到连接检查结果");
+      const result = selected?.auth === "oauth"
+        ? await api<ModelConnectionResult>("/api/agent/test", { method: "POST" })
+        : await api<DraftModelConnectionResult>("/api/nanobot/provider/test", {
+          method: "POST",
+          body: JSON.stringify(form),
+        });
       setConnection(result);
-      if (result.ok) notify(`${result.provider} / ${result.model} 连接正常`, "success");
+      if (result.ok) notify(`${result.provider} / ${result.model} 文本调用正常；确认后可保存启用`, "success");
       else notify(result.error || "模型连接检查失败", "danger");
     } catch (error) {
       const message = error instanceof Error ? error.message : "连接检查失败";
-      setConnection({ ok: false, stage: "runtime", elapsedMs: 0, provider: form.provider, model: form.model, error: message });
+      setConnection({
+        ok: false,
+        stage: "network",
+        elapsedMs: 0,
+        provider: form.provider,
+        model: form.model,
+        usedSavedCredential: false,
+        capabilities: { protocol: form.provider === "anthropic" ? "anthropic-messages" : "openai-chat-completions", endpointReachable: false, authentication: false, textCompletion: false },
+        error: message,
+      });
       notify(message, "danger");
     } finally {
       setCheckingConnection(false);
@@ -388,16 +470,20 @@ function AiSettings() {
   async function saveAgent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    await api("/api/agent/settings", { method: "PUT", body: JSON.stringify({ enabled: data.get("enabled") === "on", baseUrl: agent.data?.baseUrl, instructions: data.get("instructions"), autoReply: false, notifyOnFailure: data.get("notifyOnFailure") === "on" }) });
-    notify("智能整理设置已保存", "success");
-    void queryClient.invalidateQueries({ queryKey: ["agent-settings"] });
+    try {
+      await api("/api/agent/settings", { method: "PUT", body: JSON.stringify({ enabled: data.get("enabled") === "on", baseUrl: agent.data?.baseUrl, instructions: data.get("instructions"), autoReply: false, notifyOnFailure: data.get("notifyOnFailure") === "on" }) });
+      notify("智能整理设置已保存", "success");
+      void queryClient.invalidateQueries({ queryKey: ["agent-settings"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "智能整理设置保存失败", "danger");
+    }
   }
 
   return <>
     <SettingsHeader title="AI 智能整理" description="配置 Nanobot 使用的模型服务，以及新内容的自动整理方式。" />
     {owner.role === "admin" && <section className="settings-card">
       <div className="settings-card-title"><Settings2 size={19} /><div><h3>模型服务</h3><p>由 Nanobot 负责 Provider 协议、模型调用和工具执行；知流负责配置、检查与整理结果校验。</p></div></div>
-      {provider.isLoading ? <LoadingState /> : <form className="settings-form" onSubmit={selected?.auth === "oauth" ? (event) => { event.preventDefault(); void connectOAuth(); } : (event) => void saveProvider(event)}>
+      {provider.isLoading ? <LoadingState /> : provider.isError ? <SettingsLoadError title="模型服务配置加载失败" error={provider.error} onRetry={() => void provider.refetch()} /> : <form className="settings-form" onSubmit={selected?.auth === "oauth" ? (event) => { event.preventDefault(); void connectOAuth(); } : (event) => void saveProvider(event)}>
         <div className="form-grid">
           <label>服务提供商<select value={form.provider} onChange={(event) => { const next = provider.data?.providers.find((item) => item.id === event.target.value); setForm({ provider: event.target.value, model: next?.defaultModel || "", apiBase: next?.defaultBaseUrl || "", apiKey: "" }); setCatalog(null); setConnection(null); }}>{provider.data?.providers.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
           <label>模型<input list="nanobot-provider-models" value={form.model} onChange={(event) => { setForm({ ...form, model: event.target.value }); setConnection(null); }} placeholder="填写或从在线列表选择模型 ID" /><datalist id="nanobot-provider-models">{catalog?.models.map((item) => <option value={item.id} key={item.id}>{item.label || item.description || item.ownedBy || item.id}</option>)}</datalist></label>
@@ -405,20 +491,28 @@ function AiSettings() {
         {selected?.auth !== "oauth" && <label>API 地址<input value={form.apiBase} onChange={(event) => { setForm({ ...form, apiBase: event.target.value }); setConnection(null); }} /></label>}
         {(selected?.auth === "api_key" || selected?.auth === "optional_key") && <label>API Key{selected.auth === "optional_key" ? "（可选）" : ""}<input type="password" value={form.apiKey} onChange={(event) => { setForm({ ...form, apiKey: event.target.value }); setConnection(null); }} placeholder={provider.data?.active.apiKeyConfigured && provider.data.active.provider === form.provider && selected.auth === "api_key" ? "已配置，留空保持不变" : selected.auth === "optional_key" ? "接口无需鉴权时可留空" : "输入 API Key"} /></label>}
         {selected?.auth !== "oauth" && <div className="model-catalog-bar"><div><strong>{catalog?.status === "available" ? `在线模型 · ${catalog.modelCount} 个` : configuredProvider ? "可刷新在线模型列表" : "保存配置后可读取在线模型"}</strong><small>{catalog?.status === "available" ? `目录由 Nanobot 获取 · ${new Date(catalog.fetchedAt * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : catalog?.message || "不提供模型目录的服务仍可手动填写准确的模型 ID。"}</small></div><button type="button" className="button button-secondary" disabled={loadingCatalog || !configuredProvider} onClick={() => void refreshModels()}><RefreshCw className={loadingCatalog ? "spin" : ""} size={17} />{loadingCatalog ? "刷新中…" : "刷新模型列表"}</button></div>}
-        {connection && <InlineMessage tone={connection.ok ? "success" : "danger"}>{connection.ok ? `${connection.provider} / ${connection.model} 可用；Runtime ${connection.runtimeMs ?? 0} ms，模型响应 ${connection.modelMs ?? 0} ms。` : `${connection.stage === "runtime" ? "Nanobot Runtime" : "模型服务"}检查失败：${connection.error || "未知错误"}`}</InlineMessage>}
+        {connection && <InlineMessage tone={connection.ok ? "success" : "danger"}>{isDraftConnection(connection)
+          ? connection.ok
+            ? `${connection.provider} / ${connection.model} 已通过真实文本调用（${connection.elapsedMs} ms）· ${connection.capabilities.protocol === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat Completions"} 兼容${connection.usedSavedCredential ? " · 使用当前已保存密钥" : " · 使用本次草稿密钥"}。配置尚未保存。`
+            : `${connection.stage === "configuration" ? "配置" : connection.stage === "authentication" ? "身份验证" : connection.stage === "network" ? "网络或地址" : "模型响应"}检查失败：${connection.error || "未知错误"}${connection.suggestion ? `；${connection.suggestion}` : ""}`
+          : connection.ok
+            ? `${connection.provider} / ${connection.model} 可用；Runtime ${connection.runtimeMs ?? 0} ms，模型响应 ${connection.modelMs ?? 0} ms。`
+            : `${connection.stage === "runtime" ? "Nanobot Runtime" : "模型服务"}检查失败：${connection.error || "未知错误"}`}</InlineMessage>}
+        {selected?.auth !== "oauth" && <InlineMessage tone="default">检查连接只验证当前草稿，不会保存密钥、切换模型或影响正在运行的整理任务。验证通过后，请点击“保存并启用”。</InlineMessage>}
         <div className="form-actions">
-          <button className="button button-primary" disabled={savingProvider || checkingConnection}>{selected?.auth === "oauth" ? "连接 OpenAI 账户" : savingProvider ? "保存中…" : "保存模型配置"}</button>
-          {selected?.auth !== "oauth" && <button type="button" className="button button-secondary" disabled={savingProvider || checkingConnection || !form.model.trim()} onClick={() => void testProvider()}><Activity size={17} />{checkingConnection ? "正在检查真实调用…" : "保存并检查连接"}</button>}
+          <button className="button button-primary" disabled={savingProvider || checkingConnection}>{selected?.auth === "oauth" ? "连接 OpenAI 账户" : savingProvider ? "保存中…" : "保存并启用"}</button>
+          {selected?.auth !== "oauth" && <button type="button" className="button button-secondary" disabled={savingProvider || checkingConnection || !form.model.trim()} onClick={() => void testProvider()}><Activity size={17} />{checkingConnection ? "正在验证草稿…" : "检查草稿连接"}</button>}
           {selected?.auth === "oauth" && provider.data?.active.provider === "openai_codex" && <button type="button" className="button button-secondary" disabled={checkingConnection} onClick={() => void testProvider()}><Activity size={17} />{checkingConnection ? "正在检查…" : "检查连接"}</button>}
         </div>
       </form>}
     </section>}
-    <section className="settings-card"><div className="settings-card-title"><SlidersHorizontal size={19} /><div><h3>整理方式</h3><p>控制收到新内容后是否自动生成分类、摘要和笔记。</p></div></div>{agent.isLoading ? <LoadingState /> : <form className="settings-form" onSubmit={(event) => void saveAgent(event)}><label className="toggle-row"><input type="checkbox" name="enabled" defaultChecked={agent.data?.enabled} /><span><strong>启用智能整理</strong><small>关闭后仍会保留原始内容并支持同步。</small></span></label><label>我的整理偏好<textarea name="instructions" defaultValue={agent.data?.instructions} rows={5} placeholder="例如：文章先总结核心观点；有明确日期时提取为待办。" /></label><label className="toggle-row"><input type="checkbox" name="notifyOnFailure" defaultChecked={agent.data?.notifyOnFailure} /><span><strong>处理失败时提醒</strong><small>提醒会区分模型限流、结果格式、网页提取和任务停滞，不再统一显示为连接超时。</small></span></label><div className="form-actions"><button className="button button-primary">保存整理设置</button></div></form>}</section>
+    <section className="settings-card"><div className="settings-card-title"><SlidersHorizontal size={19} /><div><h3>整理方式</h3><p>控制收到新内容后是否自动生成分类、摘要和笔记。</p></div></div>{agent.isLoading ? <LoadingState /> : agent.isError ? <SettingsLoadError title="整理方式加载失败" error={agent.error} onRetry={() => void agent.refetch()} /> : <form className="settings-form" onSubmit={(event) => void saveAgent(event)}><label className="toggle-row"><input type="checkbox" name="enabled" defaultChecked={agent.data?.enabled} /><span><strong>启用智能整理</strong><small>关闭后仍会保留原始内容并支持同步。</small></span></label><label>我的整理偏好<textarea name="instructions" defaultValue={agent.data?.instructions} rows={5} placeholder="例如：文章先总结核心观点；有明确日期时提取为待办。" /></label><label className="toggle-row"><input type="checkbox" name="notifyOnFailure" defaultChecked={agent.data?.notifyOnFailure} /><span><strong>处理失败时提醒</strong><small>提醒会区分模型限流、结果格式、网页提取和任务停滞，不再统一显示为连接超时。</small></span></label><div className="form-actions"><button className="button button-primary">保存整理设置</button></div></form>}</section>
   </>;
 }
 
 function SkillsSettings() {
-  const { notify } = useApp();
+  const { owner, notify } = useApp();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const skills = useQuery({ queryKey: ["skills"], queryFn: () => api<{ skills: ManagedSkill[] }>("/api/skills") });
@@ -427,9 +521,17 @@ function SkillsSettings() {
   const adapterSkills = rows.filter((skill) => skill.kind === "adapter");
 
   async function toggle(skill: ManagedSkill) {
-    await api(`/api/skills/${skill.id}`, { method: "PUT", body: JSON.stringify({ ...skill, enabled: !skill.enabled }) });
-    notify(`${skill.name}已${skill.enabled ? "停用" : "启用"}`, "success");
-    void queryClient.invalidateQueries({ queryKey: ["skills"] });
+    if (skill.kind === "adapter" && owner.role !== "admin") {
+      notify("解析适配器由管理员统一管理", "danger");
+      return;
+    }
+    try {
+      await api(`/api/skills/${skill.id}`, { method: "PUT", body: JSON.stringify({ ...skill, enabled: !skill.enabled }) });
+      notify(`${skill.name}已${skill.enabled ? "停用" : "启用"}`, "success");
+      void queryClient.invalidateQueries({ queryKey: ["skills"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Skill 状态更新失败", "danger");
+    }
   }
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -441,33 +543,39 @@ function SkillsSettings() {
     } catch (error) { notify(error instanceof Error ? error.message : "Skill 创建失败", "danger"); }
   }
   async function remove(skill: ManagedSkill) {
-    if (!window.confirm(`删除自定义 Skill“${skill.name}”？`)) return;
-    await api(`/api/skills/${skill.id}`, { method: "DELETE" });
-    notify("自定义 Skill 已删除", "success");
-    void queryClient.invalidateQueries({ queryKey: ["skills"] });
+    if (!await confirm({ title: "删除自定义 Skill？", description: `“${skill.name}”将不再参与后续内容整理，已经生成的内容不会改变。`, confirmLabel: "删除 Skill", tone: "danger" })) return;
+    try {
+      await api(`/api/skills/${skill.id}`, { method: "DELETE" });
+      notify("自定义 Skill 已删除", "success");
+      void queryClient.invalidateQueries({ queryKey: ["skills"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Skill 删除失败", "danger");
+    }
   }
   function routeLabel(skill: ManagedSkill) {
     if (["inbox-router", "obsidian-note-builder"].includes(skill.slug)) return "基础规则 · 自动应用";
     return skill.kind === "adapter" ? "来源或意图触发" : "内容特征触发";
   }
-  const group = (title: string, description: string, list: ManagedSkill[]) => <section className="skill-section"><div className="skill-section-heading"><div><h3>{title}</h3><p>{description}</p></div><span>{list.filter((skill) => skill.enabled).length}/{list.length} 已启用</span></div><div className="skills-grid">{list.map((skill) => <article className="settings-card skill-card" key={skill.id}><div className="skill-icon">{skill.kind === "adapter" ? <Route size={20} /> : <Wrench size={20} />}</div><div className="skill-copy"><div className="skill-title"><h3>{skill.name}</h3><span className="skill-route-badge">{routeLabel(skill)}</span></div><p>{skill.description}</p><div className="skill-meta"><span>{skill.builtin ? "知流内置" : "自定义规则"}</span>{skill.sourceUrl && <a href={skill.sourceUrl} target="_blank" rel="noreferrer">查看来源 <ExternalLink size={12} /></a>}</div></div><div className="skill-actions">{!skill.builtin && <button className="icon-button danger-text" type="button" onClick={() => void remove(skill)} aria-label={`删除${skill.name}`}><Trash2 size={16} /></button>}<button className={`toggle-button ${skill.enabled ? "on" : ""}`} onClick={() => void toggle(skill)} aria-label={`${skill.enabled ? "停用" : "启用"}${skill.name}`}><i /></button></div></article>)}</div></section>;
+  const group = (title: string, description: string, list: ManagedSkill[]) => <section className="skill-section"><div className="skill-section-heading"><div><h3>{title}</h3><p>{description}</p></div><span>{list.filter((skill) => skill.enabled).length}/{list.length} 已启用</span></div><div className="skills-grid">{list.map((skill) => { const adapterLocked = skill.kind === "adapter" && owner.role !== "admin"; return <article className="settings-card skill-card" key={skill.id}><div className="skill-icon">{skill.kind === "adapter" ? <Route size={20} /> : <Wrench size={20} />}</div><div className="skill-copy"><div className="skill-title"><h3>{skill.name}</h3><span className="skill-route-badge">{routeLabel(skill)}</span></div><p>{skill.description}</p><div className="skill-meta"><span>{skill.builtin ? "知流内置" : "自定义规则"}</span>{adapterLocked && <span>由管理员管理</span>}{skill.sourceUrl && <a href={skill.sourceUrl} target="_blank" rel="noreferrer">查看来源 <ExternalLink size={12} /></a>}</div></div><div className="skill-actions">{!skill.builtin && <button className="icon-button danger-text" type="button" onClick={() => void remove(skill)} aria-label={`删除${skill.name}`}><Trash2 size={16} /></button>}<button className={`toggle-button ${skill.enabled ? "on" : ""}`} disabled={adapterLocked} title={adapterLocked ? "解析适配器由管理员统一管理" : undefined} onClick={() => void toggle(skill)} aria-label={`${skill.enabled ? "停用" : "启用"}${skill.name}`}><i /></button></div></article>; })}</div></section>;
 
   return <><SettingsHeader title="整理能力" description="系统先按来源、内容形态和用户意图缩小候选范围，再由 Nanobot 使用最匹配的 Skill；专用解析优先，失败后才使用通用回退。" />
     <section className="settings-card skill-routing-card"><div className="settings-card-title"><Route size={19} /><div><h3>分层路由</h3><p>基础规则始终参与；文档、媒体和专业领域按内容触发；微信、网页与图解工具按来源或明确意图触发。没有足够证据时不猜测。</p></div></div><ol><li><strong>预筛选</strong><span>来源、附件形态与明确意图</span></li><li><strong>选择能力</strong><span>只向模型提供少量相关 Skill</span></li><li><strong>校验结果</strong><span>格式、证据与数据质量检查</span></li></ol></section>
     <div className="skill-create-bar"><div><strong>自定义整理规则</strong><span>为自己的专业内容增加明确的触发与跳过条件。</span></div><button className="button button-primary" type="button" onClick={() => setCreating((value) => !value)}><Plus size={17} />{creating ? "收起" : "新建 Skill"}</button></div>
     {creating && <section className="settings-card"><form className="settings-form skill-create-form" onSubmit={(event) => void create(event)}><div className="form-grid"><label>名称<input name="name" required maxLength={80} placeholder="例如：产品研究资料整理" /></label><label>标识<input name="slug" required pattern="[a-z0-9][a-z0-9-]{1,59}" placeholder="product-research" /></label></div><label>路由说明<textarea name="description" rows={3} required maxLength={500} placeholder="TRIGGER：什么内容应使用。SKIP：什么情况不能使用。ROUTE：与其他 Skill 重叠时谁优先。" /></label><label>整理规则<textarea name="content" rows={8} required maxLength={20000} placeholder="说明要提取什么、证据要求、输出边界和失败时如何处理。" /></label><div className="form-actions"><button className="button button-primary">创建并启用</button></div></form></section>}
-    {skills.isLoading ? <LoadingState /> : <>{group("语义整理规则", "参与标题、分类、摘要、知识点和专业领域判断。", promptSkills)}{group("解析与可视化适配器", "由确定性路由选择；同一任务只启用必要的专用能力。", adapterSkills)}</>}
+    {skills.isLoading ? <LoadingState /> : skills.isError ? <SettingsLoadError title="整理能力加载失败" error={skills.error} onRetry={() => void skills.refetch()} /> : <>{group("语义整理规则", "参与标题、分类、摘要、知识点和专业领域判断。", promptSkills)}{group("解析与可视化适配器", "由确定性路由选择；同一任务只启用必要的专用能力。", adapterSkills)}</>}
   </>;
 }
 
 function UsersSettings() {
   const { owner, notify } = useApp();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [createdInvitation, setCreatedInvitation] = useState<CreatedInvitation | null>(null);
   const [invitationStatusFilter, setInvitationStatusFilter] = useState("all");
   const [invitationPage, setInvitationPage] = useState(0);
   const [resetTarget, setResetTarget] = useState<Owner | null>(null);
+  const resetTriggerRef = useRef<HTMLButtonElement | null>(null);
   const invitationPageSize = 8;
   const users = useQuery({
     queryKey: ["users"],
@@ -490,6 +598,20 @@ function UsersSettings() {
   const invitationUrl = createdInvitation
     ? `${window.location.origin}/?invite=${encodeURIComponent(createdInvitation.token)}`
     : "";
+
+  function closeResetDialog() {
+    setResetTarget(null);
+    window.requestAnimationFrame(() => resetTriggerRef.current?.focus());
+  }
+
+  useEffect(() => {
+    if (!resetTarget) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") closeResetDialog();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [resetTarget]);
 
   async function createInvitation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -517,7 +639,7 @@ function UsersSettings() {
   }
 
   async function revokeInvitation(invitation: Invitation) {
-    if (!window.confirm("撤销后，此邀请码将无法继续注册。确定撤销吗？")) return;
+    if (!await confirm({ title: "撤销这个邀请码？", description: "撤销后该邀请码会立即失效，已使用该邀请创建的账户不受影响。", confirmLabel: "撤销邀请", tone: "danger" })) return;
     try {
       await api(`/api/admin/invitations/${invitation.id}`, { method: "DELETE" });
       notify("邀请码已撤销", "success");
@@ -535,17 +657,31 @@ function UsersSettings() {
   }
 
   async function setDisabled(user: Owner) {
-    await api(`/api/admin/users/${user.id}/status`, { method: "PUT", body: JSON.stringify({ disabled: !user.disabled }) });
-    notify(`用户已${user.disabled ? "启用" : "停用"}`, "success");
-    void queryClient.invalidateQueries({ queryKey: ["users"] });
+    try {
+      await api(`/api/admin/users/${user.id}/status`, { method: "PUT", body: JSON.stringify({ disabled: !user.disabled }) });
+      notify(`用户已${user.disabled ? "启用" : "停用"}`, "success");
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "用户状态更新失败", "danger");
+    }
   }
 
   async function removeUser(user: Owner) {
-    const confirmation = window.prompt(`永久删除 @${user.username} 及其所有内容、附件和同步配置。请输入完整用户名确认：`);
-    if (confirmation !== user.username) return;
-    await api(`/api/admin/users/${user.id}`, { method: "DELETE", body: JSON.stringify({ confirmation }) });
-    notify("用户及其工作区数据已删除", "success");
-    void queryClient.invalidateQueries({ queryKey: ["users"] });
+    const accepted = await confirm({
+      title: `永久删除 @${user.username}？`,
+      description: "该用户的内容、附件、问答记录与同步配置都会被永久删除，无法恢复。",
+      confirmLabel: "永久删除用户",
+      tone: "danger",
+      requireText: user.username,
+    });
+    if (!accepted) return;
+    try {
+      await api(`/api/admin/users/${user.id}`, { method: "DELETE", body: JSON.stringify({ confirmation: user.username }) });
+      notify("用户及其工作区数据已删除", "success");
+      void queryClient.invalidateQueries({ queryKey: ["users"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "用户删除失败", "danger");
+    }
   }
 
   async function resetPassword(event: FormEvent<HTMLFormElement>) {
@@ -561,7 +697,7 @@ function UsersSettings() {
         }),
       });
       notify(`@${resetTarget.username} 的密码已重置，原有登录已失效`, "success");
-      setResetTarget(null);
+      closeResetDialog();
     } catch (error) {
       notify(error instanceof Error ? error.message : "密码重置失败", "danger");
     }
@@ -577,15 +713,47 @@ function UsersSettings() {
       </form>
       {createdInvitation && <div className="secret-reveal invitation-secret"><KeyRound size={20} /><div><strong>邀请链接（仅显示一次）</strong><code>{invitationUrl}</code><small>有效至 {formatDate(createdInvitation.expiresAt)}。受邀用户打开链接即可直接创建账户。</small></div><div className="secret-actions"><button className="button button-secondary" onClick={() => void copyInvitation(invitationUrl, "邀请链接")}><Copy size={16} />复制链接</button><button className="button button-secondary" onClick={() => void copyInvitation(createdInvitation.token, "邀请码")}><Copy size={16} />复制邀请码</button></div></div>}
       <div className="invitation-list-toolbar"><label>邀请记录<select value={invitationStatusFilter} onChange={(event) => { setInvitationStatusFilter(event.target.value); setInvitationPage(0); }}><option value="all">全部状态</option><option value="pending">待使用</option><option value="used">已使用</option><option value="expired">已过期</option><option value="revoked">已撤销</option></select></label><span>共 {invitations.data?.pagination.total || 0} 条</span></div>
-      {invitations.isLoading ? <LoadingState /> : invitations.data?.invitations.length ? <><div className="invitation-list">{invitations.data.invitations.map((invitation) => { const status = invitationStatus(invitation); const active = status.label === "待使用"; return <div key={invitation.id}><div><strong>{invitation.consumedBy ? `由 ${invitation.consumedBy.displayName} (@${invitation.consumedBy.username}) 使用` : "一次性用户邀请"}</strong><span>创建于 {formatDate(invitation.createdAt)} · 有效至 {formatDate(invitation.expiresAt)}</span></div><span className={`status-badge ${status.tone}`}>{status.label}</span>{active && <button className="button button-secondary" onClick={() => void revokeInvitation(invitation)}>撤销</button>}</div>; })}</div><div className="list-pagination"><button className="button button-secondary" disabled={invitationPage === 0} onClick={() => setInvitationPage((page) => Math.max(0, page - 1))}><ChevronLeft size={16} />上一页</button><span>第 {invitationPage + 1} 页</span><button className="button button-secondary" disabled={!invitations.data.pagination.hasMore} onClick={() => setInvitationPage((page) => page + 1)}>下一页<ChevronRight size={16} /></button></div></> : <EmptyState title={invitationStatusFilter === "all" ? "尚未创建邀请" : "这个状态下没有邀请记录"} description={invitationStatusFilter === "all" ? "创建后将生成一次性邀请链接。" : "可以切换状态查看其他邀请记录。"} />}
+      {invitations.isLoading ? <LoadingState /> : invitations.isError ? <SettingsLoadError title="邀请记录加载失败" error={invitations.error} onRetry={() => void invitations.refetch()} /> : invitations.data?.invitations.length ? <><div className="invitation-list">{invitations.data.invitations.map((invitation) => { const status = invitationStatus(invitation); const active = status.label === "待使用"; return <div key={invitation.id}><div><strong>{invitation.consumedBy ? `由 ${invitation.consumedBy.displayName} (@${invitation.consumedBy.username}) 使用` : "一次性用户邀请"}</strong><span>创建于 {formatDate(invitation.createdAt)} · 有效至 {formatDate(invitation.expiresAt)}</span></div><span className={`status-badge ${status.tone}`}>{status.label}</span>{active && <button type="button" className="button button-secondary" onClick={() => void revokeInvitation(invitation)}>撤销</button>}</div>; })}</div><div className="list-pagination"><button type="button" className="button button-secondary" disabled={invitationPage === 0} onClick={() => setInvitationPage((page) => Math.max(0, page - 1))}><ChevronLeft size={16} />上一页</button><span>第 {invitationPage + 1} 页</span><button type="button" className="button button-secondary" disabled={!invitations.data.pagination.hasMore} onClick={() => setInvitationPage((page) => page + 1)}>下一页<ChevronRight size={16} /></button></div></> : <EmptyState title={invitationStatusFilter === "all" ? "尚未创建邀请" : "这个状态下没有邀请记录"} description={invitationStatusFilter === "all" ? "创建后将生成一次性邀请链接。" : "可以切换状态查看其他邀请记录。"} />}
     </section>
     <section className="settings-card">
       <div className="settings-card-title"><UserRound size={19} /><div><h3>工作区用户</h3><p>搜索、重置密码、停用或永久删除已有用户。</p></div></div>
-      <label className="table-search user-search">搜索用户<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="用户名或显示名称" /></label>
-      <div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <div className="user-actions"><button className="button button-secondary" onClick={() => setResetTarget(user)}><LockKeyhole size={16} />重置密码</button><button className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></div>}</div>)}</div>
+      {users.isError ? <SettingsLoadError title="用户列表加载失败" error={users.error} onRetry={() => void users.refetch()} /> : <><label className="table-search user-search">搜索用户<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="用户名或显示名称" /></label>{users.isLoading ? <LoadingState label="正在读取工作区用户" /> : rows.length ? <div className="user-table">{rows.map((user) => <div key={user.id}><span className="avatar">{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>@{user.username} · {user.messageCount} 条内容 · {user.botCount} 个微信账号</small></div><span className={`status-badge ${user.disabled ? "danger" : "success"}`}>{user.disabled ? "已停用" : user.role === "admin" ? "管理员" : "正常"}</span>{user.id !== owner.id && <div className="user-actions"><button type="button" className="button button-secondary" onClick={(event) => { resetTriggerRef.current = event.currentTarget; setResetTarget(user); }}><LockKeyhole size={16} />重置密码</button><button type="button" className="button button-secondary" onClick={() => void setDisabled(user)}>{user.disabled ? "启用" : "停用"}</button><button type="button" className="icon-button danger-text" aria-label={`删除用户 ${user.username}`} onClick={() => void removeUser(user)}><Trash2 size={18} /></button></div>}</div>)}</div> : <EmptyState title="没有匹配用户" description="请更换用户名或显示名称关键词。" />}</>}
     </section>
-    {resetTarget && <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setResetTarget(null); }}><section className="account-action-modal" role="dialog" aria-modal="true" aria-label="重置用户密码"><header><div><span className="eyebrow">ACCOUNT SECURITY</span><h2>重置用户密码</h2><p>为 {resetTarget.displayName}（@{resetTarget.username}）设置新密码。保存后，该用户在其他设备上的登录会立即失效。</p></div><button className="icon-button" aria-label="关闭" onClick={() => setResetTarget(null)}><X size={20} /></button></header><form className="settings-form" onSubmit={(event) => void resetPassword(event)}><label>新密码<input name="newPassword" type="password" minLength={8} required autoFocus autoComplete="new-password" /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required autoComplete="new-password" /></label><div className="form-actions"><button type="button" className="button button-secondary" onClick={() => setResetTarget(null)}>取消</button><button className="button button-primary"><LockKeyhole size={16} />确认重置</button></div></form></section></div>}
+    {resetTarget && <div className="modal-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeResetDialog(); }}><section className="account-action-modal" role="dialog" aria-modal="true" aria-label="重置用户密码"><header><div><span className="eyebrow">ACCOUNT SECURITY</span><h2>重置用户密码</h2><p>为 {resetTarget.displayName}（@{resetTarget.username}）设置新密码。保存后，该用户在其他设备上的登录会立即失效。</p></div><button className="icon-button" type="button" aria-label="关闭" onClick={closeResetDialog}><X size={20} /></button></header><form className="settings-form" onSubmit={(event) => void resetPassword(event)}><label>新密码<input name="newPassword" type="password" minLength={8} required autoFocus autoComplete="new-password" /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required autoComplete="new-password" /></label><div className="form-actions"><button type="button" className="button button-secondary" onClick={closeResetDialog}>取消</button><button className="button button-primary"><LockKeyhole size={16} />确认重置</button></div></form></section></div>}
   </>;
 }
 
-function AccountSettings() { const { owner, setOwner, notify, logout } = useApp(); async function profile(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const result = await api<{ owner: Owner }>("/api/me/profile", { method: "PUT", body: JSON.stringify({ displayName: data.get("displayName") }) }); setOwner(result.owner); notify("个人资料已更新", "success"); } async function password(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); await api("/api/me/password", { method: "POST", body: JSON.stringify({ currentPassword: data.get("currentPassword"), newPassword: data.get("newPassword"), confirmPassword: data.get("confirmPassword") }) }); notify("密码已更新，请重新登录", "success"); await logout(); } return <><SettingsHeader title="账号与安全" description="管理显示名称和登录密码。修改密码后，当前会话会立即退出。" /><section className="settings-card"><div className="settings-card-title"><UserRound size={19} /><div><h3>个人资料</h3><p>用户名 @{owner.username} 不可修改。</p></div></div><form className="settings-form" onSubmit={(event) => void profile(event)}><label>显示名称<input name="displayName" defaultValue={owner.displayName} /></label><div className="form-actions"><button className="button button-primary">保存资料</button></div></form></section><section className="settings-card"><div className="settings-card-title"><Shield size={19} /><div><h3>修改密码</h3><p>新密码至少 8 个字符，并需要输入两次确认。</p></div></div><form className="settings-form" onSubmit={(event) => void password(event)}><label>当前密码<input name="currentPassword" type="password" required /></label><div className="form-grid"><label>新密码<input name="newPassword" type="password" minLength={8} required /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required /></label></div><div className="form-actions"><button className="button button-primary">更新密码</button></div></form></section></>; }
+function AccountSettings() {
+  const { owner, setOwner, notify, logout } = useApp();
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  async function profile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setSavingProfile(true);
+    try {
+      const result = await api<{ owner: Owner }>("/api/me/profile", { method: "PUT", body: JSON.stringify({ displayName: data.get("displayName") }) });
+      setOwner(result.owner);
+      notify("个人资料已更新", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "个人资料保存失败", "danger");
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+  async function password(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setSavingPassword(true);
+    try {
+      await api("/api/me/password", { method: "POST", body: JSON.stringify({ currentPassword: data.get("currentPassword"), newPassword: data.get("newPassword"), confirmPassword: data.get("confirmPassword") }) });
+      notify("密码已更新，请重新登录", "success");
+      await logout();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "密码更新失败", "danger");
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+  return <><SettingsHeader title="账号与安全" description="管理显示名称和登录密码。修改密码后，当前会话会立即退出。" /><section className="settings-card"><div className="settings-card-title"><UserRound size={19} /><div><h3>个人资料</h3><p>用户名 @{owner.username} 不可修改。</p></div></div><form className="settings-form" onSubmit={(event) => void profile(event)}><label>显示名称<input name="displayName" defaultValue={owner.displayName} /></label><div className="form-actions"><button className="button button-primary" disabled={savingProfile}>{savingProfile ? "保存中…" : "保存资料"}</button></div></form></section><section className="settings-card"><div className="settings-card-title"><Shield size={19} /><div><h3>修改密码</h3><p>新密码至少 8 个字符，并需要输入两次确认。</p></div></div><form className="settings-form" onSubmit={(event) => void password(event)}><label>当前密码<input name="currentPassword" type="password" required autoComplete="current-password" /></label><div className="form-grid"><label>新密码<input name="newPassword" type="password" minLength={8} required autoComplete="new-password" /></label><label>再次输入新密码<input name="confirmPassword" type="password" minLength={8} required autoComplete="new-password" /></label></div><div className="form-actions"><button className="button button-primary" disabled={savingPassword}>{savingPassword ? "更新中…" : "更新密码"}</button></div></form></section></>;
+}

@@ -15,6 +15,11 @@ import { inferCaptureType, type CaptureInput } from "./capture.js";
 import type { AppConfig } from "./config.js";
 import type { FeedSourceManager } from "./feed-source-manager.js";
 import type { AccountLoginManager } from "./ilink/account-login-manager.js";
+import {
+  noKnowledgeEvidenceAnswer,
+  retrieveKnowledgeEvidence,
+  verifyKnowledgeAnswer,
+} from "./knowledge-retriever.js";
 import { errorDetails, logger } from "./logger.js";
 import { NanobotClient } from "./nanobot.js";
 import {
@@ -789,24 +794,35 @@ export function createServer(
     };
   });
 
-  app.get<{ Querystring: { limit?: string; status?: string; type?: string } }>("/api/jobs", async (request) => {
+  app.get<{ Querystring: { limit?: string; offset?: string; status?: string; type?: string } }>("/api/jobs", async (request) => {
     const allowedStatuses = new Set<BackgroundJobStatus>([
       "queued", "running", "retrying", "completed", "failed", "cancelled",
     ]);
     const allowedTypes = new Set<BackgroundJobType>([
       "ingestion", "reprocess", "diagram", "index", "sync", "source_check",
     ]);
-    const requestedStatus = stringBody(request.query.status, 30) as BackgroundJobStatus;
+    const requestedStatus = stringBody(request.query.status, 30);
     const requestedType = stringBody(request.query.type, 30) as BackgroundJobType;
     const scoped = tenantDatabase(request);
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(request.query.limit) || 50)));
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(request.query.offset) || 0)));
+    const filters: {
+      status?: BackgroundJobStatus;
+      statuses?: BackgroundJobStatus[];
+      type?: BackgroundJobType;
+    } = {
+      ...(requestedStatus === "active"
+        ? { statuses: ["queued", "running", "retrying"] as BackgroundJobStatus[] }
+        : allowedStatuses.has(requestedStatus as BackgroundJobStatus) ? { status: requestedStatus as BackgroundJobStatus } : {}),
+      ...(allowedTypes.has(requestedType) ? { type: requestedType } : {}),
+    };
+    const jobs = scoped.listBackgroundJobs({ ...filters, limit, offset });
+    const total = scoped.countBackgroundJobs(filters);
     return {
-      overview: scoped.backgroundJobOverview(Math.max(1, Math.min(100, Number(request.query.limit) || 50))),
-      jobs: scoped.listBackgroundJobs({
-        limit: Math.max(1, Math.min(100, Number(request.query.limit) || 50)),
-        ...(allowedStatuses.has(requestedStatus) ? { status: requestedStatus } : {}),
-        ...(allowedTypes.has(requestedType) ? { type: requestedType } : {}),
-      }),
+      overview: scoped.backgroundJobOverview(Math.min(limit, 20)),
+      jobs,
       searchIndex: scoped.searchIndexHealth(),
+      pagination: { limit, offset, total, hasMore: offset + jobs.length < total },
     };
   });
 
@@ -1235,10 +1251,11 @@ export function createServer(
     };
   });
 
-  app.get<{ Querystring: { limit?: string; offset?: string } }>("/api/knowledge/chats", async (request) => {
+  app.get<{ Querystring: { limit?: string; offset?: string; q?: string } }>("/api/knowledge/chats", async (request) => {
     const result = tenantDatabase(request).listKnowledgeConversations(
       Math.max(1, Math.min(50, Number(request.query.limit) || 30)),
       Math.max(0, Number(request.query.offset) || 0),
+      stringBody(request.query.q, 160),
     );
     return { ...result, hasMore: result.conversations.length + (Number(request.query.offset) || 0) < result.total };
   });
@@ -1318,88 +1335,43 @@ export function createServer(
         } catch (error) {
           logger.warn("知识问答检索规划失败，已使用本地索引", errorDetails(error));
         }
-        const ranked = new Map<string, { item: InboxSearchResult; score: number }>();
-        type RankedKnowledgeChunk = ReturnType<AppDatabase["searchKnowledgeChunks"]>[number] & { combinedScore: number };
-        const rankedChunks = new Map<string, RankedKnowledgeChunk>();
-        const addMatches = (items: InboxSearchResult[], score: number): void => {
-          for (const item of items) {
-            if (!inScope(item.id)) continue;
-            const current = ranked.get(item.id);
-            ranked.set(item.id, { item, score: (current?.score || 0) + score });
-          }
-        };
-        const addChunkMatches = (query: string, score: number): void => {
-          for (const item of scoped.searchKnowledgeChunks(query, 40)) {
-            if (!inScope(item.messageId)) continue;
-            const key = `${item.messageId}:${item.ordinal}`;
-            const current = rankedChunks.get(key);
-            rankedChunks.set(key, { ...item, combinedScore: (current?.combinedScore || 0) + score + item.score });
-          }
-        };
-        addMatches(scoped.searchInbox(retrievalQuestion, { organized: true, limit: 20 }), 30);
-        addChunkMatches(retrievalQuestion, 30);
-        Array.from(new Set(plan?.queries || [])).slice(0, 6).forEach((query, index) => {
-          addMatches(scoped.searchInbox(query, { organized: true, limit: 20 }), 24 - index * 2);
-          addChunkMatches(query, 24 - index * 2);
-        });
-        plan?.domains.forEach((domain) => addMatches(scoped.searchInbox("", { organized: true, domain, limit: 12 }), 12));
-        plan?.knowledgePoints.forEach((knowledgePoint) => addMatches(scoped.searchInbox("", { organized: true, knowledgePoint, limit: 12 }), 12));
-        plan?.tools.forEach((tool) => addMatches(scoped.searchInbox("", { organized: true, tool, limit: 12 }), 12));
-        if (conversation.scopeType === "message" && conversation.scopeValue && inScope(conversation.scopeValue)) {
-          const detail = scoped.getMessage(conversation.scopeValue);
-          if (detail) addMatches([{ ...detail, excerpt: detail.summary || detail.text.slice(0, 240) }], 100);
-          for (const item of scoped.knowledgeChunksForMessage(conversation.scopeValue, 12)) {
-            const key = `${item.messageId}:${item.ordinal}`;
-            rankedChunks.set(key, { ...item, combinedScore: 100 + item.score });
-          }
-        }
         const previousCitationIds = recentHistory
           .filter((message) => message.role === "assistant")
           .slice(-1)
           .flatMap((message) => message.citations.map((citation) => citation.messageId))
           .filter(inScope);
-        const chunksByMessage = new Map<string, RankedKnowledgeChunk[]>();
-        Array.from(rankedChunks.values())
-          .sort((left, right) => right.combinedScore - left.combinedScore || left.ordinal - right.ordinal)
-          .forEach((chunk) => {
-            const current = chunksByMessage.get(chunk.messageId) || [];
-            if (current.length < 4) chunksByMessage.set(chunk.messageId, [...current, chunk]);
-          });
-        const chunkRankedIds = Array.from(chunksByMessage.entries())
-          .sort((left, right) => right[1].reduce((sum, chunk) => sum + chunk.combinedScore, 0)
-            - left[1].reduce((sum, chunk) => sum + chunk.combinedScore, 0))
-          .map(([messageId]) => messageId);
-        const candidateIds = Array.from(new Set([
-          ...previousCitationIds,
-          ...chunkRankedIds,
-          ...Array.from(ranked.values())
-            .sort((left, right) => right.score - left.score || right.item.seq - left.item.seq)
-            .map((entry) => entry.item.id),
-        ])).slice(0, 8);
-        onUpdate?.({ type: "status", phase: "reading", message: `已找到 ${candidateIds.length} 篇候选资料，正在核对相关段落…` });
-        const sources = candidateIds.flatMap((id) => {
-          const detail = scoped.getMessageDetail(id);
-          if (!detail || detail.agentStatus !== "completed") return [];
-          const chunks = chunksByMessage.get(id) || scoped.knowledgeChunksForMessage(id, 4);
-          const content = chunks.length
-            ? chunks.map((chunk) => `## ${chunk.heading}\n${chunk.content}`).join("\n\n")
-            : detail.contentMarkdown || detail.detailsMarkdown || detail.markdown || detail.text;
-          return [{
-            id: detail.id,
-            title: detail.title,
-            summary: detail.summary,
-            content,
-            domains: detail.domains,
-            knowledgePoints: detail.knowledgePoints,
-          }];
+        const retrieval = retrieveKnowledgeEvidence(scoped, {
+          question,
+          contextualQuestion: retrievalQuestion,
+          plan: plan ? {
+            queries: plan.queries,
+            domains: plan.domains,
+            knowledgePoints: plan.knowledgePoints,
+            tools: plan.tools,
+          } : undefined,
+          allowedMessageIds,
+          continuityMessageIds: previousCitationIds,
+          pinnedMessageIds: conversation.scopeType === "message" && conversation.scopeValue
+            ? [conversation.scopeValue]
+            : [],
+        });
+        const { sources, diagnostics } = retrieval;
+        onUpdate?.({
+          type: "status",
+          phase: "reading",
+          message: `已从 ${diagnostics.candidateChunks} 个候选分块中筛选 ${diagnostics.selectedChunks} 段证据，覆盖 ${diagnostics.selectedSources} 篇资料…`,
         });
         if (!sources.length) {
-          const content = `当前“${conversation.scopeLabel}”范围内没有找到足够依据回答这个问题。可以换用更明确的主题、人物、工具名称，扩大问答范围，或先把相关资料完成整理。`;
+          const content = noKnowledgeEvidenceAnswer(conversation.scopeLabel);
           onUpdate?.({ type: "delta", content });
           const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", content);
           return { message, followUps: [] };
         }
-        onUpdate?.({ type: "status", phase: "generating", message: `正在依据 ${sources.length} 篇资料组织回答…` });
+        onUpdate?.({
+          type: "status",
+          phase: "generating",
+          message: `正在依据 ${diagnostics.selectedSources} 篇资料的 ${diagnostics.selectedChunks} 个证据段组织回答…`,
+        });
         const result = await nanobot.answerKnowledgeQuestion(
           question,
           sources,
@@ -1408,13 +1380,16 @@ export function createServer(
           { tenantId, conversationId: conversation.id },
           onUpdate ? (content) => onUpdate({ type: "delta", content }) : undefined,
         );
-        const citations = result.citedSourceIds.flatMap((id) => {
+        const verified = verifyKnowledgeAnswer(result.answer, sources, result.citedSourceIds);
+        const citations = verified.citedSourceIds.flatMap((id) => {
           const source = sources.find((item) => item.id === id);
           const sourceIndex = sources.findIndex((item) => item.id === id);
-          return source ? [{ messageId: source.id, title: source.title, excerpt: source.summary, reference: `S${sourceIndex + 1}` }] : [];
+          return source
+            ? [{ messageId: source.id, title: source.title, excerpt: source.excerpt || source.summary, reference: `S${sourceIndex + 1}` }]
+            : [];
         });
-        const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", result.answer, citations);
-        return { message, followUps: result.followUps };
+        const message = scoped.appendKnowledgeChatMessage(conversation.id, "assistant", verified.answer, citations);
+        return { message, followUps: verified.grounded ? result.followUps : [] };
       } finally {
         activeKnowledgeChats.delete(runKey);
       }
@@ -1848,6 +1823,17 @@ export function createServer(
   app.get<{ Querystring: { provider?: string } }>("/api/nanobot/provider/models", async (request) => {
     if ((request as OwnerRequest).owner?.role !== "admin") throw Object.assign(new Error("仅系统管理员可查看模型配置"), { statusCode: 403 });
     return getNanobotProviderModels(config, stringBody(request.query.provider, 80));
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/api/nanobot/provider/test", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    reply.header("Cache-Control", "no-store, max-age=0");
+    return nanobot.testProviderDraft({
+      provider: stringBody(request.body?.provider, 80),
+      model: stringBody(request.body?.model, 200),
+      apiBase: stringBody(request.body?.apiBase, 1_000),
+      apiKey: stringBody(request.body?.apiKey, 2_000) || undefined,
+    });
   });
 
   app.put<{ Body: Record<string, unknown> }>("/api/nanobot/provider", async (request, reply) => {

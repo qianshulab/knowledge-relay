@@ -97,4 +97,50 @@ describe("note generation", () => {
     expect(note.detailsMarkdown).toContain("console.log(name);\n}\n```");
     expect(note.markdown).toContain("```javascript");
   });
+
+  it("在写入笔记前统一整理模型生成的标题、列表和可靠表格", () => {
+    const note = normalizeAgentNote({
+      title: "兼容性说明",
+      category: "reference",
+      details_markdown: [
+        "###支持情况",
+        "平台 | 状态 | 安装方式",
+        "",
+        "Claude Code | 原生 | 插件市场",
+        "",
+        "Cursor | 支持 | 自动发现",
+        "• 支持后续更新",
+      ].join("\n"),
+    }, message);
+
+    expect(note.detailsMarkdown).toContain("### 支持情况");
+    expect(note.detailsMarkdown).toContain("| --- | --- | --- |");
+    expect(note.detailsMarkdown).toContain("- 支持后续更新");
+    expect(note.markdown).toContain("| Claude Code | 原生 | 插件市场 |");
+  });
+
+  it("保存原始正文时也修复被拆散的配置代码，但不重写中文说明", () => {
+    const sourceMessage = {
+      ...message,
+      text: [
+        "配置说明保持原意。",
+        "",
+        "`server {`",
+        "",
+        "`  listen 8080;`",
+        "",
+        "`  location / {`",
+        "",
+        "`    proxy_pass http://backend;`",
+        "",
+        "`  }`",
+        "",
+        "`}`",
+      ].join("\n"),
+    };
+    const note = defaultNote(sourceMessage);
+
+    expect(note.markdown).toContain("配置说明保持原意。");
+    expect(note.markdown).toContain("```nginx\nserver {\n  listen 8080;");
+  });
 });

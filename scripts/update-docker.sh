@@ -7,7 +7,7 @@ cd "$project_dir"
 requested_version=${1:-}
 if [ -z "$requested_version" ]; then
   echo "用法：./scripts/update-docker.sh <版本号>" >&2
-  echo "示例：./scripts/update-docker.sh 1.10.1" >&2
+  echo "示例：./scripts/update-docker.sh 1.11.0" >&2
   exit 1
 fi
 

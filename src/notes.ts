@@ -1,5 +1,5 @@
 import type { CaptureInput } from "./capture.js";
-import { normalizeLooseCodeBlocks } from "./markdown.js";
+import { normalizeReadingMarkdown } from "./markdown.js";
 import type { PublicInboundMessage } from "./messages.js";
 import { compactKnowledgePoint } from "./semantic-labels.js";
 import type { ProcessedNote } from "./storage/database.js";
@@ -88,8 +88,9 @@ export function defaultNote(message: NoteInput): ProcessedNote {
     kind: item.kind,
     transcript: item.transcript,
   }));
-  const body = message.text.trim() || "（这条消息仅包含附件）";
-  const summary = body.replace(/[\r\n]+/g, " ").trim().slice(0, 500);
+  const sourceBody = message.text.trim();
+  const body = normalizeReadingMarkdown(sourceBody) || "（这条消息仅包含附件）";
+  const summary = (sourceBody || body).replace(/[\r\n]+/g, " ").trim().slice(0, 500);
   const attachmentBlock = attachments.flatMap((item) => [
     `- ${item.fileName}`,
     ...(item.transcript ? [`  - 转写：${item.transcript}`] : []),
@@ -182,7 +183,7 @@ export function normalizeAgentNote(
         .filter((item, index, values) => values.indexOf(item) === index)
         .slice(0, 10)
     : fallback.tags;
-  const content = message.text.trim() || "（这条消息仅包含附件）";
+  const content = normalizeReadingMarkdown(message.text.trim()) || "（这条消息仅包含附件）";
   const summary =
     typeof object.summary === "string" && object.summary.trim()
       ? object.summary.replace(/[\r\n]+/g, " ").trim().slice(0, 500)
@@ -233,7 +234,7 @@ export function normalizeAgentNote(
         .slice(0, 10)
     : [];
   const detailsMarkdown = typeof object.details_markdown === "string"
-    ? normalizeLooseCodeBlocks(object.details_markdown).slice(0, 100_000)
+    ? normalizeReadingMarkdown(object.details_markdown.slice(0, 100_000))
     : "";
   const attachmentBlock = message.attachments.flatMap((attachment) => [
     `- ${attachment.fileName}`,

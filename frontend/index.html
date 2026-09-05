@@ -3,13 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f6f7f9" />
-    <meta name="color-scheme" content="light" />
-    <link rel="icon" type="image/svg+xml" href="/app/favicon.svg" />
+    <meta name="theme-color" content="#f5f3ef" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="知流是一套可自托管的个人知识收件、整理、检索与问答工作空间。" />
+    <link rel="icon" type="image/svg+xml" href="/app/favicon.svg?v=20260905" />
     <title>知流 · Knowledge Relay</title>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      try {
+        const saved = localStorage.getItem("knowledge-relay-theme");
+        const theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0d0f17" : "#f5f3ef";
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
